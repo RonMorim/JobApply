@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>{{name}}</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@page {
+  size: 210mm 297mm;
+  margin: 0;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --ink:        #0F172A;   /* primary text — deep slate */
+  --ink-2:      #1E293B;   /* body text */
+  --muted:      #475569;   /* companies, meta labels */
+  --faint:      #94A3B8;   /* dates, coursework */
+  --divider:    #E2E8F0;   /* rules and borders */
+  --accent:     #1D4ED8;   /* section headers — modern blue */
+  --hdr-bg:     #1E3A5F;   /* header block background — deep navy */
+  --hdr-name:   #FFFFFF;
+  --hdr-title:  rgba(255,255,255,0.78);
+  --hdr-contact:rgba(255,255,255,0.62);
+  --tag-bg:     #EFF6FF;   /* skill pill — soft blue tint */
+  --tag-color:  #1D4ED8;   /* skill pill text — matches accent */
+  --tag-border: #BFDBFE;   /* skill pill border */
+  --white:      #FFFFFF;
+}
+
+html, body {
+  width: 210mm;
+  max-width: 210mm;
+  height: 297mm;
+  max-height: 297mm;
+  overflow: hidden;
+  font-family: 'Inter', 'Segoe UI', -apple-system, system-ui, Arial, sans-serif;
+  font-size: 9pt;
+  color: var(--ink);
+  background: var(--white);
+  line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.page {
+  width: 210mm;
+  height: 297mm;
+  max-height: 297mm;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Header ────────────────────────────────────────────────────────────────
+   Deep navy block. Name + title on white; contact info at reduced opacity.
+   No border needed — the background change is the separator.       ────────── */
+.header {
+  background: var(--hdr-bg);
+  padding: 18px 24px 16px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  overflow: hidden;
+}
+
+.hdr-left { min-width: 0; overflow: hidden; }
+
+.hdr-name {
+  font-size: 21pt;
+  font-weight: 700;
+  color: var(--hdr-name);
+  letter-spacing: -0.4px;
+  line-height: 1.06;
+  white-space: nowrap;
+}
+
+.hdr-title {
+  font-size: 7.5pt;
+  font-weight: 500;
+  color: var(--hdr-title);
+  margin-top: 5px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 112mm;
+}
+
+.hdr-right {
+  text-align: right;
+  flex-shrink: 0;
+  padding-top: 3px;
+}
+
+.contact-line {
+  font-size: 7.5pt;
+  color: var(--hdr-contact);
+  line-height: 1.76;
+  display: block;
+  white-space: nowrap;
+}
+
+/* ─── Body ──────────────────────────────────────────────────────────────── */
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ─── Main column — left, 65% ───────────────────────────────────────────── */
+.col-main {
+  width: 65%;
+  padding: 13px 16px 8px 24px;
+  border-right: 1px solid var(--divider);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ─── Sidebar — right, 35% ──────────────────────────────────────────────── */
+.col-side {
+  width: 35%;
+  padding: 13px 20px 8px 17px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ─── Section title ─────────────────────────────────────────────────────────
+   Tiny uppercase with generous letter-spacing — the hallmark of a
+   well-crafted executive CV. Accent color marks hierarchy without shouting. */
+.sec-title {
+  display: block;
+  font-size: 6pt;
+  font-weight: 700;
+  letter-spacing: 1.8px;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding-bottom: 3px;
+  border-bottom: 0.75px solid var(--divider);
+  margin-bottom: 7px;
+}
+
+/* ─── Main sections ─────────────────────────────────────────────────────── */
+.main-sec {
+  flex-shrink: 0;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+/* ─── Professional Summary ──────────────────────────────────────────────── */
+.summary-text {
+  font-size: 8.5pt;
+  color: var(--ink-2);
+  line-height: 1.52;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+}
+
+/* ─── Experience entries ────────────────────────────────────────────────── */
+.exp-entry {
+  margin-bottom: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.entry-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.entry-meta { flex: 1; min-width: 0; overflow: hidden; }
+
+.entry-role {
+  display: block;
+  font-size: 9.5pt;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.entry-company {
+  display: block;
+  font-size: 8pt;
+  font-weight: 400;
+  color: var(--muted);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 0.5px;
+}
+
+.entry-dates {
+  font-size: 7.5pt;
+  font-weight: 400;
+  color: var(--faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding-top: 1px;
+  letter-spacing: 0.1px;
+}
+
+.bullets {
+  margin-top: 3px;
+  padding-left: 10px;
+  overflow: hidden;
+}
+
+.bullets li {
+  font-size: 8pt;
+  color: var(--ink-2);
+  line-height: 1.45;
+  margin-bottom: 1.5px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* ─── Education entries ─────────────────────────────────────────────────── */
+.edu-entry {
+  margin-bottom: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.edu-degree {
+  display: block;
+  font-size: 9pt;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edu-institution {
+  display: block;
+  font-size: 8pt;
+  font-weight: 400;
+  color: var(--muted);
+  font-style: italic;
+  margin-top: 0.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edu-honors {
+  display: block;
+  font-size: 7.5pt;
+  font-weight: 500;
+  color: var(--accent);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edu-coursework {
+  display: block;
+  font-size: 7.5pt;
+  color: var(--faint);
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─── Sidebar sections ──────────────────────────────────────────────────── */
+.side-sec {
+  flex-shrink: 0;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+/* ─── Skills ────────────────────────────────────────────────────────────── */
+.skill-cat {
+  margin-bottom: 5px;
+  overflow: hidden;
+}
+
+.skill-cat-label {
+  font-size: 7pt;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 3px;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skill-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2.5px 3px;
+  overflow: hidden;
+  max-height: 5em;
+}
+
+/* Modern soft-blue pill — colored but subtle, ATS-safe plain text inside */
+.skill-tag {
+  background: var(--tag-bg);
+  color: var(--tag-color);
+  border: 0.75px solid var(--tag-border);
+  font-size: 6.5pt;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  line-height: 1.5;
+  max-width: 100%;
+}
+
+/* ─── Languages ─────────────────────────────────────────────────────────── */
+.lang-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
+  margin-bottom: 3px;
+  overflow: hidden;
+}
+
+.lang-name {
+  font-size: 8pt;
+  font-weight: 600;
+  color: var(--ink-2);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.lang-level {
+  font-size: 7.5pt;
+  color: var(--faint);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── Military ──────────────────────────────────────────────────────────── */
+.mil-role {
+  display: block;
+  font-size: 8.5pt;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mil-unit {
+  display: block;
+  font-size: 8pt;
+  font-weight: 400;
+  color: var(--muted);
+  font-style: italic;
+  margin-top: 0.5px;
+}
+
+/* ─── Volunteering ──────────────────────────────────────────────────────── */
+.vol-text {
+  font-size: 8pt;
+  color: var(--ink-2);
+  line-height: 1.48;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+}
+
+/* ─── Utility ───────────────────────────────────────────────────────────── */
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ── Header ── -->
+  <header class="header">
+    <div class="hdr-left">
+      <div class="hdr-name">{{name}}</div>
+      <div class="hdr-title">{{title}}</div>
+    </div>
+    <div class="hdr-right">
+      <span class="contact-line">{{email}}</span>
+      {{phone_line}}
+      <span class="contact-line">{{linkedin}}</span>
+      {{location_line}}
+    </div>
+  </header>
+
+  <!-- ── Body ── -->
+  <div class="body">
+
+    <!-- ── Main column ── -->
+    <div class="col-main">
+
+      <div class="main-sec">
+        <span class="sec-title">Professional Summary</span>
+        <div class="summary-text">{{summary}}</div>
+      </div>
+
+      <div class="main-sec">
+        <span class="sec-title">Experience</span>
+        {{experience_blocks}}
+      </div>
+
+      <div class="main-sec">
+        <span class="sec-title">Education</span>
+        {{education_blocks}}
+      </div>
+
+    </div>
+
+    <!-- ── Sidebar ── -->
+    <div class="col-side">
+      {{skills_section}}
+      {{languages_section}}
+      {{military_section}}
+      {{volunteering_section}}
+    </div>
+
+  </div>
+</div>
+</body>
+</html>

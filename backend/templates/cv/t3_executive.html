@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>{{name}}</title>
+<style>
+@page { size: 210mm 297mm; margin: 0; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --charcoal: #2C2C2C;
+  --ink:      #1A1A1A;
+  --body:     #2E2E2E;
+  --muted:    #5A5A5A;
+  --faint:    #888;
+  --rule:     #D4D4D4;
+  --hdr-strip:#2C2C2C;
+}
+
+html, body {
+  width: 210mm; max-width: 210mm;
+  height: 297mm; max-height: 297mm;
+  overflow: hidden;
+  font-family: Georgia, "Times New Roman", "DejaVu Serif", serif;
+  font-size: 9pt;
+  color: var(--ink);
+  background: #fff;
+  line-height: 1.42;
+}
+
+.page {
+  width: 210mm; height: 297mm;
+  max-height: 297mm;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Header ── */
+.header {
+  padding: 20px 22px 16px;
+  border-bottom: 3px solid var(--hdr-strip);
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.hdr-left { min-width: 0; }
+
+.hdr-name {
+  font-size: 22pt;
+  font-weight: 700;
+  color: var(--charcoal);
+  letter-spacing: -0.2px;
+  line-height: 1.05;
+}
+
+.hdr-title {
+  font-size: 9pt;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--muted);
+  margin-top: 5px;
+  letter-spacing: 0.2px;
+}
+
+.hdr-right { text-align: right; flex-shrink: 0; }
+
+.contact-line {
+  font-size: 8pt;
+  color: var(--muted);
+  display: block;
+  line-height: 1.72;
+}
+
+/* ── Body ── */
+.body {
+  flex: 1;
+  overflow: hidden;
+  padding: 10px 22px 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Section title — bold strip ── */
+.sec-title {
+  display: block;
+  font-size: 7.5pt;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--charcoal);
+  background: #F0F0F0;
+  padding: 3px 6px;
+  margin-bottom: 8px;
+  margin-top: 10px;
+  border-left: 3px solid var(--charcoal);
+}
+
+.main-sec { flex-shrink: 0; margin-bottom: 2px; }
+
+/* ── Summary ── */
+.summary-text {
+  font-size: 9pt;
+  color: var(--body);
+  line-height: 1.54;
+  font-style: italic;
+}
+
+/* ── Experience ── */
+.exp-entry { margin-bottom: 9px; }
+
+.entry-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.entry-meta { flex: 1; min-width: 0; }
+
+.entry-role {
+  display: block;
+  font-size: 9.5pt;
+  font-weight: 700;
+  color: var(--charcoal);
+}
+
+.entry-company {
+  display: block;
+  font-size: 8.5pt;
+  color: var(--muted);
+  font-style: italic;
+  margin-top: 0.5px;
+}
+
+.entry-dates {
+  font-size: 8pt;
+  color: var(--faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.bullets { margin-top: 4px; padding-left: 14px; }
+
+.bullets li {
+  font-size: 8.5pt;
+  color: var(--body);
+  line-height: 1.48;
+  margin-bottom: 2px;
+  list-style: square;
+}
+
+/* ── Education ── */
+.edu-entry { margin-bottom: 8px; }
+
+.edu-degree {
+  display: block;
+  font-size: 9.5pt;
+  font-weight: 700;
+  color: var(--charcoal);
+}
+
+.edu-institution {
+  display: block;
+  font-size: 8.5pt;
+  color: var(--muted);
+  font-style: italic;
+  margin-top: 0.5px;
+}
+
+.edu-honors {
+  display: block;
+  font-size: 8pt;
+  font-weight: 600;
+  color: var(--charcoal);
+  margin-top: 2px;
+}
+
+.edu-coursework {
+  display: block;
+  font-size: 7.5pt;
+  color: var(--faint);
+  margin-top: 1px;
+}
+
+/* ── Side sections as full-width blocks ── */
+.side-sec { flex-shrink: 0; margin-bottom: 8px; }
+
+/* ── Skills ── */
+.skill-cat { margin-bottom: 5px; }
+
+.skill-cat-label {
+  font-size: 8.5pt;
+  font-weight: 700;
+  color: var(--charcoal);
+  display: inline;
+}
+
+.skill-cat-label::after { content: ": "; }
+
+.skill-tags { display: inline; }
+
+.skill-tag {
+  font-size: 8.5pt;
+  color: var(--body);
+  display: inline;
+}
+
+.skill-tag::after { content: " · "; color: var(--faint); }
+.skill-tag:last-child::after { content: ""; }
+
+/* ── Languages ── */
+.lang-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 3px;
+}
+
+.lang-name { font-size: 9pt; font-weight: 700; color: var(--charcoal); }
+.lang-level { font-size: 8.5pt; color: var(--muted); font-style: italic; }
+
+/* ── Military ── */
+.mil-role { display: inline; font-size: 9pt; font-weight: 700; color: var(--charcoal); }
+.mil-unit { display: inline; font-size: 8.5pt; font-style: italic; color: var(--muted); }
+.mil-unit::before { content: " — "; }
+
+/* ── Volunteering ── */
+.vol-text { font-size: 8.5pt; color: var(--body); line-height: 1.50; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="header">
+    <div class="hdr-left">
+      <div class="hdr-name">{{name}}</div>
+      <div class="hdr-title">{{title}}</div>
+    </div>
+    <div class="hdr-right">
+      <span class="contact-line">{{email}}</span>
+      {{phone_line}}
+      <span class="contact-line">{{linkedin}}</span>
+      {{location_line}}
+    </div>
+  </header>
+
+  <div class="body">
+    <div class="main-sec">
+      <span class="sec-title">Professional Summary</span>
+      <div class="summary-text">{{summary}}</div>
+    </div>
+
+    <div class="main-sec">
+      <span class="sec-title">Experience</span>
+      {{experience_blocks}}
+    </div>
+
+    <div class="main-sec">
+      <span class="sec-title">Education</span>
+      {{education_blocks}}
+    </div>
+
+    {{skills_section}}
+    {{languages_section}}
+    {{military_section}}
+    {{volunteering_section}}
+  </div>
+
+</div>
+
+<script>
+/* Dynamic font-scaling: shrink html font-size in 0.25pt steps until the
+   page content fits within A4 height (297mm ≈ body.clientHeight).
+   Minimum font size is 9pt to keep text legally readable.             */
+(function () {
+  var MIN_PT  = 9;
+  var html    = document.documentElement;
+  var page    = document.querySelector('.body');
+  if (!page) return;
+  var base    = parseFloat(getComputedStyle(html).fontSize) || 9;
+  var current = base;
+  while (page.scrollHeight > page.clientHeight && current > MIN_PT) {
+    current = Math.max(MIN_PT, current - 0.25);
+    html.style.fontSize = current + 'pt';
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,142 @@
+import type { Dict } from './types'
+
+export const en = {
+  landing: {
+    nav: {
+      sign_in:     'Sign in',
+      get_started: 'Get started free',
+    },
+    hero: {
+      eyebrow:        'AI-Powered Job Search · 24/7 Autonomous',
+      h1_line1:       'Stop sending resumes into the void.',
+      h1_line2:       'Get interviews.',
+      sub:            'JobApply scans 24/7, pinpoints the exact gaps between your profile and every job, and generates a tailored, ATS-safe resume in one click. You land the interview, not the rejection.',
+      cta_primary:    'Start for free',
+      cta_secondary:  'See how it works',
+      no_credit_card: 'No credit card required · Cancel anytime',
+    },
+    social_proof: {
+      heading: 'By the numbers',
+      stats: [
+        { num: '10,000+', label: 'CVs tailored'          },
+        { num: '95%',     label: 'Interview rate'        },
+        { num: '< 10s',   label: 'Average CV turnaround' },
+        { num: '24/7',    label: 'Autonomous scanning'   },
+      ],
+    },
+    section_a: {
+      step:  'Step 01: Discover',
+      h2_l1: 'Your agent works',
+      h2_l2: 'while you sleep',
+      body:  'Our AI agent scans LinkedIn, Glassdoor, and company career pages every hour, returning only the roles that genuinely fit, ranked by your personal match score.',
+      bullets: [
+        'Searches multiple sources simultaneously',
+        'Filters duplicates and irrelevant postings',
+        'Refreshes your feed every hour automatically',
+      ],
+    },
+    section_b: {
+      step:  'Step 02: Analyse',
+      h2_l1: 'See exactly what\'s missing',
+      h2_l2: 'before you apply',
+      body:  'Our ATS engine dissects every job description and compares it against your profile. You get a 0-100 score and a clear breakdown: what\'s present, what\'s missing, and what matters most.',
+      bullets: [
+        'Semantic analysis, not just exact keyword matching',
+        'Scores management depth and seniority trajectory',
+        'Detects prior-employer signals for a higher match floor',
+      ],
+    },
+    section_c: {
+      step:  'Step 03: Tailor',
+      h2_l1: 'A role-specific resume',
+      h2_l2: 'in one click',
+      body:  'AI bridges the gaps and rewrites your CV, preserving your voice, weaving in the missing keywords, and producing a perfectly formatted, ATS-safe PDF ready to submit.',
+      bullets: [
+        'Three ATS-safe templates to choose from',
+        'Live editor for manual tweaks before export',
+        'High-quality PDF export in under 10 seconds',
+      ],
+    },
+    bento: {
+      eyebrow: 'Everything you need',
+      h2_l1:   'The full toolkit for a serious',
+      h2_l2:   'job search',
+      cards: [
+        { title: 'Complete Privacy',      body: 'Your data is never sold or used for advertising. You own it, always.' },
+        { title: 'Lightning Fast',        body: 'Full job analysis in 3 seconds. Tailored CV generated in under 10 seconds.' },
+        { title: 'Multi-Platform',        body: 'LinkedIn, Glassdoor, company sites, and more. All in one feed.' },
+        { title: '1-Click Cover Letter',  body: 'AI drafts a role-specific cover letter in your voice, every time.' },
+        { title: 'Application Tracker',  body: 'Track every submission, status, and follow-up in one clean view.' },
+        { title: 'Master Profile',        body: 'Save your experience, skills, and achievements once. JobApply adapts them to every role automatically.' },
+      ],
+    },
+    cta_final: {
+      h2:     'Ready to stop guessing?',
+      body:   'Join thousands of candidates who land more interviews with less effort. Start free, no credit card required.',
+      button: 'Get started for free',
+    },
+    footer: {
+      cols: [
+        { heading: 'Product',   links: ['Job Scanning', 'ATS Analysis', 'CV Tailoring', 'Application Tracker'] },
+        { heading: 'Company',   links: ['About', 'Blog', 'Careers', 'Contact'] },
+        { heading: 'Resources', links: ['Job Search Guide', 'CV Templates', 'Market Trends', 'FAQ'] },
+        { heading: 'Legal',     links: ['Terms of Use', 'Privacy Policy', 'Cookies', 'Accessibility'] },
+      ],
+      copyright: 'All rights reserved.',
+    },
+  },
+
+  login: {
+    left: {
+      quote_l1: 'While you sleep,',
+      quote_l2: 'our agents work.',
+      sub:      'Role-specific CVs. Precise ATS scores before you apply. Matches waiting when you wake up.',
+      metrics: [
+        { value: '24/7',    label: 'Autonomous scanning'  },
+        { value: '1-Click', label: 'CV Tailoring'         },
+        { value: '100%',    label: 'ATS-Safe'             },
+      ],
+    },
+    card: {
+      welcome_back:          'Welcome back',
+      create_account_title:  'Create your account',
+      sign_in_sub:           'Sign in to your JobApply workspace.',
+      sign_up_sub:           'Start your AI-powered job search today.',
+      continue_google:       'Continue with Google',
+      redirecting:           'Redirecting...',
+      or:                    'or',
+      full_name_label:       'Full Name',
+      full_name_placeholder: 'e.g. Ron Morim',
+      email_label:           'Email',
+      password_label:        'Password',
+      show_password:         'Show password',
+      hide_password:         'Hide password',
+      sign_in_btn:           'Sign in',
+      signing_in:            'Signing in...',
+      create_account_btn:    'Create account',
+      creating_account:      'Creating account...',
+      name_required:         'Please enter your full name',
+      stronger_password:     'Please choose a stronger password',
+      no_account:            "Don't have an account? ",
+      have_account:          'Already have an account? ',
+      sign_up_link:          'Sign up',
+      sign_in_link:          'Sign in',
+      strength_labels:       ['Too short', 'Weak', 'Medium', 'Strong', 'Very strong'],
+      strength_hint:         'Add numbers, uppercase letters, and symbols',
+    },
+  },
+
+  mockup: {
+    strong_match:   'Strong Match',
+    ats_gap_title:  'ATS Keyword Gap',
+    missing_prefix: 'Missing from LinkedIn (3):',
+    missing_suffix: 'add to your Skills section',
+    present_prefix: 'Already in your profile (5) ✓',
+    tailored_title: 'Tailored CV Preview',
+    ai_written_sub: 'AI-written · single-page A4',
+    missing_kw:     'Missing keywords',
+    cv_copilot:     'CV Copilot',
+    auto_refreshes: 'Auto-refreshes every hour · 3 new matches since yesterday',
+    coverage_label: 'Senior PM · Fiverr',
+  },
+} satisfies Dict

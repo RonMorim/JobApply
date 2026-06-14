@@ -1,0 +1,499 @@
+import type { ApiAgentStatus, ApiJobMatch, AnalyzeRequest, AnalyzeResponse, MatchScoreResult, ApiFeedJob, RefreshResponse, BackfillResponse, FetchJdResponse, JobStatus, VerifyChatEntry, VerifyChatResponse, TailorBriefResponse, OutreachRequest, OutreachResponse, HeadhunterRequest, AtsKeywordsResponse, InterviewSession, VerificationResult, CrmBoard, MarkAppliedResponse, JobAnalysisState } from './apiTypes'
+import type { Job } from './data'
+
+// Empty base → all requests are relative (/api/...) and are proxied to
+// FastAPI by the rewrites rule in next.config.mjs. Set NEXT_PUBLIC_API_URL
+// only when you need to bypass the proxy (e.g. hitting a staging server).
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? ''
+
+// ── Auth token ────────────────────────────────────────────────────────────────
+// Module-level variable so it persists across re-renders.
+// AuthContext calls setAuthToken() when the Supabase session changes.
+let _authToken: string | null = null
+
+export function setAuthToken(token: string | null): void {
+  _authToken = token
+}
+
+function _authHeaders(): Record<string, string> {
+  return _authToken ? { Authorization: `Bearer ${_authToken}` } : {}
+}
+
+/** Public accessor for components that call fetch() directly outside api.ts. */
+export function getAuthHeaders(): Record<string, string> {
+  return _authHeaders()
+}
+
+// ── Auth error handler ────────────────────────────────────────────────────────
+// AuthContext wires this up so any 401 or 503 from the backend triggers an
+// immediate sign-out and clears the stale session from local storage.
+// Using a callback (rather than importing AuthContext directly) keeps this
+// module free of React dependencies.
+let _onAuthError: (() => void) | null = null
+
+export function setAuthErrorHandler(handler: () => void): void {
+  _onAuthError = handler
+}
+
+/** Call on every non-ok response; fires the sign-out callback for auth errors. */
+function _handleHttpError(res: Response, path: string): never {
+  if (res.status === 401 || res.status === 503) {
+    _onAuthError?.()
+  }
+  throw new Error(`${res.status} ${res.statusText} — ${path}`)
+}
+
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    cache:   'no-store',
+    headers: _authHeaders(),
+  })
+  if (!res.ok) _handleHttpError(res, path)
+  return res.json() as Promise<T>
+}
+
+/** POST with no request body — for endpoints that take only query params. */
+async function postEmpty<TRes>(path: string): Promise<TRes> {
+  const res = await fetch(`${BASE}${path}`, {
+    method:  'POST',
+    headers: _authHeaders(),
+  })
+  if (!res.ok) _handleHttpError(res, path)
+  return res.json() as Promise<TRes>
+}
+
+async function post<TBody, TRes>(path: string, body: TBody, timeoutMs?: number): Promise<TRes> {
+  const controller = timeoutMs ? new AbortController() : undefined
+  const timer = controller
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : undefined
+
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body:    JSON.stringify(body),
+      signal:  controller?.signal,
+    })
+    if (!res.ok) _handleHttpError(res, path)
+    return res.json() as Promise<TRes>
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('Request timed out — the server is taking longer than expected. Please try again.')
+    }
+    throw err
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+async function patch<TBody, TRes>(path: string, body: TBody): Promise<TRes> {
+  const res = await fetch(`${BASE}${path}`, {
+    method:  'PATCH',
+    headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+    body:    JSON.stringify(body),
+  })
+  if (!res.ok) _handleHttpError(res, path)
+  return res.json() as Promise<TRes>
+}
+
+export async function fetchAgents(): Promise<ApiAgentStatus[]> {
+  return get<ApiAgentStatus[]>('/api/agents/')
+}
+
+export interface RunAgentResponse {
+  agent_id:  string
+  state:     string
+  triggered: boolean
+}
+
+export async function runAgent(agentId: string): Promise<RunAgentResponse> {
+  return post<Record<string, never>, RunAgentResponse>(`/api/agents/${agentId}/run`, {})
+}
+
+// Triggers the full sequential pipeline: s1 → s2 → s3 → s4 in one shot.
+export interface SyncPipelineResponse {
+  triggered: boolean
+  state?:    string
+  reason?:   string
+}
+
+export async function syncPipeline(): Promise<SyncPipelineResponse> {
+  return post<Record<string, never>, SyncPipelineResponse>('/api/agents/sync', {})
+}
+
+export async function fetchJobs(
+  filter = 'all',
+  sort   = 'match',
+): Promise<ApiJobMatch[]> {
+  return get<ApiJobMatch[]>(`/api/jobs/?filter=${filter}&sort=${sort}`)
+}
+
+export async function startAnalysis(url: string): Promise<ApiFeedJob> {
+  return post<AnalyzeRequest, ApiFeedJob>('/api/jobs/analyze', { url })
+}
+
+export async function fetchTemplates(): Promise<import('./apiTypes').TemplateInfo[]> {
+  const data = await get<{ templates: import('./apiTypes').TemplateInfo[] }>('/api/resumes/templates')
+  return data.templates
+}
+
+export async function renderPdf(cvData: Record<string, unknown>, templateId: string): Promise<string> {
+  const data = await post<object, { pdf_b64: string }>('/api/resumes/render-pdf', {
+    cv_data: cvData, template_id: templateId,
+  })
+  return data.pdf_b64
+}
+
+export interface TailorOkResponse {
+  status:             string
+  cv_data:            Record<string, unknown>
+  pdf_b64:            string | null
+  match_score:        MatchScoreResult | null
+  preferred_template: string
+}
+
+export async function fetchCachedCV(jobId: string): Promise<TailorOkResponse | null> {
+  const res = await fetch(`${BASE}/api/resumes/cached/${jobId}`, { cache: 'no-store' })
+  if (res.status === 204 || !res.ok) return null
+  return res.json() as Promise<TailorOkResponse>
+}
+
+export async function fetchMatchScore(
+  jobId: string,
+  cvData: Record<string, unknown>,
+  llmValidation = false,
+): Promise<import('./apiTypes').MatchScoreResult> {
+  return post('/api/resumes/match-score', {
+    job_id: jobId, cv_data: cvData, llm_validation: llmValidation,
+  })
+}
+
+// ── Feed API ──────────────────────────────────────────────────────────────────
+
+/**
+ * User preference filters forwarded to the feed endpoint.
+ * Only affects the Matches page — Analytics always uses raw data.
+ */
+export interface FeedPreferences {
+  /** Server-side: hide jobs whose match_score is below this floor (0 = off) */
+  minScore?:      number
+  /** Client-side: comma-separated "remote|hybrid|onsite"; [] = all */
+  workModes?:     string[]
+  /** Client-side: comma-separated region keys; [] = all */
+  regions?:       string[]
+  /** Client-side: comma-separated "startup|growth|enterprise"; [] = all */
+  companyStages?: string[]
+}
+
+export async function fetchFeedJobs(
+  status?: string,
+  limit  = 100,
+  prefs?: FeedPreferences,
+): Promise<ApiFeedJob[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (status) params.set('status', status)
+  // min_score is applied server-side (simple numeric WHERE clause)
+  if (prefs?.minScore && prefs.minScore > 0) params.set('min_score', String(prefs.minScore))
+  return get<ApiFeedJob[]>(`/api/jobs/feed?${params}`)
+}
+
+export async function refreshFeedScores(): Promise<RefreshResponse> {
+  return post<null, RefreshResponse>('/api/jobs/feed/refresh', null)
+}
+
+export async function forceRefreshAllScores(): Promise<RefreshResponse> {
+  return post<null, RefreshResponse>('/api/jobs/feed/refresh-all', null)
+}
+
+/** Poll the analysis state for a single job. Cheap — returns only why_ron + proxy flag + failure count. */
+export async function fetchJobAnalysis(jobId: string): Promise<JobAnalysisState> {
+  return get<JobAnalysisState>(`/api/jobs/${encodeURIComponent(jobId)}/analysis`)
+}
+
+export async function updateJobStatus(jobId: string, status: JobStatus): Promise<void> {
+  await patch<{ status: JobStatus }, unknown>(`/api/jobs/${jobId}/status`, { status })
+}
+
+/**
+ * Fetch the full JD text for a single job, save it, and trigger a rescore.
+ * Runs synchronously on the server (~1-3 s). Returns the scraped text and
+ * updated match_score so the card can update in place without a full reload.
+ */
+export async function fetchJobJd(jobId: string): Promise<FetchJdResponse> {
+  return post<null, FetchJdResponse>(`/api/jobs/${encodeURIComponent(jobId)}/fetch-jd`, null)
+}
+
+export async function backfillJdText(minScore = 50.0): Promise<BackfillResponse> {
+  const url = `${BASE}/api/jobs/feed/backfill-jd?min_score=${minScore}`
+  console.log('[backfillJdText] POST', url, '— no body, no Content-Type')
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: _authHeaders(),
+    // No body, no Content-Type — endpoint reads min_score from query string only
+  })
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '(unreadable)')
+    console.error('[backfillJdText] failed', res.status, errText)
+    throw new Error(`backfill-jd ${res.status}: ${errText}`)
+  }
+
+  return res.json() as Promise<BackfillResponse>
+}
+
+// ── Truth-check verification (multi-turn chat) ───────────────────────────────
+
+export async function sendVerifyChat(
+  jobId:   string,
+  history: VerifyChatEntry[],
+): Promise<VerifyChatResponse> {
+  return post<object, VerifyChatResponse>(
+    `/api/jobs/${jobId}/verify/chat`,
+    { history },
+  )
+}
+
+/**
+ * Generate (or return cached) a focused CV-tailoring brief for a job.
+ * Calls POST /api/jobs/{job_id}/tailor-cv.
+ * Pass forceRefresh=true to bypass the cache and re-generate.
+ */
+export async function tailorCvForJob(
+  jobId:        string,
+  forceRefresh: boolean = false,
+): Promise<TailorBriefResponse> {
+  const params = forceRefresh ? '?force_refresh=true' : ''
+  return post<null, TailorBriefResponse>(
+    `/api/jobs/${encodeURIComponent(jobId)}/tailor-cv${params}`,
+    null,
+    90_000,
+  )
+}
+
+/**
+ * CV Copilot: apply a natural-language editing instruction to tailored sections.
+ * Calls POST /api/jobs/{job_id}/tailor-cv/edit.
+ */
+export async function editTailoredCv(
+  jobId:       string,
+  sections:    import('./apiTypes').TailoredSection[],
+  instruction: string,
+): Promise<import('./apiTypes').TailorEditResponse> {
+  return post<import('./apiTypes').TailorEditRequest, import('./apiTypes').TailorEditResponse>(
+    `/api/jobs/${encodeURIComponent(jobId)}/tailor-cv/edit`,
+    { sections, instruction },
+    90_000,
+  )
+}
+
+// ── Profile Interview (Conversational Onboarding) ────────────────────────────
+
+/**
+ * Optional context hints the frontend can pass at session start.
+ * The backend reads authoritative data from USER_PROFILE directly,
+ * so these are only used as a fallback (e.g. when profile data is unavailable)
+ * or when a real auth system is wired up in the future.
+ */
+export interface StartInterviewContext {
+  user_name?:    string   // full name or given name
+  current_role?: string   // most recent role + company as a plain string
+  intent?:       string   // optional flow override, e.g. 'optimize_gaps'
+}
+
+export async function startInterview(context?: StartInterviewContext): Promise<InterviewSession> {
+  return post<StartInterviewContext, InterviewSession>(
+    '/api/profile/interview/start',
+    context ?? {},
+  )
+}
+
+export async function sendInterviewMessage(
+  sessionId: string,
+  message:   string,
+): Promise<InterviewSession> {
+  return post<{ session_id: string; message: string }, InterviewSession>(
+    '/api/profile/interview/message',
+    { session_id: sessionId, message },
+  )
+}
+
+export async function getInterviewSession(sessionId: string): Promise<InterviewSession> {
+  return get<InterviewSession>(`/api/profile/interview/${sessionId}`)
+}
+
+/**
+ * Resume an existing interview session.
+ * The backend generates a context-aware "Resume & Status" message summarising
+ * captured data, strengths, gaps, and the next question, then appends it to
+ * the session history.  Returns the updated full session state.
+ */
+export async function resumeInterviewSession(sessionId: string): Promise<InterviewSession> {
+  return post<Record<string, never>, InterviewSession>(
+    `/api/profile/interview/${sessionId}/resume`,
+    {},
+  )
+}
+
+export async function uploadVerificationDocument(
+  sessionId: string,
+  claim:     string,
+  docType:   string,
+  file:      File,
+): Promise<{ verification: VerificationResult; session_id: string }> {
+  const fd = new FormData()
+  fd.append('claim',    claim)
+  fd.append('doc_type', docType)
+  fd.append('file',     file)
+  const res = await fetch(`${BASE}/api/profile/interview/${sessionId}/upload`, {
+    method:  'POST',
+    headers: _authHeaders(),
+    body:    fd,
+  })
+  if (!res.ok) _handleHttpError(res, `/api/profile/interview/${sessionId}/upload`)
+  return res.json()
+}
+
+// ── CV upload & aggregation ───────────────────────────────────────────────────
+
+export interface CvClaimsResult {
+  skills:      string[]
+  experiences: { company: string; role: string; start: string; end: string; summary: string }[]
+  education:   { degree: string; institution: string; years: string }[]
+  summary:     string
+}
+
+export interface CvUploadResponse {
+  status:    string
+  processed: string[]
+  errors:    string[]
+  cv_claims: CvClaimsResult
+}
+
+/**
+ * Upload one or more CV files (PDF/DOCX) for aggregation.
+ * The backend extracts text, deduplicates via LLM, and persists cv_claims
+ * to the user's profile so Jonathan can use them during gap-analysis.
+ */
+export async function uploadCvFiles(files: File[]): Promise<CvUploadResponse> {
+  const fd = new FormData()
+  for (const file of files) {
+    fd.append('files', file)
+  }
+  const res = await fetch(`${BASE}/api/profile/cv-upload`, {
+    method:  'POST',
+    headers: _authHeaders(),
+    body:    fd,
+  })
+  if (!res.ok) _handleHttpError(res, '/api/profile/cv-upload')
+  return res.json()
+}
+
+// ── Outreach message generation ───────────────────────────────────────────────
+
+export async function generateOutreachMessage(req: OutreachRequest): Promise<OutreachResponse> {
+  return post<OutreachRequest, OutreachResponse>('/api/outreach/message', req)
+}
+
+export async function generateHeadhunterMessage(req: HeadhunterRequest): Promise<OutreachResponse> {
+  return post<HeadhunterRequest, OutreachResponse>('/api/outreach/headhunter', req)
+}
+
+// ── CRM Kanban ────────────────────────────────────────────────────────────────
+
+export async function fetchCrmBoard(): Promise<CrmBoard> {
+  return get<CrmBoard>('/api/crm/board')
+}
+
+export interface AppListItem {
+  application_id: string
+  job_id:         string
+  company:        string
+  title:          string
+  status:         string
+  last_update:    string
+  score:          number
+}
+
+export async function fetchApplicationsList(): Promise<AppListItem[]> {
+  return get<AppListItem[]>('/api/applications/')
+}
+
+export async function moveCrmCard(applicationId: string, toStage: string): Promise<void> {
+  await post<object, unknown>('/api/crm/move', {
+    application_id: applicationId,
+    to_stage:       toStage,
+  })
+}
+
+export async function markJobApplied(jobId: string): Promise<MarkAppliedResponse> {
+  return post<object, MarkAppliedResponse>('/api/applications/mark-applied', { job_id: jobId })
+}
+
+// ── Gmail verification code polling ───────────────────────────────────────────
+
+export interface GmailVerificationCodeResponse {
+  code:        string | null
+  captured_at: string | null
+}
+
+export async function fetchGmailVerificationCode(): Promise<GmailVerificationCodeResponse> {
+  return get<GmailVerificationCodeResponse>('/api/settings/gmail-verification-code')
+}
+
+// ── Analytics ─────────────────────────────────────────────────────────────────
+
+export interface AnalyticsSummary {
+  total_applications:        number
+  active_processes:          number
+  interview_conversion_rate: number
+  funnel_stages:             Array<{ stage: string; count: number }>
+  top_companies:             Array<{ company: string; count: number }>
+  top_keywords:              Array<{ keyword: string; count: number }>
+}
+
+export async function fetchAnalyticsSummary(): Promise<AnalyticsSummary> {
+  return get<AnalyticsSummary>('/api/analytics/summary')
+}
+
+// ── ATS keyword extraction ────────────────────────────────────────────────────
+
+export async function fetchAtsKeywords(jobId: string): Promise<AtsKeywordsResponse> {
+  return post<Record<string, never>, AtsKeywordsResponse>(`/api/jobs/${jobId}/ats-keywords`, {})
+}
+
+// ── LinkedIn scraper status ───────────────────────────────────────────────────
+
+export interface ScraperStatus {
+  status:        'ok' | 'suspicious' | 'BLOCKED'
+  blocked_at:    string | null
+  cookie_status: string | null
+}
+
+export async function fetchScraperStatus(): Promise<ScraperStatus> {
+  const res = await fetch(`${BASE}/api/settings/scraper-status`, {
+    headers: getAuthHeaders(),
+    cache:   'no-store',
+  })
+  if (!res.ok) throw new Error(`scraper-status HTTP ${res.status}`)
+  return res.json() as Promise<ScraperStatus>
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Normalise the API shape to the frontend Job type used throughout the UI. */
+export function normaliseJob(m: ApiJobMatch, rank: number): Job {
+  return {
+    id:         m.job_id,
+    title:      m.title,
+    company:    m.company,
+    location:   m.location,
+    postedAt:   m.posted_at,
+    postedRank: rank,
+    score:      m.score,
+    isNew:      m.is_new,
+    reasons:    m.reasons,
+    whyRon:     m.why_ron,
+  }
+}

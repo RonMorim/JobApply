@@ -1,0 +1,26 @@
+# ── Web framework ──────────────────────────────────────────────────────────────
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# ── AI / LLM ───────────────────────────────────────────────────────────────────
+anthropic>=0.25.0
+langgraph>=0.1.0
+
+# ── PDF generation / browser automation ────────────────────────────────────────
+playwright>=1.43.0
+playwright-stealth>=1.0.6
+PyMuPDF>=1.24.0
+
+# ── Database ───────────────────────────────────────────────────────────────────
+sqlalchemy>=2.0.0
+
+# ── HTTP / scraping ────────────────────────────────────────────────────────────
+requests>=2.31.0
+requests-oauthlib>=1.3.0
+httpx>=0.27.0
+beautifulsoup4>=4.12.0
+
+# ── Data / validation ──────────────────────────────────────────────────────────
+pydantic>=2.6.0
+python-dotenv>=1.0.0

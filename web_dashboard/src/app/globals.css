@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens ─────────────────────────────────────────────────────────────
+   Single source of truth for the Intercom-inspired premium design system.
+   All component-level inline styles should reference these vars.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Brand */
+  --ja-primary:        #0D9488;   /* teal-600 — serene, modern, non-corporate  */
+  --ja-primary-hover:  #0F766E;   /* teal-700 — ~5% darker on interactive hover*/
+  --ja-primary-subtle: #F0FDFA;   /* teal-50  — selected states, pill bg       */
+
+  /* Semantic feedback */
+  --ja-success:       #059669;   /* emerald-600                                */
+  --ja-success-subtle:#ECFDF5;   /* emerald-50                                 */
+  --ja-warn:          #D97706;   /* amber-600                                  */
+  --ja-warn-subtle:   #FFFBEB;   /* amber-50                                   */
+  --ja-danger:        #DC2626;   /* red-600                                    */
+  --ja-danger-subtle: #FEF2F2;   /* red-50                                     */
+
+  /* Canvas & surfaces */
+  --ja-bg:            #F8FAFC;   /* slate-50 — page background                 */
+  --ja-surface:       #FFFFFF;   /* card / panel face                          */
+  --ja-surface-hover: #F8FAFC;   /* interactive surface hover                  */
+
+  /* Text */
+  --ja-ink:           #0F172A;   /* slate-900 — primary body copy              */
+  --ja-ink2:          #334155;   /* slate-700 — secondary labels               */
+  --ja-muted:         #64748B;   /* slate-500 — captions, placeholders         */
+  --ja-subtle:        #94A3B8;   /* slate-400 — disabled, ghost text           */
+
+  /* Borders */
+  --ja-line:          #E2E8F0;   /* slate-200 — card borders, dividers         */
+  --ja-line-soft:     #F1F5F9;   /* slate-100 — inner separators               */
+
+  /* Elevation (mirrors tailwind.config.ts boxShadow tokens) */
+  --ja-elevation-1:   0 1px 2px rgba(0,0,0,0.04), 0 1px 4px rgba(0,0,0,0.06);
+  --ja-elevation-2:   0 2px 4px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.08);
+  --ja-floating:      0 4px 6px rgba(0,0,0,0.04), 0 12px 32px rgba(0,0,0,0.12),
+                      0 1px 0px rgba(255,255,255,0.8) inset;
+
+  /* Radius */
+  --ja-radius-sm:     6px;
+  --ja-radius-md:     8px;
+  --ja-radius-lg:     12px;
+  --ja-radius-xl:     16px;
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────────── */
+
+html,
+body {
+  background: var(--ja-bg);
+}
+
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-feature-settings: 'cv11', 'ss01';
+  color: var(--ja-ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── Accessibility ─────────────────────────────────────────────────────────── */
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--ja-primary);
+  outline-offset: 2px;
+  border-radius: var(--ja-radius-sm);
+}
+
+input[type='range'] {
+  accent-color: var(--ja-primary);
+}
+
+/* ── Animations ────────────────────────────────────────────────────────────── */
+
+@keyframes ja-ping {
+  75%, 100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@keyframes ja-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+
+@keyframes ja-fade-in-up {
+  from { opacity: 0; transform: translateY(28px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+
+.ja-animate-section {
+  opacity: 0;
+  animation: ja-fade-in-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.ja-animate-section.ja-visible {
+  opacity: 1;
+}
+
+/* ── Scrollbars ────────────────────────────────────────────────────────────── */
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--ja-line);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ja-muted);
+  background-clip: content-box;
+}

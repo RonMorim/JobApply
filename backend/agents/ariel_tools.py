@@ -1,0 +1,516 @@
+"""
+Ariel Tool Definitions and Execution Handlers
+==============================================
+
+This module owns everything the Ariel agent needs to perform No-UI CRUD
+operations against the master_profiles table.
+
+Two layers are exposed:
+
+  ARIEL_TOOLS
+      A list of Anthropic-compatible tool definitions (JSON Schema) that is
+      passed verbatim to the `tools=` parameter of an Anthropic Messages API
+      call.  Ariel uses these to decide when and how to update the user's
+      master profile during a conversation.
+
+  execute_tool(tool_name, tool_input, user_id, db_session)
+      Dispatches a tool call returned by the model to the correct handler.
+      Each handler validates its input, applies the mutation to the DB, and
+      returns a plain-text result string that is fed back to the model as a
+      tool_result content block.
+
+Design rules
+------------
+• All DB writes are scoped to the authenticated user_id — never touch another
+  user's row.
+• Handlers are idempotent where possible (upsert semantics).
+• No handler raises; they return a descriptive error string on failure so the
+  model can surface a friendly message instead of crashing.
+• The finalize_onboarding tool is the *only* path that sets
+  onboarding_status = 'complete'.  No other code should modify that field.
+"""
+from __future__ import annotations
+
+import copy
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from backend.services.db import MasterProfileRow
+
+logger = logging.getLogger(__name__)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _empty_master_profile() -> dict:
+    """Return the canonical empty master_profile structure."""
+    return {
+        "professional_summary": "",
+        "experience":   [],
+        "skills":       [],
+        "education":    [],
+        "career_goals": {
+            "target_roles":        [],
+            "preferred_locations": [],
+            "work_environment":    "any",
+            "notes":               "",
+        },
+    }
+
+
+def _get_or_create_row(user_id: str, session: Session) -> MasterProfileRow:
+    """
+    Return the MasterProfileRow for user_id, creating it if absent.
+    The caller is responsible for committing the session.
+    """
+    row = session.get(MasterProfileRow, user_id)
+    if row is None:
+        row = MasterProfileRow(
+            user_id           = user_id,
+            onboarding_status = "incomplete",
+            master_profile    = _empty_master_profile(),
+            created_at        = _now_iso(),
+            updated_at        = _now_iso(),
+        )
+        session.add(row)
+    return row
+
+
+# ── Tool Definitions (Anthropic JSON Schema format) ───────────────────────────
+
+ARIEL_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "update_experience",
+        "description": (
+            "Add a new role to the user's work history, or update an existing one "
+            "if the company and role already appear in their profile. "
+            "Call this whenever the user shares details about a past or current job."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "company": {
+                    "type": "string",
+                    "description": "Full legal or common name of the employer.",
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Job title held at this employer.",
+                },
+                "start": {
+                    "type": "string",
+                    "description": "Start month/year in YYYY-MM format (e.g. '2021-03'). "
+                                   "Use the closest approximation if only a year is known.",
+                },
+                "end": {
+                    "type": "string",
+                    "description": "End month/year in YYYY-MM format, or the string 'present' "
+                                   "if this is the user's current role.",
+                },
+                "bullets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Achievement or responsibility bullets for this role. "
+                                   "Write in first-person, past tense for past roles "
+                                   "and present tense for current ones. "
+                                   "Each bullet should be a single concise sentence.",
+                },
+            },
+            "required": ["company", "role", "start", "end", "bullets"],
+        },
+    },
+    {
+        "name": "update_skills",
+        "description": (
+            "Add or remove skills from the user's skills list. "
+            "Call this when the user mentions technologies, tools, methodologies, "
+            "or soft skills they possess or explicitly says they do not have."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "add": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Skills to add. Normalise to title-case (e.g. 'React', 'SQL', "
+                                   "'Product Strategy'). Deduplicate against what's already stored.",
+                },
+                "remove": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Skills to remove (exact match, case-insensitive).",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "update_career_goals",
+        "description": (
+            "Record the user's career preferences, target roles, and desired work environment. "
+            "Call this when the user states what kind of job they are looking for, "
+            "where they want to work, or any other forward-looking career preference."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target_roles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Job titles or role types the user is targeting "
+                                   "(e.g. ['Head of Product', 'Senior PM']).",
+                },
+                "preferred_locations": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Cities, regions, or countries the user prefers "
+                                   "(e.g. ['Tel Aviv', 'Remote']).",
+                },
+                "work_environment": {
+                    "type": "string",
+                    "enum": ["remote", "hybrid", "onsite", "any"],
+                    "description": "Preferred work arrangement.",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Any free-form career goal context that doesn't fit "
+                                   "the structured fields above (e.g. industry preferences, "
+                                   "salary expectations, company-size preferences).",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "finalize_onboarding",
+        "description": (
+            "Mark the user's onboarding as complete. "
+            "Call this ONLY when the user explicitly states they have no more background "
+            "information to add — for example: 'That's everything', 'I think we're done', "
+            "'Nothing else to add'. "
+            "Do NOT call this speculatively or mid-conversation. "
+            "After this call, onboarding_status will be set to 'complete' and the "
+            "full profile will be unlocked for the matching and tailoring pipeline."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "confirmation_phrase": {
+                    "type": "string",
+                    "description": "The exact phrase or sentence the user used to confirm "
+                                   "they are done providing information.",
+                },
+            },
+            "required": ["confirmation_phrase"],
+        },
+    },
+]
+
+
+# ── Execution Handlers ────────────────────────────────────────────────────────
+
+def _handle_update_experience(
+    tool_input: dict[str, Any],
+    user_id:    str,
+    session:    Session,
+) -> str:
+    """
+    Upsert a role in master_profile["experience"].
+
+    Match is by (company, role) — case-insensitive.  If found, the existing
+    entry is replaced.  If not found, the new entry is appended.
+    Preserves all other experience entries.
+    """
+    company = (tool_input.get("company") or "").strip()
+    role    = (tool_input.get("role")    or "").strip()
+    start   = (tool_input.get("start")   or "").strip()
+    end     = (tool_input.get("end")     or "").strip()
+    bullets = tool_input.get("bullets") or []
+
+    if not company or not role:
+        return "error: 'company' and 'role' are required fields."
+
+    if not isinstance(bullets, list):
+        return "error: 'bullets' must be an array of strings."
+
+    bullets = [str(b).strip() for b in bullets if str(b).strip()]
+
+    try:
+        row     = _get_or_create_row(user_id, session)
+        profile = copy.deepcopy(row.master_profile or _empty_master_profile())
+
+        experience = profile.setdefault("experience", [])
+
+        # Find existing entry by case-insensitive (company, role) match
+        match_idx = next(
+            (i for i, e in enumerate(experience)
+             if e.get("company", "").lower() == company.lower()
+             and e.get("role",    "").lower() == role.lower()),
+            None,
+        )
+
+        entry = {
+            "company": company,
+            "role":    role,
+            "start":   start,
+            "end":     end,
+            "bullets": bullets,
+        }
+
+        if match_idx is not None:
+            experience[match_idx] = entry
+            action = "updated"
+        else:
+            experience.append(entry)
+            action = "added"
+
+        # Sort experience: current roles first, then by start date descending
+        def _sort_key(e: dict) -> tuple:
+            is_current = 1 if (e.get("end") or "").lower() == "present" else 0
+            return (-is_current, -(int(e.get("start", "0000-00").replace("-", "")) or 0))
+
+        experience.sort(key=_sort_key)
+
+        profile["experience"] = experience
+        row.master_profile    = profile
+        row.updated_at        = _now_iso()
+        session.commit()
+
+        logger.info(
+            "[ariel_tools] update_experience user=%s %s '%s' @ '%s'",
+            user_id, action, role, company,
+        )
+        return (
+            f"Experience entry {action}: '{role}' at '{company}' "
+            f"({start} – {end}) with {len(bullets)} bullet(s)."
+        )
+
+    except Exception as exc:
+        session.rollback()
+        logger.error("[ariel_tools] update_experience failed user=%s: %s", user_id, exc)
+        return f"error: could not save experience — {exc}"
+
+
+def _handle_update_skills(
+    tool_input: dict[str, Any],
+    user_id:    str,
+    session:    Session,
+) -> str:
+    """
+    Add and/or remove skills from master_profile["skills"].
+
+    Additions are deduplicated (case-insensitive).
+    Removals are matched case-insensitively.
+    """
+    to_add    = [str(s).strip() for s in (tool_input.get("add")    or []) if str(s).strip()]
+    to_remove = [str(s).strip() for s in (tool_input.get("remove") or []) if str(s).strip()]
+
+    if not to_add and not to_remove:
+        return "No skills to add or remove were specified."
+
+    try:
+        row     = _get_or_create_row(user_id, session)
+        profile = copy.deepcopy(row.master_profile or _empty_master_profile())
+
+        current: list[str] = profile.setdefault("skills", [])
+        lower_current = {s.lower(): s for s in current}
+
+        added, skipped, removed = [], [], []
+
+        for skill in to_add:
+            if skill.lower() not in lower_current:
+                current.append(skill)
+                lower_current[skill.lower()] = skill
+                added.append(skill)
+            else:
+                skipped.append(skill)
+
+        for skill in to_remove:
+            canonical = lower_current.get(skill.lower())
+            if canonical and canonical in current:
+                current.remove(canonical)
+                del lower_current[skill.lower()]
+                removed.append(canonical)
+
+        current.sort(key=str.lower)
+        profile["skills"] = current
+        row.master_profile = profile
+        row.updated_at     = _now_iso()
+        session.commit()
+
+        logger.info(
+            "[ariel_tools] update_skills user=%s +%d -%d (skipped %d)",
+            user_id, len(added), len(removed), len(skipped),
+        )
+        parts = []
+        if added:   parts.append(f"Added: {', '.join(added)}")
+        if removed: parts.append(f"Removed: {', '.join(removed)}")
+        if skipped: parts.append(f"Already present (skipped): {', '.join(skipped)}")
+        return " | ".join(parts) or "No changes made."
+
+    except Exception as exc:
+        session.rollback()
+        logger.error("[ariel_tools] update_skills failed user=%s: %s", user_id, exc)
+        return f"error: could not save skills — {exc}"
+
+
+def _handle_update_career_goals(
+    tool_input: dict[str, Any],
+    user_id:    str,
+    session:    Session,
+) -> str:
+    """
+    Merge career goal fields into master_profile["career_goals"].
+
+    Only fields present in tool_input are updated; missing keys leave the
+    existing values untouched (partial update semantics).
+    """
+    target_roles        = tool_input.get("target_roles")
+    preferred_locations = tool_input.get("preferred_locations")
+    work_environment    = tool_input.get("work_environment")
+    notes               = tool_input.get("notes")
+
+    if all(v is None for v in [target_roles, preferred_locations, work_environment, notes]):
+        return "No career goal fields were provided."
+
+    try:
+        row     = _get_or_create_row(user_id, session)
+        profile = copy.deepcopy(row.master_profile or _empty_master_profile())
+
+        goals: dict = profile.setdefault("career_goals", {
+            "target_roles": [], "preferred_locations": [],
+            "work_environment": "any", "notes": "",
+        })
+
+        updated_fields = []
+
+        if target_roles is not None and isinstance(target_roles, list):
+            goals["target_roles"] = [str(r).strip() for r in target_roles if str(r).strip()]
+            updated_fields.append("target_roles")
+
+        if preferred_locations is not None and isinstance(preferred_locations, list):
+            goals["preferred_locations"] = [
+                str(loc).strip() for loc in preferred_locations if str(loc).strip()
+            ]
+            updated_fields.append("preferred_locations")
+
+        if work_environment in ("remote", "hybrid", "onsite", "any"):
+            goals["work_environment"] = work_environment
+            updated_fields.append("work_environment")
+
+        if notes is not None:
+            goals["notes"] = str(notes).strip()
+            updated_fields.append("notes")
+
+        profile["career_goals"] = goals
+        row.master_profile      = profile
+        row.updated_at          = _now_iso()
+        session.commit()
+
+        logger.info(
+            "[ariel_tools] update_career_goals user=%s fields=%s",
+            user_id, updated_fields,
+        )
+        return f"Career goals updated: {', '.join(updated_fields)}."
+
+    except Exception as exc:
+        session.rollback()
+        logger.error("[ariel_tools] update_career_goals failed user=%s: %s", user_id, exc)
+        return f"error: could not save career goals — {exc}"
+
+
+def _handle_finalize_onboarding(
+    tool_input: dict[str, Any],
+    user_id:    str,
+    session:    Session,
+) -> str:
+    """
+    Set onboarding_status = 'complete'.
+
+    This is the sole authorised writer of that field.  The handler logs the
+    confirmation phrase for audit purposes and returns a summary of what was
+    collected so the model can relay it to the user.
+    """
+    phrase = (tool_input.get("confirmation_phrase") or "").strip()
+
+    try:
+        row = _get_or_create_row(user_id, session)
+
+        if row.onboarding_status == "complete":
+            return "Onboarding was already marked complete. No change made."
+
+        row.onboarding_status = "complete"
+        row.updated_at        = _now_iso()
+        session.commit()
+
+        profile    = row.master_profile or {}
+        exp_count  = len(profile.get("experience", []))
+        skill_count = len(profile.get("skills", []))
+
+        logger.info(
+            "[ariel_tools] finalize_onboarding user=%s phrase='%s' "
+            "experience=%d skills=%d",
+            user_id, phrase, exp_count, skill_count,
+        )
+        return (
+            f"Onboarding marked complete. "
+            f"Profile summary: {exp_count} experience role(s), "
+            f"{skill_count} skill(s) recorded. "
+            f"The profile is now unlocked for the matching and CV tailoring pipeline."
+        )
+
+    except Exception as exc:
+        session.rollback()
+        logger.error("[ariel_tools] finalize_onboarding failed user=%s: %s", user_id, exc)
+        return f"error: could not finalize onboarding — {exc}"
+
+
+# ── Dispatcher ────────────────────────────────────────────────────────────────
+
+_HANDLERS = {
+    "update_experience":    _handle_update_experience,
+    "update_skills":        _handle_update_skills,
+    "update_career_goals":  _handle_update_career_goals,
+    "finalize_onboarding":  _handle_finalize_onboarding,
+}
+
+
+def execute_tool(
+    tool_name:  str,
+    tool_input: dict[str, Any],
+    user_id:    str,
+    session:    Session,
+) -> str:
+    """
+    Dispatch a model-requested tool call to the correct handler.
+
+    Parameters
+    ----------
+    tool_name   : Name as returned in the model's tool_use content block.
+    tool_input  : Parsed input dict from the model's tool_use content block.
+    user_id     : Authenticated user_id — all writes are scoped to this value.
+    session     : SQLAlchemy Session (caller manages lifecycle / commit scope).
+
+    Returns
+    -------
+    A plain-text result string to feed back as a tool_result content block.
+    Never raises.
+    """
+    handler = _HANDLERS.get(tool_name)
+    if handler is None:
+        logger.warning("[ariel_tools] Unknown tool '%s' requested by model.", tool_name)
+        return f"error: unknown tool '{tool_name}'."
+
+    logger.info(
+        "[ariel_tools] execute_tool tool=%s user=%s input_keys=%s",
+        tool_name, user_id, list(tool_input.keys()),
+    )
+    return handler(tool_input, user_id, session)

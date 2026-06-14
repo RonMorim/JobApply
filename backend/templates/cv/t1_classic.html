@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>{{name}}</title>
+<style>
+@page { size: 210mm 297mm; margin: 0; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 210mm; max-width: 210mm;
+  height: 297mm; max-height: 297mm;
+  overflow: hidden;
+  font-family: "Times New Roman", Georgia, "DejaVu Serif", serif;
+  font-size: 9.5pt;
+  color: #111;
+  background: #fff;
+  line-height: 1.38;
+}
+
+.page {
+  width: 210mm; height: 297mm;
+  max-height: 297mm;
+  overflow: hidden;
+  padding: 18mm 18mm 12mm 18mm;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Header ── */
+.header {
+  text-align: center;
+  border-bottom: 1.5px solid #111;
+  padding-bottom: 7px;
+  margin-bottom: 9px;
+  flex-shrink: 0;
+}
+
+.hdr-name {
+  font-size: 20pt;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1.1;
+}
+
+.hdr-title {
+  font-size: 9pt;
+  font-weight: 400;
+  font-style: italic;
+  color: #333;
+  margin-top: 3px;
+}
+
+.hdr-contact {
+  margin-top: 4px;
+  font-size: 8pt;
+  color: #444;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0 14px;
+}
+
+.contact-line { white-space: nowrap; }
+
+/* ── Section title ── */
+.sec-title {
+  display: block;
+  font-size: 9.5pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  color: #111;
+  border-bottom: 1px solid #111;
+  padding-bottom: 2px;
+  margin-bottom: 7px;
+  margin-top: 11px;
+}
+
+/* ── Scrollable body ── */
+.body { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+
+/* ── Summary ── */
+.summary-text {
+  font-size: 9pt;
+  line-height: 1.50;
+  color: #222;
+  margin-bottom: 2px;
+}
+
+/* ── Experience ── */
+.exp-entry { margin-bottom: 9px; }
+
+.entry-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.entry-meta { flex: 1; min-width: 0; }
+
+.entry-role {
+  display: inline;
+  font-size: 9.5pt;
+  font-weight: 700;
+  color: #111;
+}
+
+.entry-company {
+  display: inline;
+  font-size: 9pt;
+  font-weight: 400;
+  font-style: italic;
+  color: #444;
+}
+
+.entry-company::before { content: " — "; color: #888; }
+
+.entry-dates {
+  font-size: 8.5pt;
+  color: #555;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.bullets {
+  margin-top: 3px;
+  padding-left: 14px;
+  list-style: disc;
+}
+
+.bullets li {
+  font-size: 8.5pt;
+  color: #222;
+  line-height: 1.44;
+  margin-bottom: 2px;
+}
+
+/* ── Education ── */
+.edu-entry { margin-bottom: 8px; }
+
+.edu-degree {
+  display: inline;
+  font-size: 9.5pt;
+  font-weight: 700;
+  color: #111;
+}
+
+.edu-institution {
+  display: inline;
+  font-size: 9pt;
+  font-style: italic;
+  color: #444;
+}
+
+.edu-institution::before { content: " — "; color: #888; }
+
+.edu-honors {
+  display: block;
+  font-size: 8.5pt;
+  font-style: italic;
+  color: #333;
+  margin-top: 1px;
+}
+
+.edu-coursework {
+  display: block;
+  font-size: 8pt;
+  color: #666;
+  margin-top: 1px;
+}
+
+/* ── Side sections rendered as full-width blocks ── */
+.side-sec { margin-bottom: 9px; }
+
+/* ── Skills ── */
+.skill-cat { margin-bottom: 5px; }
+
+.skill-cat-label {
+  font-size: 8.5pt;
+  font-weight: 700;
+  color: #222;
+  display: inline;
+}
+
+.skill-cat-label::after { content: ": "; }
+
+/* Plain inline text — delimiters written by Python, not ::after */
+.skill-items {
+  font-size: 8.5pt;
+  color: #222;
+  display: inline;
+}
+
+/* ── Languages ── */
+.lang-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 3px;
+}
+
+.lang-name { font-size: 9pt; font-weight: 700; color: #111; }
+
+.lang-level { font-size: 8.5pt; color: #555; }
+
+/* ── Military ── */
+.mil-role { display: inline; font-size: 9pt; font-weight: 700; color: #111; }
+.mil-unit { display: inline; font-size: 9pt; font-style: italic; color: #444; }
+.mil-unit::before { content: " — "; color: #888; }
+
+/* ── Volunteering ── */
+.vol-text { font-size: 8.5pt; color: #333; line-height: 1.48; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="header">
+    <div class="hdr-name">{{name}}</div>
+    <div class="hdr-title">{{title}}</div>
+    <div class="hdr-contact">
+      <span class="contact-line">{{email}}</span>
+      {{phone_line}}
+      <span class="contact-line">{{linkedin}}</span>
+      {{location_line}}
+    </div>
+  </header>
+
+  <div class="body">
+    <div class="main-sec">
+      <span class="sec-title">Professional Summary</span>
+      <div class="summary-text">{{summary}}</div>
+    </div>
+
+    <div class="main-sec">
+      <span class="sec-title">Experience</span>
+      {{experience_blocks}}
+    </div>
+
+    <div class="main-sec">
+      <span class="sec-title">Education</span>
+      {{education_blocks}}
+    </div>
+
+    {{skills_section}}
+    {{languages_section}}
+    {{military_section}}
+    {{volunteering_section}}
+  </div>
+
+</div>
+
+<script>
+/* Dynamic font-scaling: shrink html font-size in 0.25pt steps until the
+   page content fits within A4 height (297mm ≈ body.clientHeight).
+   Minimum font size is 9pt to keep text legally readable.             */
+(function () {
+  var MIN_PT  = 9;
+  var html    = document.documentElement;
+  var page    = document.querySelector('.body');
+  if (!page) return;
+  var base    = parseFloat(getComputedStyle(html).fontSize) || 9.5;
+  var current = base;
+  while (page.scrollHeight > page.clientHeight && current > MIN_PT) {
+    current = Math.max(MIN_PT, current - 0.25);
+    html.style.fontSize = current + 'pt';
+  }
+})();
+</script>
+</body>
+</html>

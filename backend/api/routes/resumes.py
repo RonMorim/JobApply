@@ -1,0 +1,1118 @@
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import re
+
+from typing import Optional
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
+
+from backend.services import job_store
+from backend.agents.resume import ResumeAgent
+from backend.agents.tailor import TailorAgent, _inject_static_sections
+from backend.agents.gatekeeper import RevisionGatekeeper
+from backend.agents.copilot import CopilotAgent
+from backend.services.pdf_builder import build_pdf, TEMPLATE_REGISTRY
+from backend.services.supplemental_store import save as save_supplemental
+from backend.services.user_profile import USER_PROFILE, save_personal_field
+from backend.services.match_score_service import (
+    compute_match_score_async,
+    _cv_experience_text,
+    _is_experience_backed,
+)
+from backend.services.master_profile_service import get_cached_answer, merge_answers
+from backend.services.job_store import get_tailored_cv, save_tailored_cv
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# Accepted MIME types and their human-readable labels
+_ALLOWED_FILE_TYPES: dict[str, str] = {
+    "image/jpeg":                "JPEG image",
+    "image/png":                 "PNG image",
+    "image/webp":                "WebP image",
+    "image/gif":                 "GIF image",
+    "application/pdf":           "PDF document",
+    # .docx only — python-docx cannot parse legacy .doc (OLE2 format)
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word document (.docx)",
+}
+
+# application/msword is the legacy .doc format — reject with a helpful message
+_LEGACY_DOC_MIME = "application/msword"
+
+_MAX_FILE_BYTES = 10 * 1024 * 1024   # 10 MB
+
+
+class MissingDataRequest(BaseModel):
+    id: str
+    question: str
+    context: str
+
+
+class ResumeGenerateResponse(BaseModel):
+    html: str
+    missing_data_requests: list[MissingDataRequest]
+    job_id: str
+    layout_variant: str
+
+
+@router.post("/generate", response_model=ResumeGenerateResponse)
+async def generate_resume(
+    job_id: str = Form(...),
+    supplemental_answers_json: str = Form(default="{}"),
+    reference_file: Optional[UploadFile] = File(default=None),
+):
+    """
+    Generate a tailored HTML resume for a job.
+
+    - job_id: ID of a stored JobMatch.
+    - supplemental_answers_json: JSON object mapping question ID → user answer.
+    - reference_file: optional image (jpg/png/webp), PDF, or Word (.docx) whose
+      layout the agent will analyse and mimic.
+    """
+    # ── Load job ──────────────────────────────────────────────────────────────
+    all_jobs = job_store.get_all()
+    job      = next((j for j in all_jobs if j.job_id == job_id), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+
+    # ── Parse supplemental answers ────────────────────────────────────────────
+    try:
+        supplemental: dict[str, str] = json.loads(supplemental_answers_json)
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=422, detail="supplemental_answers_json must be valid JSON.")
+
+    # ── Optional reference file ───────────────────────────────────────────────
+    ref_bytes: Optional[bytes] = None
+    ref_mime:  Optional[str]   = None
+
+    if reference_file and reference_file.filename:
+        mime = (reference_file.content_type or "").lower().strip()
+
+        # Reject legacy .doc with a clear message
+        if mime == _LEGACY_DOC_MIME or reference_file.filename.lower().endswith(".doc"):
+            raise HTTPException(
+                status_code=415,
+                detail=(
+                    "Legacy .doc format is not supported. "
+                    "Please save the file as .docx (Word 2007+) or PDF and re-upload."
+                ),
+            )
+
+        if mime not in _ALLOWED_FILE_TYPES:
+            raise HTTPException(
+                status_code=415,
+                detail=(
+                    f"Unsupported file type '{mime}'. "
+                    f"Allowed: {', '.join(_ALLOWED_FILE_TYPES.values())}."
+                ),
+            )
+
+        raw = await reference_file.read()
+        if len(raw) > _MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="Reference file must be ≤ 10 MB.")
+
+        ref_bytes = raw
+        ref_mime  = mime
+        logger.info(
+            "[resumes] Reference file: %s (%d bytes, %s)",
+            reference_file.filename, len(raw), mime,
+        )
+
+    # ── Run agent ─────────────────────────────────────────────────────────────
+    try:
+        agent                          = ResumeAgent()
+        html, missing_raw, layout_name = await agent.generate(
+            job                  = job,
+            supplemental_answers = supplemental or None,
+            reference_bytes      = ref_bytes,
+            reference_mime       = ref_mime,
+        )
+    except Exception as exc:
+        logger.exception("[resumes] ResumeAgent failed for job %s", job_id)
+        raise HTTPException(status_code=502, detail=f"Resume generation failed: {exc}")
+
+    missing = [
+        MissingDataRequest(
+            id      = item.get("id", f"q{i}"),
+            question= item.get("question", ""),
+            context = item.get("context", ""),
+        )
+        for i, item in enumerate(missing_raw)
+        if isinstance(item, dict)
+    ]
+
+    return ResumeGenerateResponse(
+        html                  = html,
+        missing_data_requests = missing,
+        job_id                = job_id,
+        layout_variant        = layout_name,
+    )
+
+
+# ── Tailor + PDF ──────────────────────────────────────────────────────────────
+
+class TailorRequest(BaseModel):
+    job_id: str
+    # Answers from a previous missing_data round: question_id -> user answer.
+    # Pass on retry so the agent can proceed without re-asking.
+    supplemental_answers: Optional[dict] = None
+    # Set to True to skip any cached CV and force a fresh LLM generation.
+    force: bool = False
+
+
+class TailorResponse(BaseModel):
+    # "ok"           — cv_data and pdf_b64 are populated
+    # "missing_data" — missing_data_requests is populated; pdf_b64 / cv_data are null
+    status:                str
+    cv_data:               Optional[dict] = None
+    pdf_b64:               Optional[str]  = None
+    missing_data_requests: list           = []
+    match_score:           Optional[dict] = None   # MatchScoreResult.as_dict()
+    preferred_template:    str            = "t2_modern"
+
+
+def _build_jd_proxy(job) -> str:
+    """
+    Full JD proxy for the TailorAgent prompt — includes AI analysis fields
+    (why_ron, scoring_rationale, critical_gaps) so the agent understands the
+    gap context.  NOT used for match scoring.
+    """
+    parts = [f"{job.title} at {job.company}"]
+    if job.why_ron:
+        parts.append(job.why_ron)
+    if job.scoring_rationale:
+        parts.append(job.scoring_rationale)
+    if job.detailed_analysis and job.detailed_analysis.critical_gaps:
+        parts.append("Required: " + ", ".join(job.detailed_analysis.critical_gaps))
+    return " ".join(parts)
+
+
+# Negative prefixes the AI matcher emits in critical_gaps.
+# Stripping them recovers the actual employer requirement.
+# e.g. "No experience with Salesforce" → "salesforce"
+_GAP_STRIP_PREFIXES = (
+    "no experience with ", "no documented experience with ",
+    "no experience in ", "no documented experience in ",
+    "no background in ", "no formal background in ",
+    "no direct experience", "no evidence of ",
+    "lacks ", "limited experience with ", "limited experience in ",
+    "no documented ", "not demonstrated: ", "gap: ", "missing: ",
+    "candidate lacks ", "candidate has no ", "candidate does not ",
+    "ron lacks ", "ron has no ", "ron does not ",
+)
+
+
+# Prepositions/articles that can lead the residual after prefix stripping
+# e.g. "no direct experience" + " with X" → skip "with" to get "X"
+_GAP_LEADING_SKIP = frozenset({
+    "with", "in", "of", "for", "by", "on", "at", "a", "an", "the",
+    # category meta-words that can lead the residual after modifier stripping
+    # e.g. "lacks formal background in fintech" → skip "background" + "in" → "fintech"
+    "background", "expertise", "exposure", "familiarity",
+})
+
+# First-token hard rejects — phrase is still a negative/meta statement
+_GAP_FIRST_TOKEN_REJECTS = frozenset({
+    "no", "not", "never", "none", "lacks", "limited", "unclear", "absent",
+})
+
+# Mid-phrase negation cut-points — stop before these so we keep only the subject
+# e.g. "QBRs not mentioned in profile" → take tokens before "not" → "qbrs"
+_GAP_MID_NEGATIONS = frozenset({"not", "without", "never"})
+
+
+# Single-word adjective modifiers the AI inserts between "No" and the skill.
+_GAP_NO_MODIFIERS = frozenset({
+    "explicit", "documented", "formal", "direct", "hands-on",
+    "specific", "relevant", "prior", "previous", "clear", "strong",
+    "dedicated", "significant", "meaningful",
+})
+
+# Words that signal the end of the requirement (qualifier clause begins here).
+_GAP_STOP_WORDS = frozenset({
+    "outside", "beyond", "within", "except", "excluding", "unless",
+    "other", "besides",
+})
+
+# Before-colon labels that are meta-words, not employer requirements.
+# When these appear before the colon, fall through to the prefix-strip path.
+_GAP_COLON_LABEL_REJECTS = frozenset({
+    "missing", "gap", "note", "warning", "issue", "concern",
+    "weakness", "risk", "flag",
+})
+
+
+def _clean_gap_phrase(gap: str) -> str:
+    """
+    Strip AI meta language from a critical_gaps entry and return the
+    underlying employer requirement as 1-3 clean tokens.
+
+    Handles four formats produced by the discovery agent:
+      A) "Category label: no direct ..."  → extract label before colon
+      B) Standard prefix: "No experience with X", "Lacks X", etc.
+      C) "No [adjective] X experience..." → skip "No" + optional modifier
+      D) "X not mentioned in profile"     → cut at mid-phrase negation
+    """
+    s = gap.lower().strip()
+
+    # ── Format A: "Label text: negative statement" ──────────────────────────
+    # e.g. "Telecom domain experience: no direct background"
+    # The text before the colon IS the employer requirement label — use it.
+    # Exception: if the label is itself a meta-word (e.g. "missing:"), fall through.
+    colon = s.find(":")
+    if colon > 3:
+        before = s[:colon].rstrip(".,; ")
+        b_tokens = before.split()
+        if (b_tokens
+                and b_tokens[0] not in _GAP_FIRST_TOKEN_REJECTS
+                and b_tokens[0] not in _GAP_COLON_LABEL_REJECTS):
+            # Digit-led label (e.g. "5-year threshold") is a quantifier, not a skill
+            if b_tokens[0][0].isdigit():
+                return ""
+            while b_tokens and b_tokens[-1] in {
+                "experience", "background", "skill", "skills", "expertise",
+            }:
+                b_tokens.pop()
+            if b_tokens:
+                return " ".join(b_tokens[:3])
+        # If label is rejected, strip it and continue to process after-colon text
+        s = s[colon + 1:].strip()
+
+    # ── Format B: known prefix strip ────────────────────────────────────────
+    stripped = False
+    for prefix in _GAP_STRIP_PREFIXES:
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            stripped = True
+            break
+
+    if not stripped:
+        # ── Format C: "no [modifier] X experience" — no prefix match ────────
+        tokens_c = s.split()
+        if tokens_c and tokens_c[0] in _GAP_FIRST_TOKEN_REJECTS:
+            skip = 1
+            if len(tokens_c) > skip and tokens_c[skip] in _GAP_NO_MODIFIERS:
+                skip += 1
+            s = " ".join(tokens_c[skip:])
+    else:
+        # After a successful prefix strip, also skip a leading modifier word.
+        # e.g. "no documented " + "hands-on Salesforce" → skip "hands-on"
+        tokens_after = s.split()
+        if tokens_after and tokens_after[0] in _GAP_NO_MODIFIERS:
+            s = " ".join(tokens_after[1:])
+
+    s = re.sub(r'\s*\(.*?\)', '', s)   # remove "(not stated)" etc.
+    s = s.rstrip('.,;:()')
+    tokens = s.split()
+
+    # Skip leading prepositions that survived stripping
+    while tokens and tokens[0] in _GAP_LEADING_SKIP:
+        tokens.pop(0)
+
+    # Cut at mid-phrase negation (Format D): ["qbrs", "not", ...] → ["qbrs"]
+    for i, tok in enumerate(tokens):
+        if i > 0 and tok in _GAP_MID_NEGATIONS:
+            tokens = tokens[:i]
+            break
+
+    # Cut at qualifier clauses: "SaaS platform outside ticketing" → "SaaS platform"
+    for i, tok in enumerate(tokens):
+        if i > 0 and tok in _GAP_STOP_WORDS:
+            tokens = tokens[:i]
+            break
+
+    # Cut at linking verbs / conjunctions after position 0.
+    # "onboarding experience is X" → cut at "is" → ["onboarding"]
+    # "renewal negotiations or expansion" → cut at "or" → ["renewal", "negotiations"]
+    _PHRASE_CUT = frozenset({"is", "are", "was", "were", "or", "and"})
+    for i, tok in enumerate(tokens):
+        if i > 0 and tok in _PHRASE_CUT:
+            tokens = tokens[:i]
+            break
+
+    # Drop trailing implied/noise words — multiple passes until stable
+    # "management" intentionally excluded — it's meaningful in "account management",
+    # "contract management", etc. and would corrupt those ATS keywords if stripped.
+    _TRAILING_DROP = {"experience", "background", "skills", "skill", "workflows"}
+    changed = True
+    while changed and tokens:
+        if tokens[-1] in _TRAILING_DROP:
+            tokens.pop()
+        else:
+            changed = False
+
+    if not tokens or len(tokens[0]) < 2:
+        return ""
+    if tokens[0] in _GAP_FIRST_TOKEN_REJECTS:
+        return ""
+    # Reject if first token is a digit-led quantifier (e.g. "5-year", "10+")
+    if tokens[0][0].isdigit():
+        return ""
+    return " ".join(tokens[:3])
+
+
+_GAP_CONJ_SPLIT_RE = re.compile(r'\s+(?:or|and)\s+', re.IGNORECASE)
+
+
+def _extract_gap_terms(gap: str) -> list[str]:
+    """
+    Extract ALL employer requirement terms from one critical_gaps entry.
+
+    Handles compound gaps joined by 'or'/'and':
+      'No experience with account management or valuation'
+        → ['account management', 'valuation']
+      'No experience with Salesforce or HubSpot CRM'
+        → ['salesforce', 'hubspot crm']
+
+    _clean_gap_phrase handles the primary (first) term; this function
+    also captures the conjunction-split tails that the single-pass
+    cleaner discards.
+    """
+    primary = _clean_gap_phrase(gap)
+    terms: list[str] = [primary] if primary else []
+
+    # Isolate the noun portion by stripping the known AI prefix so we can
+    # find the conjunction split point cleanly.
+    noun_part = gap.lower().strip()
+    for prefix in _GAP_STRIP_PREFIXES:
+        if noun_part.startswith(prefix):
+            noun_part = noun_part[len(prefix):]
+            break
+
+    # Handle Format C residual: leading reject word + optional modifier
+    toks = noun_part.split()
+    if toks and toks[0] in _GAP_FIRST_TOKEN_REJECTS:
+        skip = 1
+        if len(toks) > 1 and toks[1] in _GAP_NO_MODIFIERS:
+            skip += 1
+        noun_part = " ".join(toks[skip:])
+
+    # Split at conjunctions to capture secondary requirement terms.
+    # _clean_gap_phrase is safe to call on a bare noun phrase — no prefix
+    # will match and no reject-word will fire, so it returns the phrase as-is
+    # (modulo trailing-noise removal).
+    parts = _GAP_CONJ_SPLIT_RE.split(noun_part)
+    for part in parts[1:]:
+        part = part.strip()
+        if not part:
+            continue
+        term = _clean_gap_phrase(part)
+        if term and term not in terms:
+            terms.append(term)
+
+    return terms
+
+
+def _build_match_proxy(job) -> str:
+    """
+    Clean JD proxy for match scoring — ONLY employer-facing text.
+
+    Priority 1: job.jd_text (raw scraped employer posting).
+      Gives the extractor real employer language to work with.
+
+    Priority 2: Synthetic proxy for legacy jobs (jd_text is None).
+      Takes title + category + requirement terms extracted from critical_gaps
+      by stripping AI meta prefixes.  Formatted as "Required: X, Y, Z"
+      so the Tier 2 keyword extractor in match_score_service handles them.
+
+    NEVER passes why_ron or scoring_rationale as-is — they contain
+    inverted-logic AI assessments ("no experience with...") that corrupt
+    keyword extraction.
+    """
+    if job.jd_text:
+        return f"{job.title} at {job.company}\n{job.jd_text}"
+
+    # Legacy job: no raw JD stored — build a synthetic proxy.
+    parts = [f"{job.title} at {job.company}"]
+    if job.category:
+        parts.append(job.category)
+
+    gap_terms: list[str] = []
+    seen_terms: set[str] = set()
+    if job.detailed_analysis and job.detailed_analysis.critical_gaps:
+        for gap in job.detailed_analysis.critical_gaps[:15]:
+            for term in _extract_gap_terms(gap):
+                if term not in seen_terms:
+                    seen_terms.add(term)
+                    gap_terms.append(term)
+
+    if gap_terms:
+        # "Required: X, Y, Z" is parsed by Tier 2 of _extract_jd_keywords
+        parts.append("Required: " + ", ".join(gap_terms))
+
+    proxy = " ".join(parts)
+    logger.info(
+        "[match_proxy] jd_text=None — synthetic proxy built (%d chars, %d gap terms): %s…",
+        len(proxy), len(gap_terms), proxy[:120],
+    )
+    return proxy
+
+
+@router.post("/tailor", response_model=TailorResponse)
+async def tailor_resume(req: TailorRequest):
+    """
+    Run TailorAgent for a job.
+
+    Returns one of two shapes depending on whether the agent has enough data:
+
+    • status="ok"           — CV generated; cv_data + pdf_b64 populated.
+    • status="missing_data" — Agent needs more info; missing_data_requests
+                              contains questions the frontend must present to
+                              the user.  Call this endpoint again with
+                              supplemental_answers to complete generation.
+    """
+    all_jobs = job_store.get_all()
+    job      = next((j for j in all_jobs if j.job_id == req.job_id), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
+
+    # ── Return cached CV if available and force=False ─────────────────────────
+    if not req.force and not req.supplemental_answers:
+        cached = get_tailored_cv(req.job_id)
+        if cached and cached.get("cv_data"):
+            logger.info(
+                "[resumes/tailor] Cache hit for job %s — returning persisted CV", req.job_id
+            )
+            cached_cv_data = cached["cv_data"]
+            try:
+                cached_pdf = await build_pdf(cached_cv_data, template_id="t2_modern")
+            except Exception as exc:
+                logger.warning("[resumes/tailor] PDF rebuild from cache failed: %s", exc)
+                cached_pdf = None
+            return TailorResponse(
+                status             = "ok",
+                cv_data            = cached_cv_data,
+                pdf_b64            = base64.b64encode(cached_pdf).decode() if cached_pdf else None,
+                match_score        = cached.get("match_score"),
+                preferred_template = "t2_modern",
+            )
+
+    # Persist answers before calling the agent so that even if generation fails
+    # the user's answers are recorded and won't be asked again.
+    # core_* answers (phone, location) update USER_PROFILE["personal"] directly
+    # and are written to personal_overrides.json so they survive restarts.
+    # All other answers go to supplemental_answers.json for JD-gap context.
+    jd_answers: dict = {}
+    if req.supplemental_answers:
+        for qid, answer in req.supplemental_answers.items():
+            if qid.startswith("core_"):
+                # Strip the "core_" prefix to get the profile field name
+                field = qid[len("core_"):]
+                try:
+                    save_personal_field(field, answer)
+                    logger.info(
+                        "[resumes/tailor] Saved core profile field '%s' for job %s",
+                        field, req.job_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[resumes/tailor] Failed to save core profile field '%s'", field
+                    )
+            else:
+                jd_answers[qid] = answer
+
+        if jd_answers:
+            try:
+                n = save_supplemental(jd_answers)
+                if n:
+                    logger.info(
+                        "[resumes/tailor] Persisted %d supplemental answer(s) for job %s",
+                        n, req.job_id,
+                    )
+            except Exception:
+                logger.exception("[resumes/tailor] Failed to persist supplemental answers")
+
+    auto_filled: dict[str, str] = {}
+
+    try:
+        agent  = TailorAgent()
+        result = await agent.tailor(job, supplemental_answers=jd_answers or None)
+    except Exception as exc:
+        logger.exception("[resumes/tailor] TailorAgent failed for job %s", req.job_id)
+        raise HTTPException(status_code=502, detail=f"CV tailoring failed: {exc}")
+
+    # ── Missing data: attempt auto-fill from master profile ───────────────────
+    if result["type"] == "missing_data":
+        requests = result.get("requests", [])
+
+        for item in requests:
+            qid = str(item.get("id", "")).strip()
+            if not qid or qid.startswith("core_"):
+                continue
+            cached = get_cached_answer(qid)
+            if cached:
+                auto_filled[qid] = cached
+
+        if auto_filled:
+            logger.info(
+                "[resumes/tailor] Auto-filling %d answer(s) from master profile for job %s",
+                len(auto_filled), req.job_id,
+            )
+            try:
+                result = await agent.tailor(
+                    job,
+                    supplemental_answers={**jd_answers, **auto_filled},
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[resumes/tailor] TailorAgent (auto-fill retry) failed for job %s", req.job_id
+                )
+                raise HTTPException(status_code=502, detail=f"CV tailoring failed: {exc}")
+
+        # Still missing data after auto-fill attempt (or no hits): return only
+        # the questions that were NOT resolved by the cache.
+        if result["type"] == "missing_data":
+            answered_ids = set(auto_filled) | set(jd_answers)
+            unanswered   = [
+                r for r in result.get("requests", [])
+                if str(r.get("id", "")) not in answered_ids
+            ]
+            return TailorResponse(
+                status                = "missing_data",
+                missing_data_requests = unanswered,
+            )
+
+    # ── CV ready: build PDF ───────────────────────────────────────────────────
+    cv_data = result["cv_data"]
+
+    # Persist all JD answers (user-supplied + auto-filled) to the master profile
+    # so subsequent generations for any job can benefit from the cache.
+    all_answers = {**jd_answers, **auto_filled}
+    if all_answers:
+        try:
+            merge_answers(all_answers)
+        except Exception as exc:
+            logger.warning("[resumes/tailor] merge_answers failed (non-fatal): %s", exc)
+
+    try:
+        pdf_bytes = await build_pdf(cv_data, template_id="t2_modern")
+    except Exception as exc:
+        logger.exception("[resumes/tailor] PDF build failed for job %s", req.job_id)
+        raise HTTPException(status_code=502, detail=f"PDF generation failed: {exc}")
+
+    # ── Compute match score against the freshly generated cv_data ────────────
+    # cv_data is always the just-produced output from TailorAgent — never cached.
+    # jd_proxy is built from raw employer text (job.jd_text) when available,
+    # or from a synthetic proxy derived from critical_gaps for legacy jobs.
+    match_score_dict: Optional[dict] = None
+    score_result = None
+    jd_proxy     = _build_match_proxy(job)
+    try:
+        logger.info(
+            "[resumes/tailor] Scoring: job_id=%s has_raw_jd=%s "
+            "proxy_len=%d cv_bullets=%d",
+            req.job_id,
+            bool(job.jd_text),
+            len(jd_proxy),
+            sum(len(e.get("bullets", [])) for e in cv_data.get("experience", [])),
+        )
+        score_result = await compute_match_score_async(cv_data, jd_proxy, run_llm_validation=False)
+        match_score_dict = score_result.as_dict()
+        logger.info(
+            "[resumes/tailor] Score: total=%d  kw=%.0f/40  skills=%.0f/35  seniority=%.0f/25  "
+            "matched_kw=%d  missing_kw=%d",
+            score_result.total,
+            score_result.keyword_overlap,
+            score_result.skills_alignment,
+            score_result.seniority_alignment,
+            len(score_result.matched_keywords),
+            len(score_result.missing_keywords),
+        )
+    except Exception as exc:
+        logger.warning("[resumes/tailor] Match score failed (non-fatal): %s", exc)
+
+    # ── Auto-refinement: close gap between discovery score and CV ATS score ───
+    # If the CV's ATS score falls more than 8 points below the job's fit score,
+    # the TailorAgent likely dropped critical keywords due to length constraints.
+    # One targeted refinement pass rewrites the weakest bullets to inject them.
+    _GAP_THRESHOLD = 8.0
+    if (
+        score_result is not None
+        and job.score > 0
+        and (job.score - score_result.total) > _GAP_THRESHOLD
+        and score_result.missing_keywords
+    ):
+        logger.info(
+            "[resumes/tailor] Score gap %.1f (job=%.1f  cv=%d) exceeds threshold %.1f — "
+            "triggering refinement pass. Missing: %s",
+            job.score - score_result.total,
+            job.score,
+            score_result.total,
+            _GAP_THRESHOLD,
+            score_result.missing_keywords[:6],
+        )
+        try:
+            refined_data = await agent.refine(
+                cv_data          = cv_data,
+                missing_keywords = score_result.missing_keywords,
+                jd_context       = jd_proxy,
+            )
+            refined_score = await compute_match_score_async(
+                refined_data, jd_proxy, run_llm_validation=False
+            )
+            logger.info(
+                "[resumes/tailor] Refinement result: total=%d  (was %d  delta=%+d)",
+                refined_score.total,
+                score_result.total,
+                refined_score.total - score_result.total,
+            )
+            if refined_score.total >= score_result.total:
+                # Adopt refinement — rebuild PDF from the improved cv_data
+                cv_data          = refined_data
+                score_result     = refined_score
+                match_score_dict = refined_score.as_dict()
+                try:
+                    pdf_bytes = await build_pdf(cv_data, template_id="t2_modern")
+                    logger.info(
+                        "[resumes/tailor] Refined PDF rebuilt for job %s", req.job_id
+                    )
+                except Exception as pdf_exc:
+                    logger.warning(
+                        "[resumes/tailor] Refined PDF build failed — keeping original PDF: %s",
+                        pdf_exc,
+                    )
+            else:
+                logger.info(
+                    "[resumes/tailor] Refinement did not improve score — keeping original CV"
+                )
+        except Exception as exc:
+            logger.warning("[resumes/tailor] Refinement pass failed (non-fatal): %s", exc)
+
+    # ── Persist generated CV so future requests are served from cache ─────────
+    try:
+        save_tailored_cv(req.job_id, cv_data, match_score_dict)
+        logger.info("[resumes/tailor] Cached tailored CV for job %s", req.job_id)
+    except Exception as exc:
+        logger.warning("[resumes/tailor] Failed to cache CV (non-fatal): %s", exc)
+
+    return TailorResponse(
+        status             = "ok",
+        cv_data            = cv_data,
+        pdf_b64            = base64.b64encode(pdf_bytes).decode(),
+        match_score        = match_score_dict,
+        preferred_template = "t2_modern",
+    )
+
+
+# ── Cached CV retrieval ───────────────────────────────────────────────────────
+
+from fastapi.responses import Response as _FastAPIResponse
+
+
+@router.get("/cached/{job_id}")
+async def get_cached_resume(job_id: str):
+    """
+    Return the cached tailored CV for a job without calling the LLM.
+    Returns 204 No Content if no CV has been generated yet.
+    """
+    cached = get_tailored_cv(job_id)
+    if not cached or not cached.get("cv_data"):
+        return _FastAPIResponse(status_code=204)
+
+    cv_data = cached["cv_data"]
+    try:
+        pdf_bytes = await build_pdf(cv_data, template_id="t2_modern")
+        pdf_b64   = base64.b64encode(pdf_bytes).decode()
+    except Exception as exc:
+        logger.warning("[resumes/cached] PDF rebuild failed for job %s: %s", job_id, exc)
+        pdf_b64 = None
+
+    return TailorResponse(
+        status             = "ok",
+        cv_data            = cv_data,
+        pdf_b64            = pdf_b64,
+        match_score        = cached.get("match_score"),
+        preferred_template = "t2_modern",
+    )
+
+
+# ── Copilot targeted edit ─────────────────────────────────────────────────────
+
+class CopilotRequest(BaseModel):
+    job_id:       str
+    cv_data:      dict
+    user_prompt:  str
+    chat_history: Optional[list[dict]] = None
+
+
+class CopilotResponse(BaseModel):
+    status:      str
+    message:     Optional[str]  = None   # explanation for warning / rejected
+    cv_data:     Optional[dict] = None
+    pdf_b64:     Optional[str]  = None
+    match_score: Optional[dict] = None
+
+
+@router.post("/copilot", response_model=CopilotResponse)
+async def copilot_edit(req: CopilotRequest):
+    """
+    Apply a targeted, plain-English editing instruction to an existing cv_data.
+
+    The CopilotAgent mutates only the fields the instruction targets,
+    then recomputes match score, saves to cache, and returns the rebuilt PDF.
+    """
+    print(f"=== DEBUG [resumes/copilot] job_id={req.job_id}  prompt_len={len(req.user_prompt)}  cv_keys={list(req.cv_data.keys()) if req.cv_data else None} ===")
+
+    if not req.user_prompt.strip():
+        raise HTTPException(status_code=422, detail="user_prompt must not be empty.")
+    if not req.cv_data:
+        raise HTTPException(status_code=422, detail="cv_data must not be empty.")
+
+    all_jobs = job_store.get_all()
+    job      = next((j for j in all_jobs if j.job_id == req.job_id), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
+
+    try:
+        agent  = CopilotAgent()
+        result = await agent.edit(
+            cv_data        = req.cv_data,
+            user_prompt    = req.user_prompt,
+            master_profile = USER_PROFILE,
+            chat_history   = req.chat_history,
+        )
+    except Exception as exc:
+        logger.exception("[resumes/copilot] CopilotAgent failed for job %s", req.job_id)
+        raise HTTPException(status_code=502, detail=f"Copilot edit failed: {exc}")
+
+    # ── warning / rejected: skip rebuild, return agent's message immediately ──
+    if result["status"] in ("warning", "rejected"):
+        logger.info(
+            "[resumes/copilot] %s for job %s: %s",
+            result["status"], req.job_id, (result.get("message") or "")[:100],
+        )
+        return CopilotResponse(
+            status  = result["status"],
+            message = result.get("message"),
+        )
+
+    # ── success: rebuild PDF, recompute score, save to cache ─────────────────
+    cv_data = result["cv_data"]
+
+    # Re-inject canonical static sections (education, military, skills) from
+    # USER_PROFILE after every Copilot edit.  This guarantees the military
+    # block is never silently dropped when the LLM omits it, and ensures the
+    # canonical profile dates/unit/role are always present regardless of what
+    # the model returned.
+    cv_data = _inject_static_sections(cv_data)
+
+    try:
+        pdf_bytes = await build_pdf(cv_data, template_id="t2_modern")
+    except Exception as exc:
+        logger.exception("[resumes/copilot] PDF build failed for job %s", req.job_id)
+        raise HTTPException(status_code=502, detail=f"PDF generation failed: {exc}")
+
+    match_score_dict: Optional[dict] = None
+    score_result = None
+    jd_proxy = _build_match_proxy(job)
+    try:
+        score_result     = await compute_match_score_async(cv_data, jd_proxy, run_llm_validation=False)
+        match_score_dict = score_result.as_dict()
+        logger.info(
+            "[resumes/copilot] Score after edit: total=%d  kw=%.0f/40  skills=%.0f/35  "
+            "exp_count=%d  prompt=%r",
+            score_result.total,
+            score_result.keyword_overlap,
+            score_result.skills_alignment,
+            len(cv_data.get("experience", [])),
+            req.user_prompt[:60],
+        )
+    except Exception as exc:
+        logger.warning(
+            "[resumes/copilot] Match score computation FAILED (score will be null in response): %s",
+            exc, exc_info=True,
+        )
+
+    # ── Auto-refinement: same logic as /tailor — close the keyword gap ────────
+    # When the user restores a large block (e.g. GO-OUT) via Copilot, the
+    # reinserted bullets may not be JD-optimised. If the score is still well
+    # below the job's fit score, run one TailorAgent.refine() pass to rewrite
+    # the weakest bullets and embed missing keywords — then adopt the result
+    # only if it improves the score.
+    #
+    # Destructive-edit guard: if the user intentionally deleted experience
+    # entries or significantly shrunk the experience section, refinement must
+    # not run — it would hallucinate missing JD keywords into the remaining
+    # unrelated bullets to artificially restore the score.
+    _orig_exp_count = len(req.cv_data.get("experience", []))
+    _new_exp_count  = len(cv_data.get("experience", []))
+    _orig_exp_chars = len(_cv_experience_text(req.cv_data))
+    _new_exp_chars  = len(_cv_experience_text(cv_data))
+    _is_destructive = (
+        _new_exp_count < _orig_exp_count
+        or (
+            _orig_exp_chars > 0
+            and (_orig_exp_chars - _new_exp_chars) / _orig_exp_chars > 0.15
+        )
+    )
+    if _is_destructive:
+        logger.info(
+            "[resumes/copilot] Destructive edit detected (exp entries %d→%d, "
+            "exp chars %d→%d) — skipping refinement loop",
+            _orig_exp_count, _new_exp_count,
+            _orig_exp_chars, _new_exp_chars,
+        )
+
+    _GAP_THRESHOLD = 8.0
+    if (
+        not _is_destructive
+        and
+        score_result is not None
+        and job.score > 0
+        and (job.score - score_result.total) > _GAP_THRESHOLD
+        and score_result.missing_keywords
+    ):
+        logger.info(
+            "[resumes/copilot] Score gap %.1f (job=%.1f  cv=%d) exceeds threshold %.1f — "
+            "triggering refinement pass. Missing: %s",
+            job.score - score_result.total,
+            job.score,
+            score_result.total,
+            _GAP_THRESHOLD,
+            score_result.missing_keywords[:6],
+        )
+        try:
+            tailor_agent  = TailorAgent()
+            refined_data  = await tailor_agent.refine(
+                cv_data          = cv_data,
+                missing_keywords = score_result.missing_keywords,
+                jd_context       = jd_proxy,
+            )
+            refined_score = await compute_match_score_async(
+                refined_data, jd_proxy, run_llm_validation=False
+            )
+            logger.info(
+                "[resumes/copilot] Refinement result: total=%d  (was %d  delta=%+d)",
+                refined_score.total,
+                score_result.total,
+                refined_score.total - score_result.total,
+            )
+            if refined_score.total >= score_result.total:
+                cv_data          = refined_data
+                score_result     = refined_score
+                match_score_dict = refined_score.as_dict()
+                try:
+                    pdf_bytes = await build_pdf(cv_data, template_id="t2_modern")
+                    logger.info(
+                        "[resumes/copilot] Refined PDF rebuilt for job %s", req.job_id
+                    )
+                except Exception as pdf_exc:
+                    logger.warning(
+                        "[resumes/copilot] Refined PDF build failed — keeping pre-refinement PDF: %s",
+                        pdf_exc,
+                    )
+            else:
+                logger.info(
+                    "[resumes/copilot] Refinement did not improve score — keeping Copilot output"
+                )
+        except Exception as exc:
+            logger.warning("[resumes/copilot] Refinement pass failed (non-fatal): %s", exc)
+
+    # ── Orphaned skills pruning ───────────────────────────────────────────────
+    # After the Copilot edit and any refinement, skills that no longer appear
+    # in any experience bullet or role title earn zero ATS credit (zone-based
+    # scoring ignores them) and reduce CV credibility.  Strip them now so
+    # the rendered PDF and cached cv_data stay internally consistent.
+    try:
+        exp_text   = _cv_experience_text(cv_data)
+        categories = (cv_data.get("skills") or {}).get("categories", [])
+        pruned_cats: list[dict] = []
+        removed_count = 0
+        for cat in categories:
+            original_items = cat.get("items") or []
+            kept_items     = [
+                item for item in original_items
+                if _is_experience_backed(item.lower(), exp_text)
+            ]
+            removed_count += len(original_items) - len(kept_items)
+            if kept_items:
+                pruned_cats.append({**cat, "items": kept_items})
+
+        if removed_count:
+            logger.info(
+                "[resumes/copilot] Pruned %d orphaned skill(s) not backed by experience",
+                removed_count,
+            )
+            cv_data = {**cv_data, "skills": {"categories": pruned_cats}}
+            # Rebuild PDF so the visual skills sidebar reflects the pruned list
+            try:
+                pdf_bytes = await build_pdf(cv_data, template_id="t2_modern")
+            except Exception as pdf_exc:
+                logger.warning(
+                    "[resumes/copilot] PDF rebuild after skills pruning failed: %s", pdf_exc
+                )
+            # Recompute score — pruned skills were already zero-credit, so the
+            # delta should be negligible, but we want the cache to be exact.
+            try:
+                score_result     = await compute_match_score_async(
+                    cv_data, jd_proxy, run_llm_validation=False
+                )
+                match_score_dict = score_result.as_dict()
+            except Exception as score_exc:
+                logger.warning(
+                    "[resumes/copilot] Score recomputation after pruning failed: %s", score_exc
+                )
+    except Exception as exc:
+        logger.warning("[resumes/copilot] Skills pruning step failed (non-fatal): %s", exc)
+
+    try:
+        save_tailored_cv(req.job_id, cv_data, match_score_dict)
+    except Exception as exc:
+        logger.warning("[resumes/copilot] Cache save failed (non-fatal): %s", exc)
+
+    return CopilotResponse(
+        status      = "success",
+        cv_data     = cv_data,
+        pdf_b64     = base64.b64encode(pdf_bytes).decode(),
+        match_score = match_score_dict,
+    )
+
+
+# ── Gatekeeper revision ───────────────────────────────────────────────────────
+
+class ReviseRequest(BaseModel):
+    job_id:        str
+    revision_text: str
+    cv_data:       dict
+
+
+class ReviseResponse(BaseModel):
+    status:  str                # "approved" | "rejected"
+    message: str                # rejection reason or empty string
+    cv_data: Optional[dict]     # updated cv_data (if approved)
+    pdf_b64: Optional[str]      # base64 PDF (if approved)
+
+
+@router.post("/revise", response_model=ReviseResponse)
+async def revise_resume(req: ReviseRequest):
+    """
+    Submit a revision request for a tailored CV.
+
+    The RevisionGatekeeper evaluates the request against hard constraints
+    (single-page limit, no fabrication, relevance preservation) and either:
+      • Applies the revision and returns updated cv_data + PDF (status="approved")
+      • Rejects the request with a plain-English explanation  (status="rejected")
+    """
+    if not req.revision_text.strip():
+        raise HTTPException(status_code=422, detail="revision_text must not be empty.")
+    if not req.cv_data:
+        raise HTTPException(status_code=422, detail="cv_data must not be empty.")
+
+    all_jobs = job_store.get_all()
+    job      = next((j for j in all_jobs if j.job_id == req.job_id), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
+
+    try:
+        gk     = RevisionGatekeeper()
+        result = await gk.revise(
+            revision_text = req.revision_text,
+            cv_data       = req.cv_data,
+            job           = job,
+        )
+    except Exception as exc:
+        logger.exception("[resumes/revise] Gatekeeper failed for job %s", req.job_id)
+        raise HTTPException(status_code=502, detail=f"Revision failed: {exc}")
+
+    pdf_b64: Optional[str] = None
+    if result.pdf_bytes:
+        pdf_b64 = base64.b64encode(result.pdf_bytes).decode()
+
+    return ReviseResponse(
+        status  = result.status,
+        message = result.message,
+        cv_data = result.cv_data,
+        pdf_b64 = pdf_b64,
+    )
+
+
+# ── Templates list ────────────────────────────────────────────────────────────
+
+@router.get("/templates")
+async def list_templates():
+    """Return the static list of available CV templates."""
+    return {"templates": TEMPLATE_REGISTRY}
+
+
+# ── Render PDF (Live Editor + template switching) ─────────────────────────────
+
+class RenderPdfRequest(BaseModel):
+    cv_data:     dict
+    template_id: str = "t2_modern"
+
+
+@router.post("/render-pdf")
+async def render_pdf(req: RenderPdfRequest):
+    """
+    Render cv_data with the chosen template and return a base64 PDF.
+    No LLM call — pure rendering only. Used by the Live Editor for
+    template switching and final export.
+    """
+    try:
+        pdf_bytes = await build_pdf(req.cv_data, template_id=req.template_id)
+    except Exception as exc:
+        logger.exception("[resumes/render-pdf] PDF render failed template=%s", req.template_id)
+        raise HTTPException(status_code=502, detail=f"PDF render failed: {exc}")
+
+    return {"pdf_b64": base64.b64encode(pdf_bytes).decode()}
+
+
+# ── Match Score ───────────────────────────────────────────────────────────────
+
+class MatchScoreRequest(BaseModel):
+    job_id:         str
+    cv_data:        dict
+    llm_validation: bool = False   # False = Phase 1 only (<100ms) for Live Editor
+
+
+class MatchScoreResponse(BaseModel):
+    total:               float
+    keyword_overlap:     float
+    skills_alignment:    float
+    seniority_alignment: float
+    matched_keywords:    list[str] = []
+    missing_keywords:    list[str] = []
+    matched_skills:      list[str] = []
+    missing_skills:      list[str] = []
+    suggestions:         list[str] = []
+    llm_validated:       bool      = False
+
+
+@router.post("/match-score", response_model=MatchScoreResponse)
+async def match_score(req: MatchScoreRequest):
+    """
+    Compute a 0-100 ATS match score between cv_data and the stored job.
+    Set llm_validation=False for instant re-score from the Live Editor.
+    """
+    all_jobs = job_store.get_all()
+    job      = next((j for j in all_jobs if j.job_id == req.job_id), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
+
+    jd_proxy = _build_match_proxy(job)
+
+    try:
+        result = await compute_match_score_async(
+            req.cv_data, jd_proxy, run_llm_validation=req.llm_validation
+        )
+    except Exception as exc:
+        logger.exception("[resumes/match-score] Scoring failed for job %s", req.job_id)
+        raise HTTPException(status_code=502, detail=f"Match scoring failed: {exc}")
+
+    return MatchScoreResponse(
+        total               = result.total,
+        keyword_overlap     = result.keyword_overlap,
+        skills_alignment    = result.skills_alignment,
+        seniority_alignment = result.seniority_alignment,
+        matched_keywords    = result.matched_keywords,
+        missing_keywords    = result.missing_keywords,
+        matched_skills      = result.matched_skills,
+        missing_skills      = result.missing_skills,
+        suggestions         = result.suggestions,
+        llm_validated       = result.llm_validated,
+    )

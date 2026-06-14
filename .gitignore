@@ -1,0 +1,52 @@
+# Environment variables — never commit real keys
+.env
+.env.local
+.env.production
+
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+
+# Personal data & profiles
+data/
+backend/data/
+
+# Node.js
+node_modules/
+.next/
+npm-debug.log*
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+dist/
+build/
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage

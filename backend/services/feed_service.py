@@ -1,0 +1,821 @@
+"""
+Feed-level services: batch ATS scoring and profile-to-cv-proxy conversion.
+
+refresh_user_scores(user_id)
+─────────────────────────────
+Idempotent enrichment pass (s2).  Validates every job's JD integrity before
+scoring — if the stored text is thin, it hydrates first.  The trigger
+condition is intentionally broad:
+
+    len(jd_text) < _JD_MIN_CHARS   OR   why_ron IS NULL
+
+This means a job that carries a why_ron string from a previous DEV mock but
+still holds a thin placeholder JD is treated as un-enriched and re-processed.
+
+hydrate_job(job)
+────────────────
+Single gateway for all live JD fetching.  On failure it writes
+_HYDRATE_FAILED_SENTINEL to the jd_text column so the job is permanently
+excluded from retry loops without requiring a schema change.
+
+force_rescore_all(user_id)
+───────────────────────────
+Re-runs local proxy scoring for every job that is NOT fully enriched.
+"Fully enriched" means: why_ron IS NOT NULL  AND  jd_text IS rich.
+A job with why_ron set but thin text is NOT considered fully enriched and
+is re-scored here (local proxy only — LLM is not called from s4).
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from datetime import datetime, timezone
+from typing import Optional
+
+from models.job import JobMatch
+from backend.services import job_store
+from backend.services.match_score_service import compute_match_score_async
+from backend.config import DEV_MODE
+
+logger = logging.getLogger(__name__)
+
+# ── JD integrity threshold ────────────────────────────────────────────────────
+# Text shorter than this is considered a thin scraper placeholder (title +
+# company line only) and requires live hydration before LLM scoring.
+_JD_MIN_CHARS = 250
+
+# Sentinel written to jd_text when hydration fails irrecoverably (HTTP 403/404,
+# content too short after scraping, etc.).  Prevents infinite retry loops by
+# making _is_thin() return False so the job is never re-queued for hydration.
+# We reuse the existing jd_text column to avoid a schema migration.
+_HYDRATE_FAILED_SENTINEL = "__hydrate_failed__"
+
+# Sentinel written when scraper returns LinkedInAuthWallError.
+# Distinct from the generic failure sentinel so:
+#   • _is_thin() returns False → no re-queue
+#   • UI can show "Manual Auth Required" instead of "Analysis unavailable"
+#   • enrichment_failures is NOT incremented (not a job-data problem)
+# Cleared automatically if a future enrichment pass finds LINKEDIN_LI_AT refreshed.
+_HYDRATE_AUTH_WALL_SENTINEL = "__auth_wall__"
+
+# ── LinkedIn scraper block detection ─────────────────────────────────────────
+# KV keys used to track redirect-loop errors and the resulting BLOCKED state.
+_KV_REDIRECT_COUNT  = "linkedin_redirect_error_count"
+_KV_SCRAPER_STATUS  = "linkedin_scraper_status"
+_KV_BLOCKED_AT      = "linkedin_scraper_blocked_at"
+# Number of ERR_TOO_MANY_REDIRECTS hits before the scraper is marked BLOCKED.
+_REDIRECT_BLOCK_THRESHOLD = 2
+
+
+def _get_redirect_error_count() -> int:
+    """Return the current redirect-error count from the KV store."""
+    from backend.services.db import ENGINE, KVRow
+    from sqlalchemy.orm import Session
+    with Session(ENGINE) as db:
+        row = db.get(KVRow, _KV_REDIRECT_COUNT)
+        if row is None:
+            return 0
+        try:
+            return int(row.value)
+        except (ValueError, TypeError):
+            return 0
+
+
+def _record_redirect_error() -> int:
+    """
+    Increment the redirect-error counter and, if the threshold is reached,
+    write linkedin_scraper_status='BLOCKED' to the KV store.
+
+    Returns the new count after incrementing.
+    """
+    from backend.services.db import ENGINE, KVRow
+    from sqlalchemy.orm import Session
+
+    now = datetime.now(timezone.utc).isoformat()
+    with Session(ENGINE) as db:
+        # Increment counter
+        count_row = db.get(KVRow, _KV_REDIRECT_COUNT)
+        new_count = (int(count_row.value) if count_row else 0) + 1
+        if count_row:
+            count_row.value      = str(new_count)
+            count_row.updated_at = now
+        else:
+            db.add(KVRow(key=_KV_REDIRECT_COUNT, value=str(new_count), updated_at=now))
+
+        # Flag cookie as suspicious on first hit
+        cookie_row = db.get(KVRow, "linkedin_cookie_status")
+        if cookie_row:
+            cookie_row.value      = "suspicious"
+            cookie_row.updated_at = now
+        else:
+            db.add(KVRow(key="linkedin_cookie_status", value="suspicious", updated_at=now))
+
+        # Promote to BLOCKED once threshold is reached
+        if new_count >= _REDIRECT_BLOCK_THRESHOLD:
+            status_row = db.get(KVRow, _KV_SCRAPER_STATUS)
+            if status_row:
+                status_row.value      = "BLOCKED"
+                status_row.updated_at = now
+            else:
+                db.add(KVRow(key=_KV_SCRAPER_STATUS, value="BLOCKED", updated_at=now))
+
+            blocked_row = db.get(KVRow, _KV_BLOCKED_AT)
+            if blocked_row:
+                blocked_row.value      = now
+                blocked_row.updated_at = now
+            else:
+                db.add(KVRow(key=_KV_BLOCKED_AT, value=now, updated_at=now))
+
+            logger.critical(
+                "[feed_service] LinkedIn scraper BLOCKED after %d redirect errors. "
+                "Enrichment loop will pause until linkedin_scraper_status is cleared "
+                "and LINKEDIN_LI_AT is refreshed in backend/.env.",
+                new_count,
+            )
+
+        db.commit()
+
+    return new_count
+
+
+def is_linkedin_scraper_blocked() -> bool:
+    """Return True when the KV store marks the LinkedIn scraper as BLOCKED."""
+    from backend.services.db import ENGINE, KVRow
+    from sqlalchemy.orm import Session
+    with Session(ENGINE) as db:
+        row = db.get(KVRow, _KV_SCRAPER_STATUS)
+        return row is not None and row.value == "BLOCKED"
+
+# ── DEV_MODE JD Overrides ─────────────────────────────────────────────────────
+# Hard-coded real JD text for specific jobs so the semantic scorer can be
+# tested locally without running heavy scrapers.  These overrides are ONLY
+# applied when DEV_MODE is True; they are completely ignored in production.
+# Matching is done on company/title strings only — never on job_id.
+
+_DEV_JD_OVERRIDES: dict[str, str] = {
+    "go-out-account-manager": """\
+Our amazing Ops and Commercial team is growing, and we are looking for a \
+rockstar Account Manager to join us in our Tel-Aviv office!
+If you are a people person, a natural problem solver, and thrive in a \
+fast-paced environment, this is for you.
+
+About GO-OUT
+GO-OUT is a live ticketing and event technology platform handling real users, \
+real transactions, and high-load event days. The stack spans backend services, \
+payments, real-time scanning and seating, mobile apps, admin tools, and the \
+infrastructure underneath all of it. The environment is fast-moving, and the \
+engineering surface area is broad.
+
+What you'll do:
+Own the relationships with our key B2B organizers and producers, ensuring \
+they get the absolute best out of our platform.
+Onboard new clients and guide them through our systems and product features.
+Collaborate closely with our Product, Support, and Tech teams to solve \
+challenges from the ground up and streamline operations.
+Analyze client performance and identify growth opportunities.
+
+Who you are:
+1-2 years of experience in Account Management, Customer Success, or a similar \
+B2B operations role (SaaS/Startup experience is a huge plus!).
+Exceptional communication and relationship-building skills.
+Fast learner, highly organized, and able to juggle multiple tasks like a pro.
+Fluent in Hebrew and English.
+Thrive in a fast-growing startup: We are growing at a crazy pace, which means \
+things move fast! Since we power the events and entertainment world, our \
+ecosystem is alive and dynamic. We are looking for a true partner with a high \
+sense of ownership who thrives in a dynamic environment and brings the \
+flexibility needed to support our clients.
+""",
+}
+
+
+# ── Pure helpers ──────────────────────────────────────────────────────────────
+
+# Maximum enrichment attempts before a job is permanently retired.
+# Exposed to the frontend via the enrichment_failures field so the UI can
+# show a hard-failure state instead of an infinite skeleton.
+ENRICHMENT_MAX_FAILURES = 3
+
+# Backoff delays (seconds) between successive enrichment attempts.
+# Index = failures already recorded.  Once failures >= len, the job is retired.
+_ENRICHMENT_BACKOFF_SECS = [0, 30, 120]
+
+
+def _is_thin(jd_text: str | None) -> bool:
+    """
+    Return True when the stored JD text is too thin for reliable LLM scoring.
+
+    Sentinel values written by hydrate_job() on failure are explicitly
+    excluded — they look thin by length but must not trigger re-fetching.
+    """
+    text = (jd_text or "").strip()
+    if text in (_HYDRATE_FAILED_SENTINEL, _HYDRATE_AUTH_WALL_SENTINEL):
+        return False          # already tried; permanent skip until sentinel is cleared
+    return len(text) < _JD_MIN_CHARS
+
+
+def is_substantive_analysis(text: str | None) -> bool:
+    """
+    Return True when an LLM-produced why_ron string contains real analysis.
+
+    Shared by feed_service (enrichment pass), discovery (inline enrichment),
+    and jobs.analyze (synchronous pipeline) so all three code paths apply the
+    same standard.  Exported with a public name so routes can import it.
+
+    Two conditions must both hold:
+      1. len >= 50  — rules out bare stubs like "🟢 Core Strengths:" (18 chars)
+         or empty strings.
+      2. The full string is not a header-only line — catches responses like
+         "Key strengths:\n" where the model produced a section title but no
+         bullets.  re.match anchors to the start; $ anchors to the end of the
+         full string (not just the first line), so a valid multi-line analysis
+         that *starts* with "🟢 Core Strengths:" is NOT rejected here.
+
+    Note: a previous third condition checked whether the first line matched
+    "core strengths:" — that incorrectly rejected all valid analyses that use
+    the mandatory "🟢 Core Strengths:\\n• ..." template format.  It has been
+    removed; condition 1 is sufficient to block bare stubs.
+    """
+    s = (text or "").strip()
+    return (
+        len(s) >= 50
+        and not re.match(r'^[^\w]*[\w\s]+:\s*$', s)
+    )
+
+
+def _needs_enrichment(job: JobMatch) -> bool:
+    """
+    Source-of-truth predicate for enrichment eligibility.
+
+    A job needs enrichment if ANY of the following are true:
+      • JD text is thin (< _JD_MIN_CHARS, not a failure or auth-wall sentinel)
+      • why_ron is None — never received a real LLM evaluation
+      • score_is_proxy=True — LLM scoring didn't complete cleanly last time
+
+    A job is permanently retired once enrichment_failures >= ENRICHMENT_MAX_FAILURES.
+    Auth-wall jobs are held in limbo (jd_text=_HYDRATE_AUTH_WALL_SENTINEL) until
+    the sentinel is cleared externally — _is_thin() returns False for them so
+    they are excluded here without consuming a failure count.
+    """
+    if job.enrichment_failures >= ENRICHMENT_MAX_FAILURES:
+        return False   # hard stop — show "Manual analysis required" in UI
+    if (job.jd_text or "").strip() == _HYDRATE_AUTH_WALL_SENTINEL:
+        return False   # auth-wall limbo — waiting for cookie refresh
+    return _is_thin(job.jd_text) or job.why_ron is None or job.score_is_proxy
+
+
+def _dev_jd_override(job: JobMatch) -> str | None:
+    """
+    Return the hardcoded JD text for a DEV override job, or None.
+
+    Matching is done on company and title strings only — never on job_id,
+    which can collide across scraper runs or environments.
+    GO-OUT detection accepts both "GO-OUT" and "GO_OUT" spellings.
+    """
+    if not DEV_MODE:
+        return None
+
+    company_upper = (getattr(job, "company_name", "") or getattr(job, "company", "")).upper()
+    title_upper   = (getattr(job, "job_title",    "") or getattr(job, "title",   "")).upper()
+
+    if "GO-OUT" in company_upper or "GO_OUT" in company_upper or "GO-OUT" in title_upper:
+        return _DEV_JD_OVERRIDES["go-out-account-manager"]
+
+    return None
+
+
+def _build_profile_cv_proxy(profile: dict) -> dict:
+    """
+    Convert a USER_PROFILE dict into a minimal cv_data structure accepted by
+    compute_match_score_async.  Keeps each experience entry's details as a
+    single bullet so the experience-backed zone gate functions correctly.
+    """
+    experience = []
+    for exp in profile.get("experience", []):
+        company = exp.get("company", exp.get("unit", ""))
+        role    = exp.get("role", "")
+        details = exp.get("details", "")
+
+        nested_roles = exp.get("roles", [])
+        if nested_roles:
+            for nr in nested_roles:
+                nr_details = nr.get("details", "")
+                experience.append({
+                    "role":    nr.get("title", role),
+                    "company": company,
+                    "bullets": [nr_details] if nr_details else [],
+                })
+        else:
+            experience.append({
+                "role":    role,
+                "company": company,
+                "bullets": [details] if details else [],
+            })
+
+    skills_list = profile.get("skills", [])
+
+    supplemental_text = ""
+    try:
+        from backend.services.user_profile import build_full_text
+        supplemental_text = build_full_text()
+    except Exception:
+        pass
+
+    return {
+        "title":      "",
+        "summary":    supplemental_text,
+        "experience": experience,
+        "skills": {
+            "categories": [{"label": "Skills", "items": skills_list}]
+        },
+    }
+
+
+def _match_skill_tags(matched_skills: list[str]) -> list[dict]:
+    """
+    Convert the top matched skills from a MatchScoreResult into positive
+    ReasonTag-shaped dicts (kind="skill").  Limits output to 2 tags.
+    """
+    tags: list[dict] = []
+    seen: set[str] = set()
+    for skill in matched_skills:
+        label = skill.strip().title()
+        if not label or len(label) < 2:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(label) > 22:
+            label = label[:22].rstrip()
+        tags.append({"kind": "skill", "label": label})
+        if len(tags) >= 2:
+            break
+    return tags
+
+
+def _proficiency_reason_tags(proficiency_notes: list[str]) -> list[dict]:
+    """
+    Convert proficiency_notes into ReasonTag-shaped dicts.
+
+    Mapping:
+      "Academic vs. Professional req." → kind="neg",   label="Academic <Skill> (Prof. Req.)"
+      "Academic (meets familiarity …)"  → kind="skill", label="<Skill> (academic match)"
+      "No exp. (required)"              → kind="neg",   label="No <Skill> exp. (required)"
+      "No exp. (preferred only)"        → kind="neg",   label="No <Skill> exp. (preferred)"
+    """
+    tags: list[dict] = []
+    for note in proficiency_notes:
+        skill, _, desc = note.partition(": ")
+        skill_title = skill.strip().title()
+        desc_lower  = desc.lower()
+        if "academic vs" in desc_lower or "professional req" in desc_lower:
+            tags.append({"kind": "neg",   "label": f"Academic {skill_title} (Prof. Req.)"})
+        elif "familiarity" in desc_lower or "meets familiarity" in desc_lower:
+            tags.append({"kind": "skill", "label": f"{skill_title} (academic match)"})
+        elif "no exp" in desc_lower and "required" in desc_lower:
+            tags.append({"kind": "neg",   "label": f"No {skill_title} exp. (required)"})
+        elif "no exp" in desc_lower and "preferred" in desc_lower:
+            tags.append({"kind": "neg",   "label": f"No {skill_title} exp. (preferred)"})
+    return tags
+
+
+# ── JD hydration gateway ──────────────────────────────────────────────────────
+
+async def hydrate_job(job: JobMatch) -> str | None:
+    """
+    Single gateway for all live JD fetching.
+
+    Scrapes the full employer JD from job.apply_url and persists it via
+    job_store.update_jd_text().  Runs the synchronous scraper in a thread
+    pool so it does not block the event loop.
+
+    Returns
+    -------
+    str   — the fetched JD text on success (≥ _JD_MIN_CHARS).
+    None  — on any failure (network error, HTTP 4xx, content too short).
+            _HYDRATE_FAILED_SENTINEL is written to jd_text so the job is
+            permanently excluded from retry loops without a schema change.
+
+    This function is intentionally not gated on _is_thin(): the caller decides
+    when hydration is warranted; hydrate_job() only handles the I/O and
+    persistence.
+    """
+    if not job.apply_url:
+        logger.debug(
+            "[feed_service] hydrate_job: job %s has no apply_url — skipping",
+            job.job_id,
+        )
+        return None
+
+    logger.info(
+        "[feed_service] hydrate_job: fetching JD for job %s (%s @ %s) from %s",
+        job.job_id, job.title, job.company, job.apply_url,
+    )
+
+    try:
+        from backend.scrapers.url_router import (
+            scrape_jd_text_async as _scrape,
+            LinkedInAuthWallError,
+            LinkedInRedirectError,
+        )
+        fetched = await _scrape(job.apply_url)
+        fetched = fetched.strip()
+
+        if len(fetched) >= _JD_MIN_CHARS:
+            job_store.update_jd_text(job.job_id, fetched)
+            logger.info(
+                "[feed_service] hydrate_job: ✓ saved %d chars for job %s (%s @ %s)",
+                len(fetched), job.job_id, job.title, job.company,
+            )
+            return fetched
+
+        # Scraped content exists but is still too short to be useful.
+        logger.warning(
+            "[feed_service] hydrate_job: content too short after fetch (%d chars) "
+            "for job %s (%s @ %s) — marking as failed",
+            len(fetched), job.job_id, job.title, job.company,
+        )
+
+    except LinkedInRedirectError as exc:
+        # ── Redirect loop — bot-detection, infra problem ───────────────────────
+        # Immediately halt retries (no enrichment_failures increment).
+        # Track the count; promote to BLOCKED after _REDIRECT_BLOCK_THRESHOLD hits.
+        new_count = _record_redirect_error()
+        logger.error(
+            "[feed_service] hydrate_job: ERR_TOO_MANY_REDIRECTS for job %s (%s @ %s) "
+            "(redirect_error_count=%d threshold=%d). Cookie flagged suspicious. "
+            "Error: %s",
+            job.job_id, job.title, job.company, new_count, _REDIRECT_BLOCK_THRESHOLD, exc,
+        )
+        job_store.update_jd_text(job.job_id, _HYDRATE_AUTH_WALL_SENTINEL)
+        job_store.update_status(job.job_id, "auth_wall")
+        return None
+
+    except LinkedInAuthWallError as exc:
+        # ── Auth wall — infra problem, not a job-data problem ─────────────────
+        # Do NOT increment enrichment_failures.
+        # Do NOT use the generic failed sentinel (that would trigger the
+        # "Analysis unavailable" UI state which implies a permanent failure).
+        # Use the auth-wall sentinel instead so:
+        #   • This job is held in 'auth_wall' limbo until the cookie is refreshed.
+        #   • _is_thin() returns False so the enrichment loop skips it.
+        #   • The UI shows "Auth Required" rather than "Unavailable".
+        logger.error(
+            "[feed_service] hydrate_job: AUTH WALL for job %s (%s @ %s) — "
+            "LinkedIn session expired.  Cookie: update LINKEDIN_LI_AT in backend/.env "
+            "and delete the browser profile at data/linkedin_browser_profile/ to reset. "
+            "Error: %s",
+            job.job_id, job.title, job.company, exc,
+        )
+        job_store.update_jd_text(job.job_id, _HYDRATE_AUTH_WALL_SENTINEL)
+        job_store.update_status(job.job_id, "auth_wall")
+        return None
+
+    except Exception as exc:
+        logger.warning(
+            "[feed_service] hydrate_job: fetch failed for job %s (%s @ %s): %s "
+            "— marking as failed to prevent retry loops",
+            job.job_id, job.title, job.company, exc,
+        )
+
+    # Generic failure — mark permanently so the enrichment loop stops retrying.
+    job_store.update_jd_text(job.job_id, _HYDRATE_FAILED_SENTINEL)
+    return None
+
+
+# ── s2: Validation-based LLM enrichment ──────────────────────────────────────
+
+async def refresh_user_scores(user_id: str) -> int:
+    """
+    s2 — Idempotent LLM enrichment pass.
+
+    STRATEGY
+    ────────
+    Three passes per cycle:
+
+    Pass A — Identify candidates
+        All jobs where _needs_enrichment() is True:
+          • jd_text thin (< 250 chars, not a failure sentinel)  ← catches DEV
+            mock rows whose why_ron was set but JD is still a placeholder
+          • why_ron IS NULL  ← never received a real LLM evaluation
+
+    Pass B — Hydrate thin jobs
+        For each candidate whose jd_text is thin, hydrate_job() fetches the
+        real employer JD from apply_url before the LLM sees it.  On failure,
+        _HYDRATE_FAILED_SENTINEL is persisted and the job is removed from the
+        enrichment batch for this cycle (it will be re-evaluated next cycle
+        only if _needs_enrichment still returns True — which it won't for the
+        sentinel, preventing an infinite retry loop).
+
+    Pass C — Score with Claude
+        compute_match_score_async(run_llm_validation=True) computes the full
+        3-component composite (30% local + 50% semantic + 20% management).
+        If jd_text is still thin after hydration (sentinel or empty), the
+        match_score_service LLM guard fires and only Phase 1 runs — no wasted
+        API call.
+
+    CONCURRENCY
+    ────────────
+    hydrate_job() runs outside the semaphore so HTTP fetches can overlap.
+    asyncio.Semaphore(5) gates only the Anthropic API calls, preventing
+    rate-limit hammering while still processing many jobs in parallel.
+
+    Returns the number of jobs successfully LLM-enriched this cycle.
+    """
+    from backend.services.user_profile import USER_PROFILE  # lazy import avoids circular deps
+    from backend.services.master_profile_service import get_skill_proficiencies
+
+    # ── LinkedIn BLOCKED guard ────────────────────────────────────────────────
+    # When ERR_TOO_MANY_REDIRECTS has fired ≥ _REDIRECT_BLOCK_THRESHOLD times
+    # the enrichment loop is paused entirely to protect the IP from being
+    # blacklisted.  The status must be cleared manually via the KV store after
+    # refreshing LINKEDIN_LI_AT in backend/.env.
+    if is_linkedin_scraper_blocked():
+        logger.warning(
+            "[feed_service] s2: LinkedIn scraper is BLOCKED — enrichment loop "
+            "paused for user=%s.  Clear kv_store.linkedin_scraper_status and "
+            "refresh LINKEDIN_LI_AT in backend/.env to resume.",
+            user_id,
+        )
+        return 0
+
+    # ── Pass A: Identify candidates ───────────────────────────────────────────
+    all_feed = job_store.get_feed(user_id)
+    pending  = [j for j in all_feed if _needs_enrichment(j)]
+    retired  = [j for j in all_feed if j.enrichment_failures >= ENRICHMENT_MAX_FAILURES]
+
+    if retired:
+        logger.warning(
+            "[feed_service] s2: %d job(s) permanently retired (enrichment_failures>=%d) "
+            "for user=%s — reset enrichment_failures in the DB to retry. "
+            "Titles: %s",
+            len(retired), ENRICHMENT_MAX_FAILURES, user_id,
+            [f"{j.title} @ {j.company}" for j in retired[:5]],
+        )
+
+    if not pending:
+        logger.info(
+            "[feed_service] s2: nothing to enrich for user=%s "
+            "(total=%d enriched=%d retired=%d)",
+            user_id, len(all_feed),
+            len(all_feed) - len(retired) - sum(1 for j in all_feed if _is_thin(j.jd_text) or j.score_is_proxy),
+            len(retired),
+        )
+        return 0
+
+    logger.info(
+        "[feed_service] s2: %d/%d jobs need enrichment for user=%s (retired=%d)",
+        len(pending), len(all_feed), user_id, len(retired),
+    )
+
+    cv_proxy      = _build_profile_cv_proxy(USER_PROFILE)
+    proficiencies = get_skill_proficiencies()
+    if proficiencies:
+        logger.info("[feed_service] s2 proficiency context: %s", list(proficiencies.keys()))
+
+    enriched = 0
+    sem      = asyncio.Semaphore(5)   # gates concurrent Anthropic calls only
+
+    async def _enrich_one(job: JobMatch) -> None:
+        nonlocal enriched
+        _why = ""   # always defined so log/except paths can reference it safely
+
+        try:
+            logger.info(
+                "[feed_service] s2: attempting enrichment for job %s (%s @ %s) "
+                "failures=%d score_is_proxy=%s why_ron=%s jd_len=%d",
+                job.job_id, job.title, job.company,
+                job.enrichment_failures, job.score_is_proxy,
+                "null" if job.why_ron is None else f"'{job.why_ron[:40]}…'",
+                len(job.jd_text or ""),
+            )
+
+            # ── Resolve JD text (Pass B for thin rows / sentinel reset) ──────
+            # DEV override has absolute priority — inject hardcoded JD if matched.
+            override_jd = _dev_jd_override(job)
+            if override_jd is not None:
+                jd_text = override_jd.strip()
+                logger.info(
+                    "[feed_service] s2: DEV override applied for job %s (%s @ %s)",
+                    job.job_id, job.title, job.company,
+                )
+            elif (job.jd_text or "").strip() == _HYDRATE_FAILED_SENTINEL:
+                # Previous hydration wrote the failure sentinel — try again now.
+                # The sentinel is not "thin" so _is_thin() skips it, but we
+                # must not silently score the sentinel string as the JD.
+                # Re-attempt hydration; if it still fails, skip without burning
+                # an enrichment_failures count (credentials may just be stale).
+                logger.info(
+                    "[feed_service] s2: re-attempting hydration for job %s (%s @ %s) "
+                    "— previous attempt wrote FAILED sentinel",
+                    job.job_id, job.title, job.company,
+                )
+                hydrated = await hydrate_job(job)
+                if hydrated is not None:
+                    jd_text = hydrated
+                else:
+                    logger.warning(
+                        "[feed_service] s2: hydration still failing for job %s (%s @ %s) "
+                        "— check LINKEDIN_LI_AT cookie validity and Playwright install. "
+                        "Skipping without incrementing enrichment_failures.",
+                        job.job_id, job.title, job.company,
+                    )
+                    return   # don't increment failures — this is a credentials problem
+            elif _is_thin(job.jd_text):
+                # Pass B — hydrate before scoring
+                hydrated = await hydrate_job(job)
+                if hydrated is not None:
+                    jd_text = hydrated
+                else:
+                    # Hydration failed — fall back to synthetic title+company proxy.
+                    # The match_score_service LLM guard will block the API call for
+                    # this thin text; only local Phase 1 scoring will run.
+                    jd_text = " ".join(p for p in [job.title, job.company] if p)
+                    logger.info(
+                        "[feed_service] s2: hydration failed for job %s — "
+                        "scoring with thin proxy fallback",
+                        job.job_id,
+                    )
+            else:
+                # Rich text already in DB — score directly.
+                jd_text = (job.jd_text or "").strip()
+
+            if not jd_text:
+                logger.debug("[feed_service] s2: skipping job %s — no usable JD text", job.job_id)
+                return
+
+            # ── Pass C: LLM scoring (gated by semaphore) ──────────────────────
+            async with sem:
+                local_stored = job.match_score if job.match_score > 0.0 else None
+
+                result = await compute_match_score_async(
+                    cv_data             = cv_proxy,
+                    jd_text             = jd_text,
+                    run_llm_validation  = True,
+                    skill_proficiencies = proficiencies,
+                    job_title           = job.title,
+                    company_name        = job.company or "",
+                )
+
+                # Re-use the s1 local proxy score when available to avoid
+                # score fluctuation from re-computing on the same (possibly
+                # thin) jd_text.
+                if local_stored is not None and result.local_score == 0.0:
+                    from backend.services.match_score_service import compute_local_proxy_score
+                    composite = round(
+                        0.30 * local_stored
+                        + 0.50 * result.semantic_score
+                        + 0.20 * result.management_score,
+                        1,
+                    )
+                    composite = min(100.0, max(0.0, composite))
+                    result = type(result)(
+                        **{**result.__dict__,
+                           "total":       composite,
+                           "local_score": local_stored}
+                    )
+
+                # Only mark score_is_proxy=False when the LLM actually produced
+                # analysis text.  If why_ron is empty (LLM fallback or timeout),
+                # keep is_proxy=True so the feed gate holds the job back and the
+                # enrichment pass re-attempts it on the next s2 cycle.
+                _why         = (result.why_ron or "").strip()
+                has_analysis = is_substantive_analysis(_why)
+                job_store.update_match_score(
+                    job.job_id, float(result.total), is_proxy=not has_analysis
+                )
+
+                if has_analysis:
+                    job_store.update_why_ron(job.job_id, result.why_ron)
+                else:
+                    fail_count = job_store.increment_enrichment_failures(job.job_id)
+                    logger.warning(
+                        "[feed_service] s2: job %s (%s @ %s) scored but LLM returned "
+                        "non-substantive analysis (why_ron=%r, len=%d) — "
+                        "keeping score_is_proxy=True, enrichment_failures now %d",
+                        job.job_id, job.title, job.company,
+                        _why[:80], len(_why), fail_count,
+                    )
+
+                skill_tags = _match_skill_tags(result.matched_skills)
+                prof_tags  = _proficiency_reason_tags(result.proficiency_notes)
+                job_store.update_reasons(job.job_id, skill_tags + prof_tags)
+
+                enriched += 1
+                logger.info(
+                    "[feed_service] s2: enriched job %s (%s @ %s) → %.1f "
+                    "[local=%.0f sem=%.0f mgmt=%.0f why_ron=%s]%s",
+                    job.job_id, job.title, job.company, result.total,
+                    result.local_score, result.semantic_score, result.management_score,
+                    "✓" if has_analysis else "∅",
+                    f"  profs={result.proficiency_notes}" if result.proficiency_notes else "",
+                )
+
+        except Exception as exc:
+            fail_count = job_store.increment_enrichment_failures(job.job_id)
+            # logger.exception prints the full stack trace — critical audit trail
+            # for diagnosing timeout / JSON parse / API-key-rejection failures.
+            logger.exception(
+                "[feed_service] s2: ENRICHMENT_FAILURE job=%s (%s @ %s) "
+                "failure_count=%d/%d  error_type=%s  error=%s",
+                job.job_id, job.title, job.company,
+                fail_count, ENRICHMENT_MAX_FAILURES,
+                type(exc).__name__, exc,
+            )
+
+    # Fire all tasks concurrently; semaphore controls Anthropic I/O concurrency.
+    await asyncio.gather(*(_enrich_one(j) for j in pending))
+
+    logger.info(
+        "[feed_service] s2 complete — user=%s enriched=%d/%d candidates",
+        user_id, enriched, len(pending),
+    )
+    return enriched
+
+
+# ── s4: Local proxy rescore ───────────────────────────────────────────────────
+
+async def force_rescore_all(user_id: str) -> int:
+    """
+    Re-compute and persist the local proxy ATS score for all jobs that are NOT
+    fully enriched.
+
+    "Fully enriched" = why_ron IS NOT NULL  AND  jd_text is rich (≥ _JD_MIN_CHARS).
+    Both conditions must hold.  A job with why_ron set but thin text (e.g. a
+    DEV mock row) is NOT considered fully enriched and IS re-scored here.
+
+    This function uses run_llm_validation=False (pure Python, no API calls) so
+    it is fast and safe to call as a final pipeline step after s3 JD backfill.
+
+    Returns the number of jobs successfully re-scored.
+    """
+    from backend.services.user_profile import USER_PROFILE
+    from backend.services.master_profile_service import get_skill_proficiencies
+
+    all_jobs = job_store.get_feed(user_id)
+    if not all_jobs:
+        logger.info("[feed_service] s4: no jobs for user_id=%s", user_id)
+        return 0
+
+    cv_proxy      = _build_profile_cv_proxy(USER_PROFILE)
+    proficiencies = get_skill_proficiencies()
+    if proficiencies:
+        logger.info("[feed_service] s4 proficiency context: %s", proficiencies)
+    scored = 0
+
+    for job in all_jobs:
+        jd_stored = (job.jd_text or "").strip()
+
+        # Skip jobs that are genuinely fully enriched — both the LLM brief AND
+        # rich JD text are present.  Overwriting would silently downgrade the
+        # composite score to a local-only estimate.
+        if job.why_ron is not None and not _is_thin(jd_stored):
+            logger.debug(
+                "[feed_service] s4: skipping fully enriched job %s (%s)",
+                job.job_id, job.title,
+            )
+            continue
+
+        # Never rescore sentinel rows — hydration failed permanently.
+        if jd_stored == _HYDRATE_FAILED_SENTINEL:
+            logger.debug(
+                "[feed_service] s4: skipping hydration-failed job %s (%s)",
+                job.job_id, job.title,
+            )
+            continue
+
+        # Use real JD if available; fall back to synthetic title+company proxy.
+        jd_text = jd_stored if not _is_thin(jd_stored) else " ".join(
+            p for p in [job.title, job.company] if p
+        )
+        if not jd_text:
+            continue
+
+        try:
+            result = await compute_match_score_async(
+                cv_proxy, jd_text,
+                run_llm_validation  = False,
+                skill_proficiencies = proficiencies,
+            )
+            job_store.update_match_score(job.job_id, float(result.total), is_proxy=False)
+            skill_tags = _match_skill_tags(result.matched_skills)
+            prof_tags  = _proficiency_reason_tags(result.proficiency_notes)
+            job_store.update_reasons(job.job_id, skill_tags + prof_tags)
+            scored += 1
+            logger.info(
+                "[feed_service] s4: scored job %s (%.1f)%s",
+                job.job_id, result.total,
+                f" notes={result.proficiency_notes}" if result.proficiency_notes else "",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[feed_service] s4: failed for job %s: %s", job.job_id, exc
+            )
+
+    logger.info(
+        "[feed_service] s4 complete — user=%s scored=%d/%d",
+        user_id, scored, len(all_jobs),
+    )
+    return scored
