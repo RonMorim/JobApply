@@ -345,6 +345,44 @@ class EvidenceRecordRow(Base):
     is_ai_assisted  = Column(Integer, nullable=False, default=0)
 
 
+class ShadowScoreRow(Base):
+    """
+    Shadow-mode calibration log for the ATS Match Engine.
+
+    One row per scored job: the production composite the user actually saw,
+    alongside the new engine's score and full component breakdown. Append-only;
+    consumed later by the weight-calibration analysis. Safe to truncate after
+    calibration.
+    """
+    __tablename__ = "shadow_match_scores"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    user_id        = Column(String,  nullable=False, index=True)
+    job_title      = Column(String,  nullable=True)
+    company        = Column(String,  nullable=True)
+    existing_score = Column(Float,   nullable=False)   # what the frontend received
+    ats_score      = Column(Float,   nullable=False)   # new engine's final_score
+    breakdown_json = Column(Text,    nullable=False, default="{}")  # AtsMatchResult dump
+    created_at     = Column(String,  nullable=False)
+
+
+class CompanyIntelRow(Base):
+    """
+    Cached CompanyProfile from the Company Intelligence Agent.
+
+    One row per normalized company name. Profiles older than the service's
+    staleness window (30 days) are served stale-while-revalidate: returned
+    immediately while a background refresh re-researches recent news
+    (layoffs, acquisitions, pivots).
+    """
+    __tablename__ = "company_intel"
+
+    company_key   = Column(String, primary_key=True)              # normalized lowercase name
+    display_name  = Column(String, nullable=False)
+    profile_json  = Column(Text,   nullable=False, default="{}")  # CompanyProfile dump
+    researched_at = Column(String, nullable=False)                # ISO 8601 UTC
+
+
 class ArielSessionRow(Base):
     """One purposeful Ariel conversation session."""
     __tablename__ = "ariel_sessions"

@@ -1299,7 +1299,9 @@ export function ProbeModal({ probe: initialProbe, onClose, onDone }: ProbeModalP
                   </div>
                   <button
                     onClick={() => setAttachment(null)}
-                    className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-white/60 transition text-[13px]"
+                    aria-label={`Remove attachment ${attachment.name}`}
+                    title="Remove attachment"
+                    className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-white/60 focus-visible:text-slate-700 transition text-[13px]"
                   >×</button>
                 </div>
               )}
@@ -1321,6 +1323,7 @@ export function ProbeModal({ probe: initialProbe, onClose, onDone }: ProbeModalP
                   <button
                     onClick={() => fileRef.current?.click()}
                     title="Attach a file or screenshot as evidence"
+                    aria-label="Attach a file or screenshot as evidence"
                     className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
                   >
                     <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -1764,9 +1767,13 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
   const showVerify     = vl === 'UNVERIFIED'
   const showStrengthen = vl === 'ORCHESTRATION_ONLY' && !entity.manual_review_required && entity.confidence_score < 70
 
-  const barColor = vl === 'VERIFIED_MANUAL'    ? '#10B981'
-                 : vl === 'ORCHESTRATION_ONLY' ? '#3B82F6'
-                 :                               '#F59E0B'
+  // Semantic design-system tokens (globals.css):
+  //   VERIFIED_MANUAL    → success (emerald-600)
+  //   ORCHESTRATION_ONLY → primary (teal-600) — brand-aligned "in progress via AI"
+  //   UNVERIFIED         → warn (amber-600)
+  const barColor = vl === 'VERIFIED_MANUAL'    ? 'var(--ja-success)'
+                 : vl === 'ORCHESTRATION_ONLY' ? 'var(--ja-primary)'
+                 :                               'var(--ja-warn)'
 
   const categoryLabel = (entity.entity_type ?? 'skill').toUpperCase()
 
@@ -1782,7 +1789,6 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
       className="grid items-center gap-x-4 px-5 py-3.5 rounded-xl bg-white border border-slate-100 hover:bg-slate-50/60 transition-colors group"
       style={{
         gridTemplateColumns: 'minmax(180px, 2fr) minmax(100px, 1fr) 90px 16px minmax(120px, 1fr) minmax(100px, 1fr)',
-        boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
       }}
     >
       {/* ① Name + type (+ optional rank number) ───────────────────── */}
@@ -1817,12 +1823,13 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
         <span className="text-[13px] font-bold tabular-nums text-slate-700">{score}</span>
         <span className="text-[10.5px] text-slate-400">/100</span>
         <span
-          className="relative group/tip inline-flex items-center justify-center w-[15px] h-[15px] rounded-full border border-slate-200 text-[9px] font-bold text-slate-400 cursor-default select-none hover:border-teal-400 hover:text-teal-500 transition-colors"
+          tabIndex={0}
+          className="relative group/tip inline-flex items-center justify-center w-[15px] h-[15px] rounded-full border border-slate-200 text-[9px] font-bold text-slate-400 cursor-default select-none hover:border-teal-400 hover:text-teal-500 focus-visible:border-teal-400 focus-visible:text-teal-500 transition-colors"
           aria-label={`Confidence Weight: x${(entity.evidence_multiplier ?? 0.5).toFixed(1)} — Based on ${entity.evidence_count ?? 0} Ariel-verified challenges`}
         >
           i
           <span
-            className="pointer-events-none absolute z-20 bottom-full right-0 mb-1.5 w-max max-w-[210px] rounded-lg px-2.5 py-2 text-[11px] leading-snug text-white opacity-0 group-hover/tip:opacity-100 transition-opacity"
+            className="pointer-events-none absolute z-20 bottom-full right-0 mb-1.5 w-max max-w-[210px] rounded-lg px-2.5 py-2 text-[11px] leading-snug text-white opacity-0 group-hover/tip:opacity-100 group-focus-within/tip:opacity-100 transition-opacity"
             style={{ background: 'oklch(0.20 0.03 250)', boxShadow: '0 4px 12px rgba(0,0,0,0.25)' }}
           >
             Confidence Weight: ×{(entity.evidence_multiplier ?? 0.5).toFixed(1)}
@@ -1856,14 +1863,13 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
         ) : null}
       </div>
 
-      {/* ⑥ Actions — fade in on hover ────────────────────────────────── */}
-      <div className="flex items-center gap-2 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* ⑥ Actions — fade in on hover AND keyboard focus ─────────────── */}
+      <div className="flex items-center gap-2 justify-end opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
         {showVerify && (
           <button
             onClick={() => onProbe(entity)}
             disabled={probing}
-            className="h-8 px-3.5 rounded-lg text-[12px] font-semibold text-white transition active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-            style={{ background: '#0D9488', boxShadow: '0 1px 4px rgba(13,148,136,0.30)' }}
+            className="h-8 px-3.5 rounded-lg text-[12px] font-semibold text-white bg-ja-primary hover:bg-ja-primaryHover transition active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
             {probing ? <SpinnerIcon s={12} /> : 'Verify Mastery'}
           </button>
@@ -1920,6 +1926,9 @@ function WhiteboardChallengeModal({ entity, session, loading, onClose }: Whitebo
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Whiteboard Challenge: ${entity.name}`}
         className="w-full max-w-lg rounded-2xl overflow-hidden"
         style={{ boxShadow: '0 32px 80px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.06)' }}
       >
@@ -1951,7 +1960,9 @@ function WhiteboardChallengeModal({ entity, session, loading, onClose }: Whitebo
           </div>
           <button
             onClick={onClose}
-            className="h-7 w-7 flex items-center justify-center rounded-lg text-[16px] transition hover:bg-white/10"
+            aria-label="Close challenge dialog"
+            title="Close"
+            className="h-7 w-7 flex items-center justify-center rounded-lg text-[16px] transition hover:bg-white/10 focus-visible:bg-white/10"
             style={{ color: 'oklch(0.55 0.04 250)' }}
           >×</button>
         </div>
@@ -2020,7 +2031,9 @@ function WhiteboardChallengeModal({ entity, session, loading, onClose }: Whitebo
                     <span className="text-[11px] text-slate-600 truncate">{attachment.name}</span>
                     <button
                       onClick={() => setAttachment(null)}
-                      className="shrink-0 text-[13px] text-slate-400 hover:text-slate-700 transition"
+                      aria-label={`Remove attachment ${attachment.name}`}
+                      title="Remove attachment"
+                      className="shrink-0 text-[13px] text-slate-400 hover:text-slate-700 focus-visible:text-slate-700 transition"
                     >×</button>
                   </div>
                 )}

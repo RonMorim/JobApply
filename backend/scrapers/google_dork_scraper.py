@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 import time
 from typing import Optional
@@ -57,13 +58,29 @@ logger = logging.getLogger(__name__)
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 # ATS domains to target, each as a Google site: operator value.
+# Split into two tiers:
+#   _ATS_DOMAINS        — direct ATS platforms (unauthenticated requests work)
+#   _LINKEDIN_DOMAINS   — LinkedIn job-view pages (indexed by Google, read-only;
+#                         no cookie or Playwright used — public JSON-LD only)
 _ATS_DOMAINS: list[str] = [
+    # Global ATS platforms common in Israeli tech
     "boards.greenhouse.io",
     "jobs.lever.co",
     "comeet.co",
     "myworkdayjobs.com",
     "jobs.ashbyhq.com",
     "apply.workable.com",
+    # Israeli job boards (public, unauthenticated)
+    "alljobs.co.il",
+    "drushim.co.il",
+    "gotfriends.co.il",
+]
+
+# LinkedIn is included only as a Google index source — we never authenticate.
+# Public /jobs/view/ pages embed a JSON-LD block that our scraper can extract
+# without a session cookie.  Login-wall pages are filtered by is_valid_job_content.
+_LINKEDIN_DOMAINS: list[str] = [
+    "linkedin.com/jobs/view",
 ]
 
 # Location qualifiers appended to every query.
@@ -73,7 +90,13 @@ _LOCATION_TERMS: list[str] = ["Israel", "Tel Aviv"]
 _RESULTS_PER_QUERY = 5
 
 # Seconds to sleep between consecutive Google queries.
-_INTER_QUERY_DELAY = 3.0
+_INTER_QUERY_DELAY     = 3.0    # minimum sleep between queries (seconds)
+_INTER_QUERY_JITTER_LO = 60.0   # random jitter lower bound (seconds) — ~1 min
+_INTER_QUERY_JITTER_HI = 120.0  # random jitter upper bound (seconds) — ~2 min
+
+# When Google returns a 429, we sleep this long then abandon the remaining
+# queries for the cycle.  The next discovery cycle will retry from scratch.
+_BACKOFF_ON_429 = 600.0   # 10 minutes
 
 # Maximum keywords per OR batch (keep Google query strings manageable).
 _BATCH_SIZE = 4
@@ -176,13 +199,17 @@ class GoogleDorkScraper(BaseScraper):
 
     def __init__(
         self,
-        keywords: Optional[list[str]] = None,
-        domains:  Optional[list[str]] = None,
-        user_id:  str = "default",
+        keywords:         Optional[list[str]] = None,
+        domains:          Optional[list[str]] = None,
+        include_linkedin: bool = True,
+        user_id:          str = "default",
     ) -> None:
         super().__init__("Google Dork (ATS Direct)", "https://www.google.com")
         self._keywords = keywords or TARGET_SEARCH_QUERIES
-        self._domains  = domains  or _ATS_DOMAINS
+        base_domains   = domains or _ATS_DOMAINS
+        # Append LinkedIn read-only domains unless explicitly excluded.
+        # They are queried last so ATS results (higher quality) come first.
+        self._domains  = base_domains + (_LINKEDIN_DOMAINS if include_linkedin else [])
         self._user_id  = user_id
 
     @property
@@ -223,6 +250,15 @@ class GoogleDorkScraper(BaseScraper):
         )
 
         for domain, query in queries:
+            # Jittered delay before every query — including the first — to stay
+            # well under Google's 429 threshold.  The base _INTER_QUERY_DELAY is
+            # a minimum; actual sleep is uniformly random within the jitter range.
+            jitter = random.uniform(_INTER_QUERY_JITTER_LO, _INTER_QUERY_JITTER_HI)
+            logger.debug(
+                "[GoogleDorkScraper] sleeping %.1fs before query domain=%s", jitter, domain,
+            )
+            time.sleep(jitter)
+
             try:
                 raw_results = list(google_search(
                     query,
@@ -232,11 +268,23 @@ class GoogleDorkScraper(BaseScraper):
                     lang           = "en",
                 ))
             except Exception as exc:
+                exc_str = str(exc)
+                # 429 from Google means we are already blocked for this IP/session.
+                # Firing more queries immediately will extend the block.  Instead:
+                # sleep for _BACKOFF_ON_429, then abandon the rest of this cycle.
+                # The next discovery cycle (hours later) will retry from scratch.
+                if "429" in exc_str or "too many requests" in exc_str.lower():
+                    logger.warning(
+                        "[GoogleDorkScraper] 429 rate-limit hit (domain=%s). "
+                        "Sleeping %.0fs then aborting this cycle — %d queries skipped.",
+                        domain, _BACKOFF_ON_429, len(queries) - queries.index((domain, query)) - 1,
+                    )
+                    time.sleep(_BACKOFF_ON_429)
+                    break   # exit the for-loop; return whatever we collected so far
                 logger.warning(
                     "[GoogleDorkScraper] Query failed for domain=%s: %s",
                     domain, exc,
                 )
-                time.sleep(_INTER_QUERY_DELAY)
                 continue
 
             for result in raw_results:
@@ -244,8 +292,17 @@ class GoogleDorkScraper(BaseScraper):
                 if not url or url in seen_urls:
                     continue
 
-                # Only accept URLs that actually belong to the targeted ATS domain
+                # Only accept URLs that actually contain the targeted domain/path.
+                # For linkedin.com/jobs/view we check the sub-path, not just the host.
                 if domain not in url:
+                    continue
+
+                # Never accept LinkedIn URLs that require a login wall —
+                # only /jobs/view/ pages carry a public JSON-LD block.
+                if "linkedin.com" in url and "/jobs/view/" not in url:
+                    logger.debug(
+                        "[GoogleDorkScraper] SKIP (linkedin non-view url): %s", url,
+                    )
                     continue
 
                 seen_urls.add(url)
@@ -290,9 +347,6 @@ class GoogleDorkScraper(BaseScraper):
                     "[GoogleDorkScraper] FOUND: '%s' @ %s (%s)",
                     title, company, domain,
                 )
-
-            # Polite inter-query delay
-            time.sleep(_INTER_QUERY_DELAY)
 
         logger.info(
             "[GoogleDorkScraper] Total: %d relevant jobs from %d queries",

@@ -20,6 +20,7 @@ import { useAuth }              from '@/contexts/AuthContext'
 import { resolveDisplayName }   from '@/lib/nameUtils'
 import type { Job }             from '@/lib/data'
 import type { ApiFeedJob }      from '@/lib/apiTypes'
+import { TOKENS }               from '@/lib/tokens'
 
 // ── Legacy-data migration gate ────────────────────────────────────────────────
 //
@@ -159,35 +160,34 @@ function MigrationGate({ children }: { children: React.ReactNode }) {
   if (phase !== 'done') {
     return (
       <div
-        className="min-h-screen flex flex-col items-center justify-center gap-5 px-6"
-        style={{ backgroundColor: '#0F172A' }}
+        className="min-h-screen flex flex-col items-center justify-center gap-5 px-6 bg-ja-ink"
       >
         {phase !== 'error' && (
           <div className="w-9 h-9 rounded-full border-2 border-slate-700 border-t-blue-500 animate-spin" />
         )}
 
         {phase === 'in_flight' && (
-          <p className="text-sm text-center leading-relaxed" style={{ color: '#94A3B8', maxWidth: 300 }}>
+          <p className="text-sm text-center leading-relaxed text-ja-subtle" style={{ maxWidth: 300 }}>
             Securing your workspace and activating agents…
             <br />
-            <span style={{ color: '#64748B' }}>Please wait.</span>
+            <span>Please wait.</span>
           </p>
         )}
 
         {phase === 'error' && (
           <div className="flex flex-col items-center gap-4 text-center" style={{ maxWidth: 340 }}>
             {/* Warning icon */}
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none"
-              stroke="#EF4444" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" className="text-red-500"
+              stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
             >
               <circle cx="12" cy="12" r="10" />
               <line x1="12" y1="8"  x2="12" y2="12" />
               <line x1="12" y1="16" x2="12.01" y2="16" />
             </svg>
-            <p className="text-sm font-medium" style={{ color: '#F87171' }}>
+            <p className="text-sm font-medium text-red-400">
               Workspace setup failed
             </p>
-            <p className="text-xs font-mono break-all" style={{ color: '#64748B' }}>
+            <p className="text-xs font-mono break-all text-ja-subtle">
               {errMsg || 'Unknown error — check the browser console for details.'}
             </p>
             <button
@@ -195,8 +195,7 @@ function MigrationGate({ children }: { children: React.ReactNode }) {
                 firedRef.current = false
                 runMigration.current?.()
               }}
-              className="mt-2 px-5 py-2 rounded-lg text-sm font-medium text-white transition-opacity hover:opacity-80"
-              style={{ backgroundColor: '#0D9488' }}
+              className="mt-2 px-5 py-2 rounded-lg text-sm font-medium text-white bg-ja-primary hover:bg-ja-primaryHover transition-colors"
             >
               Retry
             </button>
@@ -372,7 +371,7 @@ function HomePageContent() {
   const jobsScannedToday = jobs.filter(j => j.isNew).length + manualFeedJobs.length
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#FBFBFA]">
+    <div className="min-h-screen flex flex-col bg-ja-bg">
       <Header tab={tab} setTab={setTab} onOpenControls={() => setControlsOpen(true)} jobs={jobs} />
 
       <main className="flex-grow max-w-content mx-auto w-full px-6 py-8">
@@ -435,9 +434,9 @@ function ATSMockup() {
       {/* KPI strip — no boxes, no borders, pure typography from Overview.tsx */}
       <div className="grid grid-cols-3 gap-8 px-2">
         {[
-          { label: 'Jobs scanned today', value: '47',  sub: 'New roles discovered by agents', accent: '#0D9488' },
-          { label: 'High matches',       value: '12',  sub: 'ATS score above 85',              accent: 'oklch(0.65 0.13 155)' },
-          { label: 'CVs tailored',       value: '3',   sub: 'Analyses run this week',          accent: 'oklch(0.55 0.20 290)' },
+          { label: 'Jobs scanned today', value: '47',  sub: 'New roles discovered by agents', accent: TOKENS.color.primary },
+          { label: 'High matches',       value: '12',  sub: 'ATS score above 85',              accent: TOKENS.color.success },
+          { label: 'CVs tailored',       value: '3',   sub: 'Analyses run this week',          accent: TOKENS.color.violet  },
         ].map(stat => (
           <div key={stat.label} className="flex flex-col min-w-0">
             <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-slate-400 mb-1">
@@ -461,8 +460,7 @@ function ATSMockup() {
           <div className="flex items-center gap-2.5 flex-wrap">
             <h2 className="text-[15px] font-bold text-slate-900 tracking-tight">
               <span
-                className="inline-block h-1.5 w-1.5 rounded-full align-middle mr-2 -translate-y-[2px]"
-                style={{ background: '#0D9488' }}
+                className="inline-block h-1.5 w-1.5 rounded-full align-middle mr-2 -translate-y-[2px] bg-ja-primary"
               />
               Senior Product Manager
             </h2>
@@ -509,8 +507,7 @@ function FeedMockup() {
               <h3 className="text-[15px] font-bold text-slate-900 tracking-tight">
                 {item.isNew && (
                   <span
-                    className="inline-block h-1.5 w-1.5 rounded-full align-middle mr-2 -translate-y-[2px]"
-                    style={{ background: '#0D9488' }}
+                    className="inline-block h-1.5 w-1.5 rounded-full align-middle mr-2 -translate-y-[2px] bg-ja-primary"
                   />
                 )}
                 {item.title}
@@ -641,8 +638,7 @@ function BeforeAfterMockup() {
         >
           {/* Company initial avatar */}
           <div
-            className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-[13px] font-bold"
-            style={{ background: '#F0FDFA', color: '#0D9488' }}
+            className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-[13px] font-bold bg-ja-primarySubtle text-ja-primary"
           >
             W
           </div>
@@ -656,8 +652,7 @@ function BeforeAfterMockup() {
               Tel Aviv
             </p>
             <span
-              className="inline-block mt-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-              style={{ background: '#F0FDFA', color: '#0D9488' }}
+              className="inline-block mt-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-ja-primarySubtle text-ja-primary"
             >
               88% match
             </span>
@@ -684,25 +679,23 @@ function BeforeAfterMockup() {
           className="mt-auto"
           style={{
             borderRadius: 8,
-            border: '1px solid #E2E8F0',
+            border: '1px solid var(--ja-line)',
             background: 'white',
             padding: '9px 10px 10px',
           }}
         >
-          <p style={{ fontSize: 10, fontWeight: 700, color: '#0D9488', marginBottom: 5, letterSpacing: '0.4px', textTransform: 'uppercase' }}>
+          <p className="text-ja-primary" style={{ fontSize: 10, fontWeight: 700, marginBottom: 5, letterSpacing: '0.4px', textTransform: 'uppercase' }}>
             {t.mockup.cv_copilot}
           </p>
           <div
             style={{
               width: '100%', borderRadius: 6, height: 44,
-              background: '#F8FAFC', border: '1px solid #E2E8F0',
+              background: 'var(--ja-bg)', border: '1px solid var(--ja-line)',
             }}
           />
           <div
-            style={{
-              marginTop: 6, width: '100%', height: 26, borderRadius: 20,
-              background: '#0D9488', opacity: 0.9,
-            }}
+            className="bg-ja-primary"
+            style={{ marginTop: 6, width: '100%', height: 26, borderRadius: 20, opacity: 0.9 }}
           />
         </div>
       </div>
@@ -754,9 +747,9 @@ function BeforeAfterMockup() {
             <div className="h-2 w-3/4 rounded bg-slate-200" />
             {/* Highlighted "added" keywords */}
             <div className="flex gap-1.5 pt-0.5">
-              <div className="h-2 w-14 rounded" style={{ background: '#D1FAE5' }} />
-              <div className="h-2 w-10 rounded" style={{ background: '#D1FAE5' }} />
-              <div className="h-2 w-12 rounded" style={{ background: '#D1FAE5' }} />
+              <div className="h-2 w-14 rounded bg-emerald-100" />
+              <div className="h-2 w-10 rounded bg-emerald-100" />
+              <div className="h-2 w-12 rounded bg-emerald-100" />
             </div>
           </div>
         </div>
@@ -817,8 +810,8 @@ function LandingPage() {
       <ul className="mt-6 space-y-3">
         {bullets.map(item => (
           <li key={item} className="flex items-center gap-2.5 text-[13px] text-slate-700">
-            <span className="w-4 h-4 rounded-full bg-teal-50 flex items-center justify-center flex-shrink-0">
-              <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="#0D9488" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <span className="w-4 h-4 rounded-full bg-ja-primarySubtle text-ja-primary flex items-center justify-center flex-shrink-0">
+              <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="20 6 9 17 4 12" />
               </svg>
             </span>
@@ -835,7 +828,7 @@ function LandingPage() {
   const gridBg = `url("data:image/svg+xml,%3Csvg width='40' height='40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M 40 0 L 0 0 0 40' fill='none' stroke='%23CBD5E1' stroke-width='0.5' opacity='0.55'/%3E%3C/svg%3E")`
 
   return (
-    <div className="min-h-screen overflow-x-hidden" style={{ background: '#F8FAFC' }}>
+    <div className="min-h-screen overflow-x-hidden bg-ja-bg">
 
       {/* ── Ambient background layer (grid + gradient orbs) ──────────────── */}
       <div
@@ -885,8 +878,7 @@ function LandingPage() {
             </button>
             <button
               onClick={() => router.push('/login')}
-              className="h-9 px-5 rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90"
-              style={{ background: '#0D9488' }}
+              className="h-9 px-5 rounded-lg text-sm font-semibold text-white bg-ja-primary hover:bg-ja-primaryHover transition-colors"
             >
               {l.nav.get_started}
             </button>
@@ -901,7 +893,7 @@ function LandingPage() {
         </span>
         <h1 className="text-4xl sm:text-[52px] font-bold text-slate-900 tracking-tight leading-tight mb-6 max-w-3xl mx-auto">
           {l.hero.h1_line1}<br />
-          <span style={{ color: '#0D9488' }}>{l.hero.h1_line2}</span>
+          <span className="text-ja-primary">{l.hero.h1_line2}</span>
         </h1>
         <p className="text-lg text-slate-500 max-w-2xl mx-auto mb-10 leading-relaxed">
           {l.hero.sub}
@@ -909,8 +901,7 @@ function LandingPage() {
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
           <button
             onClick={() => router.push('/login')}
-            className="inline-flex items-center gap-2 h-12 px-8 rounded-lg text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
-            style={{ background: '#0D9488' }}
+            className="inline-flex items-center gap-2 h-12 px-8 rounded-lg text-sm font-semibold text-white shadow-sm bg-ja-primary hover:bg-ja-primaryHover transition-colors"
           >
             {l.hero.cta_primary}
             <svg width={14} height={14} viewBox="0 0 24 24" fill="none"
@@ -1041,7 +1032,7 @@ function LandingPage() {
                 className="bg-white rounded-2xl border border-slate-100 p-6"
                 style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.02), 0 20px 40px rgba(0,0,0,0.03)' }}
               >
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-4" style={{ background: '#F0FDFA', color: '#0D9488' }}>
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-4 bg-ja-primarySubtle text-ja-primary">
                   {bentoIcons[i]}
                 </div>
                 <h3 className="text-[15px] font-bold text-slate-900 tracking-tight mb-2">{card.title}</h3>
@@ -1053,7 +1044,7 @@ function LandingPage() {
       </section>
 
       {/* ── Final CTA ─────────────────────────────────────────────────────── */}
-      <section className="py-24 px-6 text-center" style={{ background: '#0D9488' }}>
+      <section className="py-24 px-6 text-center bg-ja-primary">
         <h2 className="text-3xl sm:text-4xl font-bold text-white tracking-tight mb-4">
           {l.cta_final.h2}
         </h2>

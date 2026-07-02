@@ -8,11 +8,12 @@ import { SparkIcon, UserBadgeIcon, FileIcon, SlidersIcon, ArrowIcon } from './ic
 import { TrustDashboard } from './TrustDashboard'
 import { fetchScraperStatus, type ScraperStatus } from '@/lib/api'
 
-// ── LinkedIn Blocked Banner ───────────────────────────────────────────────────
+// ── LinkedIn Scraper Status Banners ──────────────────────────────────────────
 //
-// Shown at the top of Overview when feed_service detects ≥ 2 redirect-loop
-// errors from LinkedIn (ERR_TOO_MANY_REDIRECTS = bot-detection signal).
-// Disappears automatically when the scraper status is cleared in the KV store.
+// BLOCKED — enrichment loop auto-paused after ≥ 2 redirect-loop errors
+//           (ERR_TOO_MANY_REDIRECTS = LinkedIn bot-detection signal).
+// PAUSED  — manually paused via reset_linkedin_scraper.py --pause while a
+//            fresh li_at cookie is being configured.  Not an error state.
 
 function LinkedInBlockedBanner({ blockedAt }: { blockedAt: string | null }) {
   const formattedAt = blockedAt
@@ -31,13 +32,37 @@ function LinkedInBlockedBanner({ blockedAt }: { blockedAt: string | null }) {
           LinkedIn Connection Blocked
         </p>
         <p className="text-[12px] text-slate-600 leading-relaxed">
-          The scraper hit a redirect loop (bot-detection) and the enrichment loop has been paused
-          to protect your IP.{formattedAt && <> Blocked at {formattedAt}.</>}
-          {' '}To resume: refresh <code className="font-mono text-[11px]">LINKEDIN_LI_AT</code> in{' '}
-          <code className="font-mono text-[11px]">backend/.env</code>, delete the browser profile
-          at <code className="font-mono text-[11px]">data/linkedin_browser_profile/</code>, then
-          reset <code className="font-mono text-[11px]">linkedin_scraper_status</code> in the KV
-          store and restart the server.
+          The scraper hit a redirect loop (bot-detection) and has been paused to protect your
+          IP.{formattedAt && <> Blocked at {formattedAt}.</>}
+          {' '}Run{' '}
+          <code className="font-mono text-[11px]">venv/bin/python -m backend.scripts.reset_linkedin_scraper --pause</code>
+          , update <code className="font-mono text-[11px]">LINKEDIN_LI_AT</code> in{' '}
+          <code className="font-mono text-[11px]">backend/.env</code>, then run{' '}
+          <code className="font-mono text-[11px]">--resume</code>.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function LinkedInPausedBanner() {
+  return (
+    <div
+      className="rounded-xl px-4 py-3.5 flex items-start gap-3"
+      style={{ background: 'oklch(0.97 0.04 55)', border: '1px solid oklch(0.90 0.06 55)' }}
+      role="status"
+    >
+      <span className="text-[18px] shrink-0 mt-0.5" aria-hidden="true">⏸</span>
+      <div className="flex-1 min-w-0">
+        <p className="text-[13px] font-bold text-slate-800 mb-0.5">
+          LinkedIn Scraper — Maintenance Pause
+        </p>
+        <p className="text-[12px] text-slate-600 leading-relaxed">
+          The enrichment loop is paused while a fresh cookie is being configured.
+          Update <code className="font-mono text-[11px]">LINKEDIN_LI_AT</code> in{' '}
+          <code className="font-mono text-[11px]">backend/.env</code>, then run{' '}
+          <code className="font-mono text-[11px]">venv/bin/python -m backend.scripts.reset_linkedin_scraper --resume</code>{' '}
+          to restart scraping.
         </p>
       </div>
     </div>
@@ -107,7 +132,7 @@ function KPIRow({ jobsScannedToday, highMatches, actionsTaken, loading }: {
         label="Actions taken"
         value={actionsTaken}
         sub="Analyses run or CVs tailored"
-        accent="oklch(0.55 0.20 290)"
+        accent={TOKENS.color.violet}
       />
     </div>
   )
@@ -132,14 +157,14 @@ function QuickActions({ newCount, savedCount, onGo }: {
       id: 'profile', tab: 'profile-builder:optimize_gaps',
       label: 'Review your profile strengths',
       sub: 'Targets low-confidence claims first',
-      accent: 'oklch(0.55 0.20 290)',
+      accent: TOKENS.color.violet,
       Icon: UserBadgeIcon,
     },
     {
       id: 'cv', tab: 'profile-builder',
       label: 'Update your CV',
       sub: 'Open the AI Profile Builder',
-      accent: 'oklch(0.55 0.18 160)',
+      accent: TOKENS.color.success,
       Icon: FileIcon,
     },
     {
@@ -312,20 +337,33 @@ export function Overview({
   const handleMatchClick    = useCallback(()              => onGo('feed'),         [onGo])
   const handleMatchJobClick = useCallback((jobId: string) => onGo('feed', jobId),  [onGo])
 
-  // ── LinkedIn scraper status — polled once on mount ────────────────────────
+  // ── LinkedIn scraper status — polled on mount + every 30 s ─────────────────
+  // Re-polling is necessary because the Overview component stays mounted even
+  // while the user is on other tabs, and the reset script can change the KV
+  // state at any time.  A stale in-memory snapshot would keep the BLOCKED
+  // banner visible long after the status was cleared.
   const [scraperStatus, setScraperStatus] = useState<ScraperStatus | null>(null)
   useEffect(() => {
-    fetchScraperStatus()
-      .then(setScraperStatus)
-      .catch(() => { /* silently ignore — banner is non-critical */ })
+    let cancelled = false
+    const poll = () => {
+      fetchScraperStatus()
+        .then(s => { if (!cancelled) setScraperStatus(s) })
+        .catch(() => { /* non-critical — ignore */ })
+    }
+    poll()
+    const interval = setInterval(poll, 30_000)
+    return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
   return (
     <div className="space-y-12">
 
-      {/* ── LinkedIn blocked banner ──────────────────────────────────────── */}
+      {/* ── LinkedIn scraper status banners ──────────────────────────────── */}
       {scraperStatus?.status === 'BLOCKED' && (
         <LinkedInBlockedBanner blockedAt={scraperStatus.blocked_at} />
+      )}
+      {scraperStatus?.status === 'PAUSED' && (
+        <LinkedInPausedBanner />
       )}
 
       {/* ── Hero greeting ───────────────────────────────────────────────── */}

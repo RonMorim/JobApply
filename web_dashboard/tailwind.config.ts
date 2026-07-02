@@ -29,8 +29,21 @@ const config: Config = {
           lineSoft:   '#F1F5F9',   // slate-100 — ultra-subtle inner separators
 
           // ── Brand ─────────────────────────────────────────────────────────
-          primary:      '#0D9488',   // teal-600 — serene, modern, non-corporate
-          primaryHover: '#0F766E',   // teal-700 — ~5% darker on hover
+          primary:       '#0D9488',   // teal-600 — serene, modern, non-corporate
+          primaryHover:  '#0F766E',   // teal-700 — ~5% darker on hover
+          primarySubtle: '#F0FDFA',   // teal-50  — selected states, pill bg
+
+          // ── Semantic feedback (mirrors --ja-* vars in globals.css) ────────
+          success:       '#059669',   // emerald-600
+          successSubtle: '#ECFDF5',   // emerald-50
+          warn:          '#D97706',   // amber-600
+          warnSubtle:    '#FFFBEB',   // amber-50
+          danger:        '#DC2626',   // red-600
+          dangerSubtle:  '#FEF2F2',   // red-50
+
+          // ── Fixed brand constants ─────────────────────────────────────────
+          linkedin:      '#0A66C2',   // LinkedIn brand blue — external constant
+          inkDeep:       '#0A1F1C',   // near-black teal — dark hero/auth gradient stop
         },
       },
       maxWidth: {

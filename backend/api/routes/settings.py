@@ -17,10 +17,11 @@ router = APIRouter()
 _KV_SCRAPER_STATUS = "linkedin_scraper_status"
 _KV_BLOCKED_AT     = "linkedin_scraper_blocked_at"
 _KV_COOKIE_STATUS  = "linkedin_cookie_status"
+_KV_SCRAPER_PAUSED = "linkedin_scraper_paused"
 
 
 class ScraperStatusResponse(BaseModel):
-    status:        str            # 'ok' | 'suspicious' | 'BLOCKED'
+    status:        str            # 'ok' | 'suspicious' | 'BLOCKED' | 'PAUSED'
     blocked_at:    Optional[str]  # ISO-8601 UTC, set when status='BLOCKED'
     cookie_status: Optional[str]  # 'ok' | 'suspicious'
 
@@ -30,21 +31,33 @@ async def get_scraper_status() -> ScraperStatusResponse:
     """
     Return the current LinkedIn scraper health status.
 
-    Reads three KV keys set by feed_service._record_redirect_error():
+    Reads four KV keys:
       • linkedin_scraper_status  — 'BLOCKED' when redirect-loop threshold hit
       • linkedin_scraper_blocked_at — ISO timestamp when BLOCKED was set
       • linkedin_cookie_status   — 'suspicious' after first redirect error
+      • linkedin_scraper_paused  — '1' when manually paused via reset script
 
+    Priority: BLOCKED > PAUSED > suspicious > ok.
     Returns status='ok' when no errors have been recorded.
     """
     with Session(ENGINE) as db:
         status_row = db.get(KVRow, _KV_SCRAPER_STATUS)
         blocked_row = db.get(KVRow, _KV_BLOCKED_AT)
         cookie_row  = db.get(KVRow, _KV_COOKIE_STATUS)
+        paused_row  = db.get(KVRow, _KV_SCRAPER_PAUSED)
 
-    status = status_row.value if status_row else "ok"
-    blocked_at = blocked_row.value if blocked_row else None
-    cookie_status = cookie_row.value if cookie_row else "ok"
+    blocked_at    = blocked_row.value if blocked_row else None
+    cookie_status = cookie_row.value  if cookie_row  else "ok"
+
+    if status_row and status_row.value == "BLOCKED":
+        status = "BLOCKED"
+    elif paused_row and paused_row.value == "1":
+        # Manually paused via reset_linkedin_scraper.py --pause while a fresh
+        # cookie is being configured.  Distinct from BLOCKED so the UI can show
+        # a maintenance message instead of an error banner.
+        status = "PAUSED"
+    else:
+        status = "ok"
 
     return ScraperStatusResponse(
         status=status,

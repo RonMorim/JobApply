@@ -94,21 +94,3 @@ DISCOVERY_INTERVAL_SECONDS: int = 86400  # 24 hours — credit-conservation mode
 DEV_MODE: bool = False
 DEV_MAX_JOBS_PER_BOARD: int = 5
 
-# ── LinkedIn authenticated scraping ───────────────────────────────────────────
-# Optional session cookie used by the LinkedIn JD scraper to bypass the login
-# wall on `il.linkedin.com` job pages.
-#
-# How to obtain:
-#   1. Log in to linkedin.com in a desktop browser.
-#   2. Open DevTools → Application → Cookies → www.linkedin.com
-#   3. Copy the value of the `li_at` cookie.
-#   4. Add to backend/.env:  LINKEDIN_LI_AT=<paste value here>
-#
-# Security: treat this value like a password — do NOT commit it to version
-# control or expose it in logs.  The scraper never logs the cookie value.
-#
-# When None (default), the scraper falls back to unauthenticated requests
-# (which LinkedIn rate-limits and blocks for most job pages).
-import os as _os
-from typing import Optional as _Optional
-LINKEDIN_LI_AT: _Optional[str] = _os.environ.get("LINKEDIN_LI_AT") or None

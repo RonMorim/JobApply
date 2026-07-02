@@ -5,10 +5,17 @@ Takes the current cv_data JSON, a plain-English instruction from the user,
 and the candidate's full Master Profile (USER_PROFILE) as additional context.
 
 Always returns a structured result:
-  {"status": "success"|"warning"|"rejected", "message": str|None, "cv_data": {...}}
+  {
+    "status":          "success" | "warning" | "rejected",
+    "message":         str | None,
+    "changes_summary": str | None,
+    "cv_data":         {...}
+  }
 
-- success:  edit applied; cv_data is the updated JSON.
-- warning:  edit is possible but destructive; cv_data is unchanged; message explains.
+- success:  edit applied; cv_data is the updated JSON; changes_summary describes
+            exactly what was changed (field, entry, bullet index).
+- warning:  edit is possible but destructive or ambiguous; cv_data is unchanged;
+            message explains the risk and asks for clarification.
 - rejected: edit is impossible (hallucination / full rewrite); cv_data is unchanged.
 
 The Master Profile enables restore/add operations: if the user asks to bring back an
@@ -36,16 +43,45 @@ _MODEL      = "claude-sonnet-4-6"
 _MAX_TOKENS = 4000
 
 _SYSTEM_PROMPT = """\
-You are a precision CV editor and reasoning agent. You receive a cv_data JSON,
-a user instruction, and a MASTER PROFILE containing the candidate's full verified
-work history. You MUST respond with this exact JSON wrapper — always, no exceptions,
-no plain text outside it:
+You are a precision CV editor and reasoning agent — a senior Product Manager assistant.
+Your edits must be surgical. You are not here to rewrite for the sake of rewriting.
+Every change must be intentional, minimal, and traceable.
+
+You receive a cv_data JSON, a user instruction, and a MASTER PROFILE containing the
+candidate's full verified work history.
+
+You MUST respond with this exact JSON wrapper — always, no exceptions, no plain text
+outside it:
 
 {
-  "status":  "success" | "warning" | "rejected",
-  "message": "<string or null>",
-  "cv_data": { <the cv_data object> }
+  "status":          "success" | "warning" | "rejected",
+  "message":         "<string or null>",
+  "changes_summary": "<bullet-point summary of exactly what was changed, or null>",
+  "cv_data":         { <the cv_data object> }
 }
+
+══════════════════════════════════════════
+CHANGES_SUMMARY — MANDATORY FOR SUCCESS
+══════════════════════════════════════════
+
+When status is "success", you MUST populate "changes_summary" with a clear, concise
+bullet-point description of exactly what you changed. Be specific — name the company,
+bullet index, field, or section. Good examples:
+
+  • Updated bullet 2 of Go-Out experience: replaced "managed" with "led" and added
+    payment-gateway migration metric.
+  • Added Pitango Venture Capital experience block (from Master Profile) after
+    the most recent role.
+  • Removed bullet 4 of IDF military service ("performed administrative tasks")
+    as it was redundant with bullet 1.
+  • Updated summary opening line: removed "experienced PM" and replaced with
+    a specific product domain statement.
+
+If you cannot write a specific, accurate changes_summary, it means your edit is too
+broad or ambiguous. In that case, use status="warning" and ask the user to clarify
+which specific part they want changed — do NOT make a guess and apply it anyway.
+
+When status is "warning" or "rejected", set "changes_summary" to null.
 
 ══════════════════════════════════════════
 STATUS DECISION RULES
@@ -83,20 +119,29 @@ STATUS DECISION RULES
   identical to the input is a critical error. If you cannot apply the change,
   use status="rejected" with a clear explanation instead.
 
-"warning" — The edit is possible but significantly destructive. Do NOT apply it.
-  Set cv_data to the UNCHANGED input JSON.
-  Write a clear, direct message explaining the specific risk.
-  Tell the user they can confirm by sending "Yes, do it anyway" or similar.
+"warning" — The edit is possible but significantly destructive, or the instruction
+  is ambiguous and acting on a guess could produce an incorrect result.
+  Do NOT apply the change. Set cv_data to the UNCHANGED input JSON.
+  Write a clear, direct message in "message" explaining the specific risk
+  or asking for clarification. Set changes_summary to null.
+
+  AMBIGUITY RULE: If an instruction is ambiguous and you are not certain which
+  specific bullet, field, or experience the user means, it is always better to
+  return "warning" and ask for clarification than to make a change that might
+  be wrong. Transparency and accuracy are more important than speed.
 
   Use "warning" when the user asks to:
   • Remove GO-OUT or the most detailed/primary experience entry
   • Delete more than half the experience entries in one instruction
   • Remove the entire skills section or education section
   • Any change that would clearly tank ATS keyword coverage
+  • Anything phrased ambiguously where acting on a guess could be harmful
+    (e.g. "make the second experience shorter" when it is unclear which entry
+    is "second" given the current CV order)
 
 "rejected" — The edit is impossible under the system's rules. Do NOT apply it.
   Set cv_data to the UNCHANGED input JSON.
-  Write a polite, specific explanation.
+  Write a polite, specific explanation in "message". Set changes_summary to null.
 
   Use "rejected" ONLY when the user asks to:
   • Add an employer, role, job title, metric, or tool that is NOT in the
@@ -158,13 +203,11 @@ def _serialize_master_profile(master_profile: dict) -> str:
     parts: list[str] = []
 
     experience    = master_profile.get("experience", [])
-    military_entries: list[dict] = []   # collected for the MILITARY section below
+    military_entries: list[dict] = []
 
     if experience:
         parts.append("EXPERIENCE (civilian history; earliest first):")
         for exp in experience:
-            # Military entries have a "unit" key but no "company" key.
-            # Extract them into the dedicated section below instead of here.
             if exp.get("unit") and not exp.get("company"):
                 military_entries.append(exp)
                 continue
@@ -182,7 +225,6 @@ def _serialize_master_profile(master_profile: dict) -> str:
             if details:
                 parts.append(f"    Details: {details}")
 
-            # GO-OUT style: nested roles list
             nested_roles = exp.get("roles", [])
             for nr in nested_roles:
                 parts.append(
@@ -191,11 +233,6 @@ def _serialize_master_profile(master_profile: dict) -> str:
                 if nr.get("details"):
                     parts.append(f"      {nr['details']}")
 
-    # ── Dedicated MILITARY SERVICE section ────────────────────────────────────
-    # When the user asks to add/restore military service, the model MUST copy
-    # these values into the TOP-LEVEL "military" key of cv_data:
-    #   {"role": "...", "unit": "...", "dates": "..."}
-    # Do NOT place military in the experience array.
     if military_entries:
         parts.append(
             '\nMILITARY SERVICE — inject into cv_data["military"] key (NOT experience):'
@@ -252,11 +289,10 @@ def _sanitize_history(raw: list[dict]) -> list[dict]:
         if role not in ("user", "assistant") or not content:
             continue
         if role != expected_role:
-            continue  # drop out-of-order turn
+            continue
         sanitized.append({"role": role, "content": content})
         expected_role = "assistant" if expected_role == "user" else "user"
 
-    # Drop a trailing "user" turn — the current user message will follow immediately
     if sanitized and sanitized[-1]["role"] == "user":
         sanitized.pop()
 
@@ -289,7 +325,12 @@ class CopilotAgent:
         conversational follow-ups like "make that bullet shorter".
 
         Always returns:
-          {"status": "success"|"warning"|"rejected", "message": str|None, "cv_data": dict}
+          {
+            "status":          "success" | "warning" | "rejected",
+            "message":         str | None,
+            "changes_summary": str | None,
+            "cv_data":         dict,
+          }
 
         Never raises on model errors — falls back to a "rejected" result so the
         caller can always forward a structured response to the frontend.
@@ -300,8 +341,6 @@ class CopilotAgent:
             else "(master profile not provided — restore operations may be limited)"
         )
 
-        # Current user turn always carries the full CV + master profile so the
-        # model has the authoritative state even mid-conversation.
         current_user_msg = (
             f"USER INSTRUCTION:\n{user_prompt.strip()}\n\n"
             f"CURRENT CV JSON:\n"
@@ -311,9 +350,6 @@ class CopilotAgent:
             f"{profile_section}"
         )
 
-        # Build the messages array: validated history turns + current user message.
-        # History entries are lightweight (just the user's instruction text and
-        # the assistant's brief status), NOT the full cv_data, to keep tokens low.
         prior_turns = _sanitize_history(chat_history) if chat_history else []
         messages    = prior_turns + [{"role": "user", "content": current_user_msg}]
 
@@ -335,15 +371,15 @@ class CopilotAgent:
         except Exception as exc:
             logger.exception("[CopilotAgent] API call failed: %s", exc)
             return {
-                "status":  "rejected",
-                "message": "The edit service is temporarily unavailable. Please try again.",
-                "cv_data": cv_data,
+                "status":          "rejected",
+                "message":         "The edit service is temporarily unavailable. Please try again.",
+                "changes_summary": None,
+                "cv_data":         cv_data,
             }
 
         raw = response.content[0].text.strip()
-        original_raw = raw  # keep for fallback message
+        original_raw = raw
 
-        # Strip optional markdown fences
         if raw.startswith("```json"):
             raw = raw[7:]
         elif raw.startswith("```"):
@@ -367,23 +403,29 @@ class CopilotAgent:
                 exc, original_raw[:300],
             )
             return {
-                "status":  "rejected",
-                "message": original_raw[:400] if original_raw.strip() else
-                           "This edit cannot be performed.",
-                "cv_data": cv_data,
+                "status":          "rejected",
+                "message":         original_raw[:400] if original_raw.strip() else
+                                   "This edit cannot be performed.",
+                "changes_summary": None,
+                "cv_data":         cv_data,
             }
 
-        status  = str(wrapper.get("status", "success")).lower()
-        message = wrapper.get("message") or None
+        status          = str(wrapper.get("status", "success")).lower()
+        message         = wrapper.get("message") or None
+        changes_summary = wrapper.get("changes_summary") or None
 
         # ── Non-mutating statuses: return original cv_data unchanged ─────────
         if status in ("warning", "rejected"):
-            logger.info("[CopilotAgent] %s  message=%r", status, (message or "")[:80])
+            logger.info(
+                "[CopilotAgent] %s  message=%r",
+                status, (message or "")[:80],
+            )
             return {
-                "status":  status,
-                "message": message or ("Request declined." if status == "rejected"
-                                       else "Destructive edit detected."),
-                "cv_data": cv_data,
+                "status":          status,
+                "message":         message or ("Request declined." if status == "rejected"
+                                               else "Destructive edit detected."),
+                "changes_summary": None,
+                "cv_data":         cv_data,
             }
 
         # ── Success: extract, validate, and sanitise the mutated cv_data ─────
@@ -391,20 +433,31 @@ class CopilotAgent:
         if not isinstance(inner, dict):
             logger.warning("[CopilotAgent] success status but cv_data missing or invalid")
             return {
-                "status":  "rejected",
-                "message": "The edit could not be applied. Please rephrase your instruction.",
-                "cv_data": cv_data,
+                "status":          "rejected",
+                "message":         "The edit could not be applied. Please rephrase your instruction.",
+                "changes_summary": None,
+                "cv_data":         cv_data,
             }
 
         inner = _enforce_limits(inner)
         inner = _sanitize_ai_tells(inner)
 
+        # Warn in logs if the model returned success but no changes_summary —
+        # this means the prompt's transparency requirement wasn't followed.
+        if not changes_summary:
+            logger.warning(
+                "[CopilotAgent] success response missing changes_summary for prompt=%r",
+                user_prompt[:80],
+            )
+
         logger.info(
-            "[CopilotAgent] success  exps=%d",
+            "[CopilotAgent] success  exps=%d  changes_summary=%r",
             len(inner.get("experience", [])),
+            (changes_summary or "")[:120],
         )
         return {
-            "status":  "success",
-            "message": message,
-            "cv_data": inner,
+            "status":          "success",
+            "message":         message,
+            "changes_summary": changes_summary,
+            "cv_data":         inner,
         }

@@ -77,8 +77,8 @@ function inputCls(hasError = false) {
 
 function ErrorBanner({ msg }: { msg: string }) {
   return (
-    <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs"
-      style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }} role="alert">
+    <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-ja-dangerSubtle text-ja-danger"
+      role="alert">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 mt-0.5" aria-hidden="true">
         <circle cx="12" cy="12" r="10" />

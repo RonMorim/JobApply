@@ -31,8 +31,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'apps',     label: 'Applications' },
 ]
 
-const COMING_SOON_MSG = 'This feature is currently in development and will be available soon.'
-
 interface HeaderProps {
   tab?:            Tab
   setTab?:         (t: Tab) => void
@@ -44,7 +42,6 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
   const [menuOpen,    setMenuOpen]    = useState(false)
   const [bellOpen,    setBellOpen]    = useState(false)
   const [emailModal,  setEmailModal]  = useState(false)
-  const [toast,       setToast]       = useState(false)
   const router    = useRouter()
   const pathname  = usePathname()
   const bellRef   = useRef<HTMLDivElement>(null)
@@ -69,17 +66,6 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [bellOpen])
 
-  function showComingSoon() {
-    setMenuOpen(false)
-    setToast(true)
-  }
-
-  useEffect(() => {
-    if (!toast) return
-    const t = setTimeout(() => setToast(false), 3500)
-    return () => clearTimeout(t)
-  }, [toast])
-
   // Suppress tab underlines on any route that isn't the main dashboard.
   const onMainDashboard   = pathname === '/'
   const onAnalytics       = pathname === '/analytics'
@@ -89,13 +75,6 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
   return (
     <>
     <EmailSetupModal open={emailModal} onClose={() => setEmailModal(false)} />
-
-    {toast && (
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 bg-slate-900 text-white text-[13px] font-medium px-5 py-3 rounded-xl shadow-2xl animate-fade-in-up max-w-sm text-center">
-        <span>🚧</span>
-        <span>{COMING_SOON_MSG}</span>
-      </div>
-    )}
 
     <header className="w-full bg-white border-b border-slate-100 sticky top-0 z-40">
       <div className="max-w-[1920px] mx-auto px-12 h-[60px] grid grid-cols-[auto_1fr_auto] items-center gap-8">
@@ -108,7 +87,11 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
           <button
             key={t.id}
             onClick={() => {
-              if (pathname !== '/') router.push('/')
+              // Encode the tab in the URL so it survives any auth-cycle redirect.
+              // searchParams.get('tab') has priority over localStorage in page.tsx,
+              // so even if localStorage is wiped by _onAuthError the user lands back
+              // on the correct tab rather than defaulting to 'overview'.
+              router.push(`/?tab=${t.id}`)
               setTab?.(t.id)
             }}
             className={`h-full pb-0 border-b-2 transition-colors ${
@@ -256,20 +239,6 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
               </button>
               <button className="w-full text-left px-3 py-2 text-[13px] text-slate-700 hover:bg-slate-50 transition">
                 Profile & preferences
-              </button>
-              <button
-                onClick={showComingSoon}
-                className="w-full text-left px-3 py-2 text-[13px] text-slate-700 hover:bg-slate-50 transition flex items-center justify-between"
-              >
-                CV & cover letter
-                <span className="text-[10px] font-medium text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-md">Soon</span>
-              </button>
-              <button
-                onClick={showComingSoon}
-                className="w-full text-left px-3 py-2 text-[13px] text-slate-700 hover:bg-slate-50 transition flex items-center justify-between"
-              >
-                Billing
-                <span className="text-[10px] font-medium text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-md">Soon</span>
               </button>
               <div className="border-t border-slate-200" />
               {process.env.NODE_ENV === 'development' && (

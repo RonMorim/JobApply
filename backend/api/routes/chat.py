@@ -9,18 +9,12 @@ POST /api/chat/ariel/private
   Body:  { message: str, chat_history: [{role, content}] }
   Returns: text/event-stream  (SSE)
 
-  Ariel's private authenticated endpoint.  Dynamically selects between two
-  system-prompt modes based on the user's onboarding_status in master_profiles:
+  Ariel's authenticated private endpoint.  Always operates in Career Strategist
+  mode — profile data is retrieved live via the get_full_candidate_profile tool
+  at the start of each answer, not injected into the system prompt.
 
-    "incomplete" → Data Collection Interviewer mode
-      Ariel asks behavioural drill-down questions to collect skills, KPIs, and
-      experience.  She calls ARIEL_TOOLS silently to persist every fact the user
-      reveals.  Tool calls are executed server-side in a loop before the final
-      text response is streamed to the client.
-
-    "complete" → Career Strategist mode
-      Ariel receives the full master_profile JSON.  She analyses gaps, suggests
-      career moves, and stops asking for basic background already on file.
+  Tool calls are executed server-side in a synchronous loop before the final
+  text response is streamed to the client (two-phase: sync tool-loop → streaming).
 
 SSE event format (both endpoints)
 ----------------------------------
@@ -36,7 +30,7 @@ import os
 from typing import Any, AsyncIterator, List, Optional
 
 import anthropic
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -44,6 +38,7 @@ from sqlalchemy.orm import Session
 from api.deps import CurrentUser, get_current_user
 from backend.services.db import ENGINE, MasterProfileRow
 from backend.agents.ariel_tools import ARIEL_TOOLS, execute_tool
+from backend.services.user_profile import USER_PROFILE
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -113,8 +108,9 @@ _TOOLS: list[dict] = [
 # ── Request schema ─────────────────────────────────────────────────────────────
 
 class ChatMessage(BaseModel):
-    role:    str   # "user" | "assistant"
-    content: str
+    role:      str            # "user" | "assistant"
+    content:   str
+    isPinned:  Optional[bool] = None   # Phase 3 — pinned messages become CoreContext
 
 class JobContext(BaseModel):
     topic:     str
@@ -125,20 +121,31 @@ class ChatStreamRequest(BaseModel):
     messages:    List[ChatMessage]
     job_context: Optional[JobContext] = None
 
-# ── System prompt builder ──────────────────────────────────────────────────────
+# ── System prompt builder (general chat / job-context endpoint) ───────────────
 
-def _build_system_prompt(profile: dict, job_context: Optional[JobContext]) -> str:
-    parts: list[str] = []
+def _build_system_prompt(job_context: Optional[JobContext]) -> str:
+    import json as _json
+    parts: list[str] = [
+        "You are Ariel, a sharp, direct Career Intelligence Agent (female). "
+        "Introduce yourself as Ariel at the start of every new conversation. "
+        "You are female — always use feminine verb conjugations and self-references, "
+        "especially in Hebrew (e.g. אני רואה, ניתחתי, הכנתי, אני ממליצה). "
+        "Never use masculine self-references in any language.\n\n"
+        "PACING — CRITICAL: This is a conversation, not a document. "
+        "When gathering information or exploring options, keep responses to 1–4 sentences "
+        "and ask exactly ONE question at a time. Be thorough only when delivering a "
+        "structured output (Gap Analysis, STAR story, CV rewrite) that the user explicitly "
+        "requested. A wall of text is always the wrong default.\n\n"
+        "TONE (Tachles — Israeli directness): Get to the point immediately. "
+        "Never open with 'Great question!', 'Absolutely!', 'Of course!', or any filler. "
+        "Lead every reply with substance. Mirror the user's energy and language.\n\n"
+        "TOPIC BOUNDARY: Your domain is career development only. "
+        "Deflect anything outside that domain in one sentence, then return to the career roadmap. "
+        "For platform issues, say: 'Please ask Eliya in the Help chat for technical support.'\n\n"
+        "YOUR ROLE: Skill-gap analysis, career-move recommendations, CV tailoring, interview prep, "
+        "outreach messages. Reference only the verified candidate profile below — never fabricate."
+    ]
 
-    parts.append(
-        "You are a sharp, empathetic career assistant embedded inside JobApply, "
-        "an AI-powered job search platform. Your role is to help the candidate "
-        "address skill gaps, tailor their CV language, and prepare for interviews.\n\n"
-        "Tone: concise, direct, and encouraging. Use bullet points for structured advice. "
-        "Never fabricate experience — only reference what is in the candidate profile below."
-    )
-
-    # Inject job context when provided
     if job_context:
         ctx_parts: list[str] = [f"TOPIC: {job_context.topic}"]
         if job_context.job_title:
@@ -147,45 +154,11 @@ def _build_system_prompt(profile: dict, job_context: Optional[JobContext]) -> st
             ctx_parts.append(f"COMPANY: {job_context.company}")
         parts.append("JOB CONTEXT\n" + "\n".join(ctx_parts))
 
-    # Inject a condensed candidate profile so the model can reference real experience
-    if profile:
-        profile_lines: list[str] = ["CANDIDATE PROFILE (verified — use as ground truth)"]
-
-        name = profile.get("name") or profile.get("full_name")
-        if name:
-            profile_lines.append(f"Name: {name}")
-
-        current_title = profile.get("current_title") or profile.get("title")
-        if current_title:
-            profile_lines.append(f"Current title: {current_title}")
-
-        experience: list[dict] = profile.get("experience") or []
-        if experience:
-            profile_lines.append("Experience (most recent first):")
-            for exp in experience[:6]:  # cap at 6 to stay within context budget
-                role    = exp.get("role") or exp.get("title", "?")
-                company = exp.get("company", "?")
-                dates   = exp.get("dates") or f"{exp.get('start_date','')}–{exp.get('end_date','')}"
-                profile_lines.append(f"  • {role} @ {company} ({dates})")
-
-        skills: list[str] = profile.get("skills") or []
-        if isinstance(skills, list) and skills:
-            # skills may be a flat list or a dict of categories
-            if isinstance(skills[0], str):
-                profile_lines.append(f"Skills: {', '.join(skills[:20])}")
-            elif isinstance(skills[0], dict):
-                flat = [s for cat in skills for s in (cat.get("items") or [])]
-                profile_lines.append(f"Skills: {', '.join(flat[:20])}")
-
-        education: list[dict] = profile.get("education") or []
-        if education:
-            degrees = [
-                f"{e.get('degree') or e.get('certification','?')} from {e.get('institution','?')}"
-                for e in education[:3]
-            ]
-            profile_lines.append(f"Education: {'; '.join(degrees)}")
-
-        parts.append("\n".join(profile_lines))
+    if USER_PROFILE:
+        parts.append(
+            "CANDIDATE PROFILE (verified — treat as ground truth):\n"
+            + _json.dumps(USER_PROFILE, ensure_ascii=False, indent=2)
+        )
 
     return "\n\n---\n\n".join(parts)
 
@@ -299,15 +272,7 @@ async def chat_stream(
     """
     print(f"=== DEBUG [chat/stream] user={user.user_id}  msgs={len(body.messages)}  job_context={body.job_context} ===")
 
-    # Load the authenticated user's master profile (graceful fallback to empty dict)
-    profile: dict = {}
-    try:
-        from backend.services.user_profile_store import load as _load_profile
-        profile = _load_profile(user.user_id) or {}
-    except Exception as exc:
-        logger.warning("[chat/stream] Could not load profile for %s: %s", user.user_id, exc)
-
-    system = _build_system_prompt(profile, body.job_context)
+    system = _build_system_prompt(body.job_context)
     client = _get_anthropic_client()
 
     return StreamingResponse(
@@ -331,65 +296,212 @@ _MAX_TOOL_LOOPS   = 5   # safety ceiling on sequential tool-use iterations
 
 # ── System prompt builders ────────────────────────────────────────────────────
 
-_ARIEL_INTERVIEWER_SYSTEM = """\
-You are Ariel, a warm and incisive career intelligence assistant for JobApply.
-You are in DATA COLLECTION mode. The user has not yet completed their professional \
-profile. Your mission: extract a complete, structured professional history through \
-natural, engaging conversation.
+_ARIEL_STRATEGIST_CORE = """\
+You are Ariel — a sharp, direct Career Intelligence Agent (female). You are
+not a search engine, a content generator, or a chatbot. You are a thinking
+partner who helps one specific person navigate their career — whatever field
+that is.
 
-STRICT SCOPE — DEFLECT TECHNICAL SUPPORT:
-You are a career agent, not a technical support agent. If the user asks anything \
-outside career development — such as password resets, billing questions, login \
-issues, account settings, bug reports, or any platform technical question — \
-respond with exactly: "I'm focused on your career path. Please ask Eliya in the \
-Help chat for technical support." Then return the conversation to profile building.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IDENTITY & GENDER — MANDATORY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You are female. This is non-negotiable and must be reflected in every
+language that grammatically encodes gender.
 
-OBJECTIVES (cover all before declaring done):
-  1. Work experience — every role: company, title, dates, 2-4 bullet achievements \
-with measurable outcomes (numbers, percentages, team sizes).
-  2. Skills — technical tools, methodologies, soft skills. Do not accept vague \
-answers; probe for specific tool names and proficiency levels.
-  3. Education — degree, institution, graduation year.
-  4. Career goals — target roles, preferred locations, work environment, notes.
+Hebrew: ALWAYS use feminine verb conjugations and self-references.
+  ✓ Correct:  אני רואה, ניתחתי, הכנתי, אני ממליצה, אני חושבת
+  ✗ Forbidden: ניתחתי (male form if used as such), כתבתי (male), אמרתי (male)
 
-BEHAVIOUR:
-  • Acknowledge what the user shared in 1-2 sentences, then ask exactly ONE \
-focused follow-up question. Never ask two questions in the same message.
-  • Use the CRUD tools silently after every user turn to persist what they shared. \
-Do not announce tool calls to the user — just do them invisibly.
-  • When you are certain the user has nothing more to add and they confirm it \
-explicitly (e.g. "That's everything", "We're done"), call finalize_onboarding.
-  • Plain text only. No markdown, no asterisks, no bullet symbols in your replies.
-  • Respond in the user's language (English or Hebrew).
+If you catch yourself about to use a masculine form in Hebrew, stop and use
+the correct feminine form instead. There are no exceptions.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOOL-FIRST RULE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You have access to the get_full_candidate_profile tool. Call it before
+answering ANY career, strategy, gap-analysis, or profile-related question.
+Do not rely on memory of a previous call — re-fetch whenever you need
+current profile state.
+
+After retrieving the profile, check it carefully:
+• If the profile is rich and complete → proceed to answer directly.
+• If the profile is empty or thin → enter PROFILING MODE (see below).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TARGET ROLE DEDUCTION & CAREER PATHS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Never assume the user's target. Deduce it from their profile — their most
+recent roles, stated goals, and the skills that dominate their history.
+If the profile gives you enough signal, name the 1–2 most plausible
+target roles before asking for confirmation.
+
+Additionally, be proactive about surfaces the user may not have considered:
+• Look at the full experience timeline for transferable skills that open
+  adjacent or unexpected paths (e.g. a PM with deep data skills → analytics
+  leadership; a CS manager with product exposure → PdM).
+• If you spot a credible pivot that the profile supports, surface it once
+  with a brief rationale. Present it as an option, not a prescription —
+  the user decides what to pursue.
+• Do this analysis early in the conversation, not on request. Insight
+  offered before it is asked for is more valuable than insight delivered
+  only when prompted.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RESPONSE LENGTH & PACING — CRITICAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+This is a CONVERSATION, not a document editor. Match your output length to
+the moment:
+
+• PROFILING / EXPLORING (gathering data, clarifying, checking in):
+  Keep responses SHORT — 1 to 4 sentences maximum. Ask exactly ONE question
+  and stop. Never list multiple questions at once.
+
+• DELIVERING (Gap Analysis, STAR story, CV rewrite, strategic plan):
+  You MAY be thorough and structured. Use headers and bullet points only
+  when the output genuinely benefits from them. Announce what you are
+  delivering so the user knows structured output is intentional.
+
+• DEFAULT: When in doubt, be shorter. A wall of text is always the wrong
+  answer unless the user explicitly asked for a structured deliverable.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROFILING MODE (zero-data or thin-data state)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When the profile is empty or missing key sections, it is YOUR job to lead
+the conversation and build it through dialogue. Rules for profiling:
+
+1. Open with a single, easy, open-ended question about where they are now
+   professionally (e.g. "What are you working on at the moment?").
+2. Each turn: acknowledge what they said in one sentence, then ask exactly
+   ONE follow-up question that goes one level deeper.
+3. Cover the key areas naturally across multiple turns — do not rush:
+   current role → past experience → education / military → target direction
+   → constraints (location, seniority, sector).
+4. Once you have enough signal to be useful, say so and pivot to strategy.
+   Do not keep profiling indefinitely.
+5. Never present a list of profile questions. Never use form-style prompts
+   like "Please tell me: (a) ... (b) ... (c) ...".
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TONE — "TACHLES" (Israeli directness)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"Tachles" means: get to the point, say what you actually think, don't
+waste each other's time.
+
+• NEVER open with filler: "Great question!", "Absolutely!", "Of course!",
+  "I'd love to help!", "Certainly!", "Sure thing!". These are banned.
+• NEVER flatter past choices or soften honest assessments with padding.
+• Lead every response with substance. If you are going to say something,
+  say it — don't announce that you are about to say it.
+• When you disagree or spot a problem, name it plainly. Constructive is
+  fine; vague is not.
+• Read the user's energy and mirror it. Casual tone → casual reply.
+  Stressed and serious → skip the small talk entirely.
+• Respond in whatever language the user writes in.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROACTIVE REDIRECTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• If the user tries to shortcut a process ("just write it for me",
+  "skip ahead", "give me the answer"), call it out explicitly, explain
+  why it will hurt them, and redirect to the right next step.
+• If the conversation drifts off-topic, note it briefly and bring it back
+  to the career roadmap. No apology needed — just redirect.
+• Do NOT bring up the user's side projects, ventures, or entrepreneurial
+  activities unless they raise the topic first.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOPIC BOUNDARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You operate exclusively in the domain of career development. Anything
+outside that domain (politics, entertainment, general coding, personal
+finance unrelated to career decisions) gets a single deflection sentence
+and an immediate return to the career roadmap.
+
+For platform issues (password resets, billing, login, bugs):
+"I'm focused on your career path. Please ask Eliya in the Help chat for
+technical support."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CV EDITING — EXECUTOR MODE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You do not build CVs — the Tailor CV engine does that. You are the surgical
+editor of the tailored CV the user is currently reviewing, and you EXECUTE
+changes rather than merely advising. When the user asks you to fix, change,
+shorten, reword, or strengthen something in their tailored CV:
+
+1. READ first: call get_tailored_cv_for_review to load the live document.
+   Reference bullets by the company names and 0-based indices it returns.
+   Never edit from memory of an earlier turn.
+2. WRITE: apply the change with edit_tailored_cv_bullet — one bullet (or the
+   summary) per call. For multi-bullet requests, make sequential calls.
+3. CONFIRM from the tool result only: report exactly what changed (old → new,
+   in your own words). Claiming an edit happened without a tool result that
+   says "EDIT APPLIED" is a critical failure.
+
+ZERO-HALLUCINATION CONTRACT (enforced server-side — do not fight it):
+• Your new text may only contain numbers, companies, products, and named
+  entities that already appear in the text being replaced or in the user's
+  verified evidence records. Rephrasing and tightening are always allowed.
+• If the user asks you to ADD an unverified claim (a metric they never
+  evidenced, an employer not in their history, an inflated title), do NOT
+  call the edit tool with invented content. Decline plainly in your own
+  voice: this CV carries only verified facts, and the way to include the
+  claim is to verify it first — offer a STAR probe or Whiteboard Challenge.
+• If the tool returns EDIT REJECTED, the gate found unverified content.
+  Relay the reason to the user as your own decision, name the specific
+  unverified items, and offer the verification path. Never retry the same
+  rejected text.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR CAPABILITIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Target role deduction and career path mapping from the user's profile.
+• Skill-gap analysis against specific JDs or target roles.
+• Actionable career-move recommendations (roles, companies, timelines).
+• CV language tailoring and ATS optimisation — including DIRECT execution of
+  edits on the user's tailored CV via the edit tools (see EXECUTOR MODE).
+• STAR story drafting and interview preparation.
+• Outreach message crafting.
+• Salary and negotiation positioning grounded in market data.
+
+Ground everything in the profile retrieved by the tool. Never fabricate
+experience, titles, outcomes, or company names.
 """
 
-def _build_ariel_strategist_system(master_profile: dict) -> str:
-    profile_json = json.dumps(master_profile, ensure_ascii=False, indent=2)
-    return f"""\
-You are Ariel, a sharp and empathetic career strategist embedded in JobApply.
-You are in CAREER STRATEGIST mode. The user's profile is fully collected and \
-verified. You have complete context — do NOT ask for basic background the profile \
-already contains.
 
-STRICT SCOPE — DEFLECT TECHNICAL SUPPORT:
-You are a career strategist, not a technical support agent. If the user asks \
-anything outside career development — such as password resets, billing questions, \
-login issues, account settings, or bug reports — respond with exactly: \
-"I'm focused on your career path. Please ask Eliya in the Help chat for technical \
-support." Then return the conversation to career strategy.
+def _build_ariel_system(pinned_messages: list[ChatMessage]) -> str:
+    """
+    Compose the full Ariel system prompt for the /ariel/private endpoint.
 
-YOUR ROLE:
-  • Analyse skill gaps between the user's profile and target roles.
-  • Suggest specific, actionable career moves (roles, companies, skill upgrades).
-  • Help tailor CV language, prepare interview answers, and craft outreach messages.
-  • Reference actual facts from the profile below — never fabricate experience.
+    If the conversation contains pinned messages, they are extracted and
+    injected at the very top inside a <CoreContext> block.  Ariel treats
+    this block as permanent, authoritative facts about the user's career
+    roadmap that must govern all her answers — they take precedence over
+    anything said later in the conversation.
 
-TONE: Direct, concise, and genuinely encouraging. Use plain text only. \
-Respond in the user's language.
+    The static persona + rules follow the CoreContext block.
+    """
+    parts: list[str] = []
 
-MASTER PROFILE (ground truth — verified):
-{profile_json}
-"""
+    if pinned_messages:
+        context_lines = "\n\n".join(
+            f"[{m.role.upper()}]: {m.content.strip()}"
+            for m in pinned_messages
+            if m.content.strip()
+        )
+        parts.append(
+            "<CoreContext>\n"
+            "The following messages have been pinned by the user as permanent\n"
+            "reference points for this career roadmap. Treat every item below\n"
+            "as an authoritative, agreed-upon fact or decision. They override\n"
+            "conflicting statements made elsewhere in the conversation.\n\n"
+            f"{context_lines}\n"
+            "</CoreContext>"
+        )
+
+    parts.append(_ARIEL_STRATEGIST_CORE)
+    return "\n\n".join(parts)
 
 # ── Tool-loop + streaming pipeline ───────────────────────────────────────────
 
@@ -504,56 +616,285 @@ async def _ariel_tool_loop_then_stream(
 
 # ── Request schema ────────────────────────────────────────────────────────────
 
+class AttachmentItem(BaseModel):
+    base64:   str
+    filename: str
+    mimeType: str
+
+
 class ArielPrivateRequest(BaseModel):
     message:      str
     chat_history: List[ChatMessage] = []
+    attachments:  List[AttachmentItem] = []
+
+
+# ── Attachment text extraction ────────────────────────────────────────────────
+
+def _extract_text_from_attachment(item: AttachmentItem) -> str | None:
+    """
+    Return plain text extracted from a document attachment, or None if the
+    MIME type is not a supported text-bearing format (images, video, etc. are
+    skipped — images are handled separately via the Anthropic vision API).
+
+    Supported:
+      application/pdf                                        → PyMuPDF (fitz)
+      application/vnd.openxmlformats-officedocument…docx   → python-docx
+      application/msword (.doc)                             → python-docx (best-effort)
+      text/*                                                → raw UTF-8 decode
+
+    Install once:
+      pip install PyMuPDF python-docx
+    """
+    import base64, io
+
+    mime = item.mimeType.lower()
+    raw  = base64.b64decode(item.base64)
+
+    try:
+        if mime == "application/pdf":
+            import fitz  # PyMuPDF
+            doc  = fitz.open(stream=raw, filetype="pdf")
+            text = "\n\n".join(page.get_text() for page in doc)
+            doc.close()
+            return text.strip() or None
+
+        if mime in (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/msword",
+        ):
+            from docx import Document
+            doc  = Document(io.BytesIO(raw))
+            text = "\n".join(p.text for p in doc.paragraphs)
+            return text.strip() or None
+
+        if mime.startswith("text/"):
+            return raw.decode("utf-8", errors="replace").strip() or None
+
+    except Exception as exc:
+        logger.warning("[ariel/private] attachment text extraction failed (%s): %s", item.filename, exc)
+
+    return None
+
+
+def _build_message_with_attachments(
+    base_text:   str,
+    attachments: list[AttachmentItem],
+) -> list[dict] | str:
+    """
+    Build the Anthropic message content for the user turn.
+
+    • Images  → vision content block (base64 source).
+    • Docs    → extracted text appended to the message string.
+    • Others  → silently skipped.
+
+    Returns a plain string when no image blocks are present (cheaper), or a
+    list[dict] content block when at least one image is included.
+    """
+    import base64
+
+    image_blocks: list[dict] = []
+    doc_texts:    list[str]  = []
+
+    for item in attachments:
+        mime = item.mimeType.lower()
+        if mime.startswith("image/"):
+            image_blocks.append({
+                "type":   "image",
+                "source": {
+                    "type":       "base64",
+                    "media_type": mime,
+                    "data":       item.base64,
+                },
+            })
+        else:
+            extracted = _extract_text_from_attachment(item)
+            if extracted:
+                doc_texts.append(
+                    f"--- Attached file: {item.filename} ---\n{extracted}\n--- End of {item.filename} ---"
+                )
+
+    # Compose the final user text
+    text_parts = [base_text]
+    if doc_texts:
+        text_parts.append("\n\n" + "\n\n".join(doc_texts))
+    full_text = "".join(text_parts)
+
+    if not image_blocks:
+        return full_text  # plain string — no vision needed
+
+    # Mixed content: images first, then the text block
+    return [
+        *image_blocks,
+        {"type": "text", "text": full_text},
+    ]
+
+
+# ── CV-from-chat background ingestion ─────────────────────────────────────────
+
+# MIME types we treat as potential CV/resume documents when uploaded via chat.
+_CV_MIME_TYPES: frozenset[str] = frozenset({
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+})
+
+# Keywords in the filename that hint this is a CV/resume, not a JD or cert.
+_CV_FILENAME_HINTS: tuple[str, ...] = (
+    "cv", "resume", "resumé", "curriculum", "vitae",
+)
+
+
+def _looks_like_cv(item: AttachmentItem) -> bool:
+    """
+    Heuristic: is this attachment likely a CV/resume?
+
+    We require BOTH a document MIME type AND at least one CV-related keyword
+    in the filename, to avoid treating every uploaded PDF (JDs, certs, etc.)
+    as a profile update.
+    """
+    if item.mimeType.lower() not in _CV_MIME_TYPES:
+        return False
+    name_lower = item.filename.lower()
+    return any(hint in name_lower for hint in _CV_FILENAME_HINTS)
+
+
+def _ingest_cv_from_chat(user_id: str, item: AttachmentItem) -> None:
+    """
+    Background task: run the standard CV ingestion pipeline on a document
+    uploaded through the Ariel chat interface.
+
+    Pipeline (mirrors POST /api/profile/cv-upload Mode A):
+      1. Decode base64 → bytes
+      2. extract_text()        — same function used by the profile upload route
+      3. aggregate_cv_claims() — LLM entity extraction (blocking; runs in thread pool)
+      4. _cv_claims_to_parsed_entities()
+      5. ProfileUpdateService.ingest_cv_parse() → confidence matrix update
+      6. Save cv_claims to master_profile JSON + DB row (same as profile route)
+
+    Errors are logged but never re-raised — this is fire-and-forget.
+    """
+    import base64
+    from datetime import datetime, timezone
+
+    try:
+        from backend.services.cv_aggregator_service import extract_text, aggregate_cv_claims
+        from backend.services.profile_update_service import ProfileUpdateService
+        from backend.services.user_profile_store import load as user_load, save as user_save
+        from backend.api.routes.profile import _cv_claims_to_parsed_entities
+        from sqlalchemy.orm import Session as _Session
+
+        logger.info(
+            "[chat/cv-ingest] Starting background CV ingestion for user=%s file=%s",
+            user_id, item.filename,
+        )
+
+        # Step 1 — decode
+        raw_bytes = base64.b64decode(item.base64)
+
+        # Step 2 — extract text
+        text = extract_text(raw_bytes, item.filename)
+        if not text.strip():
+            logger.warning(
+                "[chat/cv-ingest] No text extracted from %s — skipping ingestion",
+                item.filename,
+            )
+            return
+
+        # Step 3 — LLM entity extraction
+        cv_claims = aggregate_cv_claims([text], user_id=user_id)
+
+        # Step 4 — persist cv_claims to profile JSON + master_profiles table
+        profile = user_load(user_id)
+        profile["cv_claims"] = cv_claims
+        user_save(user_id, profile)
+
+        _now = datetime.now(timezone.utc).isoformat()
+        with _Session(ENGINE) as sess:
+            row = sess.get(MasterProfileRow, user_id)
+            if row:
+                mp = dict(row.master_profile or {})
+                mp["cv_data"]       = cv_claims
+                mp["cv_imported_at"] = _now
+                row.master_profile  = mp
+                row.updated_at      = _now
+            else:
+                sess.add(MasterProfileRow(
+                    user_id=user_id,
+                    onboarding_status="incomplete",
+                    master_profile={"cv_data": cv_claims, "cv_imported_at": _now},
+                    created_at=_now,
+                    updated_at=_now,
+                ))
+            sess.commit()
+
+        # Step 5 — ingest into Confidence Matrix
+        parsed_entities = _cv_claims_to_parsed_entities(cv_claims)
+        if parsed_entities:
+            svc = ProfileUpdateService(ENGINE)
+            entity_ids = svc.ingest_cv_parse(user_id, parsed_entities)
+            logger.info(
+                "[chat/cv-ingest] Confidence Matrix updated: user=%s entities=%d file=%s",
+                user_id, len(entity_ids), item.filename,
+            )
+        else:
+            logger.warning(
+                "[chat/cv-ingest] No entities extracted from %s", item.filename
+            )
+
+    except Exception:
+        logger.exception(
+            "[chat/cv-ingest] Background ingestion failed for user=%s file=%s",
+            user_id, item.filename,
+        )
 
 
 # ── Route ─────────────────────────────────────────────────────────────────────
 
 @router.post("/ariel/private")
 async def ariel_private(
-    body: ArielPrivateRequest,
-    user: CurrentUser = Depends(get_current_user),
+    body:       ArielPrivateRequest,
+    background: BackgroundTasks,
+    user:       CurrentUser = Depends(get_current_user),
 ) -> StreamingResponse:
     """
     Ariel's authenticated private chat endpoint.
 
-    Dynamically selects the system prompt based on the user's onboarding_status:
-      • "incomplete" → Data Collection Interviewer (uses ARIEL_TOOLS to persist facts)
-      • "complete"   → Career Strategist (receives full master_profile as context)
+    Always uses Career Strategist mode.  Profile data is retrieved live via the
+    get_full_candidate_profile tool during the conversation — nothing is injected
+    into the system prompt.  Tool calls are executed server-side; the client only
+    receives the final text stream.
 
-    Tool calls are executed server-side in a loop before the final text response
-    is streamed to the frontend — the client only receives text chunks, never raw
-    tool payloads.
+    If any uploaded attachment looks like a CV/resume (document MIME + filename
+    hint), a background task is enqueued to run the full profile ingestion
+    pipeline, updating the Confidence Matrix asynchronously without blocking
+    the streaming response.
     """
     print(f"=== DEBUG [chat/ariel/private] user={user.user_id}  msg_len={len(body.message)}  history={len(body.chat_history)} ===")
 
     if not body.message.strip():
         raise HTTPException(status_code=422, detail="message must not be empty.")
 
-    # ── Load master profile and onboarding status ─────────────────────────────
-    db_session     = Session(ENGINE)
-    onboarding     = "incomplete"
-    master_profile: dict = {}
+    # Enqueue CV ingestion for any attachment that looks like a resume.
+    for item in body.attachments:
+        if _looks_like_cv(item):
+            logger.info(
+                "[ariel/private] CV attachment detected — scheduling background ingestion: %s",
+                item.filename,
+            )
+            background.add_task(_ingest_cv_from_chat, user.user_id, item)
 
-    try:
-        row = db_session.get(MasterProfileRow, user.user_id)
-        if row:
-            onboarding     = row.onboarding_status or "incomplete"
-            master_profile = row.master_profile   or {}
-    except Exception as exc:
-        logger.warning(
-            "[ariel/private] Could not load master profile for %s: %s", user.user_id, exc
-        )
+    # Ariel always operates in Career Strategist mode.
+    # Profile data is retrieved live via the get_full_candidate_profile tool —
+    # onboarding_status is irrelevant to mode selection.
+    db_session = Session(ENGINE)
 
-    # ── Build dynamic system prompt ───────────────────────────────────────────
-    if onboarding == "complete":
-        system = _build_ariel_strategist_system(master_profile)
-        logger.info("[ariel/private] mode=strategist user=%s", user.user_id)
-    else:
-        system = _ARIEL_INTERVIEWER_SYSTEM
-        logger.info("[ariel/private] mode=interviewer user=%s", user.user_id)
+    # Extract pinned messages from history and inject them as CoreContext.
+    pinned = [m for m in body.chat_history if m.isPinned]
+    system = _build_ariel_system(pinned)
+    logger.info(
+        "[ariel/private] mode=strategist user=%s  pinned=%d",
+        user.user_id, len(pinned),
+    )
 
     # ── Build Anthropic messages array ────────────────────────────────────────
     # Validate history: only user/assistant turns with non-empty content,
@@ -564,10 +905,22 @@ async def ariel_private(
         if m.role in ("user", "assistant") and m.content.strip()
     ]
 
+    # Process attachments: extract document text, build vision blocks for images.
+    user_content = _build_message_with_attachments(
+        body.message.strip(),
+        body.attachments,
+    )
+    if body.attachments:
+        logger.info(
+            "[ariel/private] attachments=%d types=%s",
+            len(body.attachments),
+            [a.mimeType for a in body.attachments],
+        )
+
     # Ensure the array ends with the new user message
     messages: list[dict[str, Any]] = [
         *raw_history,
-        {"role": "user", "content": body.message.strip()},
+        {"role": "user", "content": user_content},
     ]
 
     client = _get_anthropic_client()

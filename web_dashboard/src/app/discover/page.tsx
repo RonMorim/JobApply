@@ -2,7 +2,6 @@
 
 import Link        from 'next/link'
 import AuthGuard   from '@/components/AuthGuard'
-import { TOKENS }  from '@/lib/tokens'
 
 // ── Trending job seed data ─────────────────────────────────────────────────────
 
@@ -76,8 +75,7 @@ function CompanyAvatar({ name }: { name: string }) {
 function ScorePending() {
   return (
     <div
-      className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
-      style={{ background: 'rgba(148,163,184,0.12)', color: '#64748b', border: '1px solid rgba(148,163,184,0.2)' }}
+      className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium bg-slate-400/10 text-ja-muted border border-slate-400/20"
     >
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -92,8 +90,7 @@ function ScorePending() {
 function JobCard({ job }: { job: typeof TRENDING_JOBS[0] }) {
   return (
     <div
-      className="bg-white rounded-2xl border border-slate-100 p-5 flex flex-col gap-4 hover:shadow-md transition-shadow"
-      style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}
+      className="bg-white rounded-2xl border border-slate-100 p-5 flex flex-col gap-4 shadow-elevation-1 hover:shadow-elevation-2 transition-shadow"
     >
       <div className="flex items-start gap-3">
         <CompanyAvatar name={job.company} />
@@ -112,8 +109,7 @@ function JobCard({ job }: { job: typeof TRENDING_JOBS[0] }) {
         {job.tags.map(tag => (
           <span
             key={tag}
-            className="text-[11px] px-2 py-0.5 rounded-md font-medium"
-            style={{ background: 'rgba(20,184,166,0.08)', color: '#0d9488' }}
+            className="text-[11px] px-2 py-0.5 rounded-md font-medium bg-ja-primarySubtle text-ja-primary"
           >
             {tag}
           </span>
@@ -138,8 +134,7 @@ function DiscoverContent() {
           <span className="text-base font-extrabold tracking-tight text-slate-900">JobApply</span>
           <Link
             href="/onboarding"
-            className="text-sm font-semibold text-white px-4 py-2 rounded-lg transition-opacity hover:opacity-90"
-            style={{ background: TOKENS.color.primary }}
+            className="text-sm font-semibold text-white px-4 py-2 rounded-lg bg-ja-primary hover:bg-ja-primaryHover transition-colors"
           >
             Build your profile
           </Link>
@@ -150,19 +145,18 @@ function DiscoverContent() {
 
         {/* Profile prompt banner */}
         <div
-          className="rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center gap-4"
-          style={{ background: 'linear-gradient(135deg, #0F172A 0%, #0a1f1c 100%)', border: '1px solid rgba(255,255,255,0.06)' }}
+          className="rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center gap-4 border border-white/[0.06]"
+          style={{ background: 'linear-gradient(135deg, var(--ja-ink) 0%, var(--ja-ink-deep) 100%)' }}
         >
           <div className="flex-1 space-y-1">
             <p className="text-white font-semibold text-[15px]">Your match scores are waiting</p>
-            <p className="text-[13px]" style={{ color: '#94a3b8' }}>
+            <p className="text-[13px] text-ja-subtle">
               Complete your profile to unlock personalised match scores for every job below.
             </p>
           </div>
           <Link
             href="/onboarding"
-            className="flex-shrink-0 text-sm font-semibold px-5 py-2.5 rounded-xl transition-opacity hover:opacity-90 text-center"
-            style={{ background: TOKENS.color.primary, color: '#fff' }}
+            className="flex-shrink-0 text-sm font-semibold px-5 py-2.5 rounded-xl text-white text-center bg-ja-primary hover:bg-ja-primaryHover transition-colors"
           >
             Complete profile
           </Link>
@@ -175,8 +169,7 @@ function DiscoverContent() {
             <p className="text-sm text-slate-500 mt-0.5">Updated daily based on market demand</p>
           </div>
           <span
-            className="text-[11px] font-semibold px-2.5 py-1 rounded-full"
-            style={{ background: `${TOKENS.color.primary}15`, color: TOKENS.color.primary }}
+            className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-ja-primarySubtle text-ja-primary"
           >
             {TRENDING_JOBS.length} roles
           </span>

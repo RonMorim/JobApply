@@ -38,9 +38,31 @@ const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages'
 
 // ── Eliya system prompt ───────────────────────────────────────────────────────
 
-const ARIEL_SYSTEM_PROMPT = `You are Eliya, the public technical support and onboarding assistant for JobApply. You are talking to anonymous, unauthenticated visitors.
+const ELIYA_SYSTEM_PROMPT = `You are Eliya, the public technical support and onboarding assistant for JobApply. You are talking to anonymous, unauthenticated visitors.
 
 IDENTITY: Your name is Eliya. You are strictly a support and onboarding assistant — not a career agent. The personal AI career agent (Ariel) is only available to logged-in users.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IDENTITY & GENDER — MANDATORY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You are female. This is non-negotiable and must be reflected in every
+language that grammatically encodes gender.
+
+Hebrew: ALWAYS use feminine verb conjugations and self-references.
+  ✓ Correct:  אני עוזרת, אני ממליצה, בדקתי ואני רואה
+  ✗ Forbidden: masculine verb forms of any kind
+
+If you catch yourself about to use a masculine form in Hebrew, stop and use
+the correct feminine form instead. There are no exceptions.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ATTACHMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Users may attach screenshots or PDFs to describe a support issue. Describe
+what you see factually and use it only for troubleshooting or onboarding
+help — never to provide CV or career analysis. If a CV is attached with a
+request for analysis, apply Rule 2 below: redirect the user to sign up for
+Ariel.
 
 STRICT RULES:
 1. You CANNOT analyze skills, tailor CVs, assess job fit, or conduct interview prep. These are personal AI features that require a logged-in account.
@@ -58,10 +80,36 @@ interface HistoryMessage {
   content: string
 }
 
+interface AttachmentInput {
+  base64:    string
+  mediaType: string
+  name:      string
+}
+
 interface RequestBody {
-  session_id: string
-  message:    string
-  history?:   HistoryMessage[]
+  session_id:   string
+  message:      string
+  history?:     HistoryMessage[]
+  attachments?: AttachmentInput[]
+}
+
+// ── Attachment constraints (server-side defense in depth) ──────────────────────
+
+const MAX_ATTACHMENTS_SERVER  = 10
+const MAX_ATTACHMENTS_MB      = 30
+
+type AnthropicContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | { type: 'document'; source: { type: 'base64'; media_type: 'application/pdf'; data: string } }
+
+function buildAttachmentBlocks(attachments: AttachmentInput[] | undefined): AnthropicContentBlock[] {
+  if (!attachments?.length) return []
+  return attachments
+    .filter(a => typeof a.base64 === 'string' && typeof a.mediaType === 'string')
+    .map(a => a.mediaType.startsWith('image/')
+      ? { type: 'image' as const, source: { type: 'base64' as const, media_type: a.mediaType, data: a.base64 } }
+      : { type: 'document' as const, source: { type: 'base64' as const, media_type: 'application/pdf' as const, data: a.base64 } })
 }
 
 // ── Supabase helpers ──────────────────────────────────────────────────────────
@@ -126,7 +174,7 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  const { session_id, message, history = [] } = body
+  const { session_id, message, history = [], attachments } = body
 
   if (!session_id || typeof session_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(session_id)) {
     return new Response(
@@ -140,6 +188,22 @@ export async function POST(request: NextRequest) {
       JSON.stringify({ error: 'message is required.' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } },
     )
+  }
+
+  if (attachments !== undefined) {
+    if (!Array.isArray(attachments) || attachments.length > MAX_ATTACHMENTS_SERVER) {
+      return new Response(
+        JSON.stringify({ error: `attachments must be an array of at most ${MAX_ATTACHMENTS_SERVER} items.` }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    const totalBytes = attachments.reduce((sum, a) => sum + Math.floor((a.base64?.length ?? 0) * 0.75), 0)
+    if (totalBytes > MAX_ATTACHMENTS_MB * 1024 * 1024) {
+      return new Response(
+        JSON.stringify({ error: `Attachments exceed the ${MAX_ATTACHMENTS_MB}MB total limit.` }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
   }
 
   const userText = message.trim().slice(0, MAX_MESSAGE_CHARS)
@@ -180,12 +244,17 @@ export async function POST(request: NextRequest) {
     .slice(-MAX_HISTORY_TURNS)
     .map(m => ({ role: m.role, content: m.content.slice(0, MAX_MESSAGE_CHARS) }))
 
-  const anthropicMessages: HistoryMessage[] = [
+  const attachmentBlocks = buildAttachmentBlocks(attachments)
+  const finalUserMessage: { role: 'user'; content: string | AnthropicContentBlock[] } = attachmentBlocks.length
+    ? { role: 'user', content: [...attachmentBlocks, { type: 'text', text: userText }] }
+    : { role: 'user', content: userText }
+
+  const anthropicMessages: { role: 'user' | 'assistant'; content: string | AnthropicContentBlock[] }[] = [
     ...safeHistory,
-    { role: 'user', content: userText },
+    finalUserMessage,
   ]
 
-  console.log(`[public/chat] Calling Anthropic model=${ANTHROPIC_MODEL} messages=${anthropicMessages.length}`)
+  console.log(`[public/chat] Calling Anthropic model=${ANTHROPIC_MODEL} messages=${anthropicMessages.length} attachments=${attachmentBlocks.length}`)
 
   // ── 4. Open streaming request to Anthropic ────────────────────────────────
 
@@ -202,7 +271,7 @@ export async function POST(request: NextRequest) {
         model:      ANTHROPIC_MODEL,
         max_tokens: 256,
         stream:     true,
-        system:     ARIEL_SYSTEM_PROMPT,
+        system:     ELIYA_SYSTEM_PROMPT,
         messages:   anthropicMessages,
       }),
     })

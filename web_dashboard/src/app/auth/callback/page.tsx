@@ -106,11 +106,10 @@ export default function AuthCallbackPage() {
   if (status === 'loading') {
     return (
       <div
-        className="min-h-screen flex flex-col items-center justify-center gap-5"
-        style={{ backgroundColor: '#0F172A' }}
+        className="min-h-screen flex flex-col items-center justify-center gap-5 bg-ja-ink"
       >
         <div className="w-10 h-10 rounded-full border-[3px] border-slate-700 border-t-teal-400 animate-spin" />
-        <p className="text-[15px] font-medium" style={{ color: '#94a3b8' }}>
+        <p className="text-[15px] font-medium text-ja-subtle">
           Verifying your account…
         </p>
       </div>
@@ -120,14 +119,12 @@ export default function AuthCallbackPage() {
   // ── Error (shown briefly before redirect to /login) ────────────────────────
   return (
     <div
-      className="min-h-screen flex flex-col items-center justify-center gap-4 px-6"
-      style={{ backgroundColor: '#0F172A' }}
+      className="min-h-screen flex flex-col items-center justify-center gap-4 px-6 bg-ja-ink"
     >
       <div
-        className="w-12 h-12 rounded-full flex items-center justify-center"
-        style={{ background: 'rgba(239,68,68,0.15)' }}
+        className="w-12 h-12 rounded-full flex items-center justify-center bg-red-500/15 text-red-500"
       >
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#EF4444"
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           strokeWidth="2" strokeLinecap="round" aria-hidden="true">
           <circle cx="12" cy="12" r="10" />
           <line x1="12" y1="8" x2="12" y2="12" />
@@ -136,11 +133,11 @@ export default function AuthCallbackPage() {
       </div>
       <div className="text-center space-y-1">
         <p className="text-white font-semibold">Link invalid or expired</p>
-        <p className="text-sm" style={{ color: '#64748b' }}>
+        <p className="text-sm text-ja-subtle">
           {errMsg || 'Please request a new confirmation email.'}
         </p>
       </div>
-      <p className="text-xs" style={{ color: '#334155' }}>Redirecting to login…</p>
+      <p className="text-xs text-ja-subtle">Redirecting to login…</p>
     </div>
   )
 }

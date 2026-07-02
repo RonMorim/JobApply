@@ -3,7 +3,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { TOKENS } from '@/lib/tokens'
 import type { ApiFeedJob, JobSourceType, JobStatus } from '@/lib/apiTypes'
 import type { Job, ReasonKind, AutomationSettings, WorkMode, Region, CompanyStage } from '@/lib/data'
-import { fetchFeedJobs, forceRefreshAllScores, updateJobStatus, backfillJdText, startAnalysis } from '@/lib/api'
+import { fetchFeedJobs, forceRefreshAllScores, updateJobStatus, backfillJdText, startAnalysis, setAuthToken } from '@/lib/api'
+import { supabase } from '@/lib/supabase'
 import { JobCard } from './JobCard'
 import { ApplierPreview } from './ApplierPreview'
 
@@ -283,9 +284,13 @@ interface JobFeedProps {
 }
 
 export function JobFeed({ onFeedRefreshed, preferences, expandJobId, userId }: JobFeedProps = {}) {
-  const [jobs,       setJobs]       = useState<ApiFeedJob[]>([])
-  const [loading,    setLoading]    = useState(true)
-  const [error,      setError]      = useState('')
+  const [jobs,         setJobs]         = useState<ApiFeedJob[]>([])
+  // Raw count before the zero-click completeness filter — distinguishes
+  // "pipeline still running" (totalFetched > 0, jobs === 0) from
+  // "genuinely no rows yet" (totalFetched === 0).
+  const [totalFetched, setTotalFetched] = useState(-1)  // -1 = not yet loaded
+  const [loading,      setLoading]      = useState(true)
+  const [error,        setError]        = useState('')
   const [status,     setStatus]     = useState<StatusFilter>('all')
   const [search,     setSearch]     = useState('')
   const [source,     setSource]     = useState<SourceFilter>('all')
@@ -325,9 +330,20 @@ export function JobFeed({ onFeedRefreshed, preferences, expandJobId, userId }: J
     setLockedOrder(null)
     setBelowThresholdIds(new Set())
     try {
+      // Refresh the module-level auth token from the live Supabase session
+      // before every fetch.  The token is a module-level variable in api.ts;
+      // if AuthContext hasn't set it yet (cold mount race) the request would
+      // go unauthenticated → 401 → _onAuthError → signOut → localStorage.clear()
+      // → tab resets to 'overview'.  This one-liner closes that race window.
+      if (supabase) {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session?.access_token) setAuthToken(session.access_token)
+      }
+
       const data = await fetchFeedJobs(undefined, 100, {
         minScore: preferences?.minScore,
       })
+      setTotalFetched(data.length)
       // Zero-Click contract: only render jobs that are fully processed.
       // Incomplete rows (missing title, company, score, or structured JD) are
       // pipeline artefacts that should never surface to the user.
@@ -360,7 +376,18 @@ export function JobFeed({ onFeedRefreshed, preferences, expandJobId, userId }: J
   // No setTimeout, no automatic re-triggers.
   const handleSync = useCallback(async () => {
     setSyncing(true)
+    // Clear the current list immediately so the user sees a loading skeleton
+    // instead of the old stale snapshot while the sync is in flight.
+    setJobs([])
+    setTotalFetched(-1)
+    setLoading(true)
     try {
+      // Same token-refresh guard as loadJobs — Sync Data can be clicked any
+      // time, including right after login before the token has settled.
+      if (supabase) {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session?.access_token) setAuthToken(session.access_token)
+      }
       const res = await backfillJdText(50.0)
       const n   = res.queued
       await forceRefreshAllScores()
@@ -708,24 +735,69 @@ export function JobFeed({ onFeedRefreshed, preferences, expandJobId, userId }: J
           </div>
         ) : visible.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 gap-2 text-slate-400">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
-              stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-              className="text-slate-300"
-            >
-              <circle cx="11" cy="11" r="8" />
-              <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              <line x1="8" y1="11" x2="14" y2="11" />
-            </svg>
-            <p className="text-[14px] font-medium text-slate-600">No jobs found</p>
-            <p className="text-[13px] text-center">
-              {search
-                ? `No results for "${search}". Try a different search term.`
-                : topFitsOnly
-                  ? `No matches with ATS score above ${TOP_FITS_THRESHOLD}. Try disabling Top Fits.`
-                  : status === 'all'
-                    ? 'Jobs will appear here once scored against your profile.'
-                    : `No jobs with status "${status}".`}
-            </p>
+            {/* Pipeline-indexing state: rows exist in DB but none are pipeline-complete yet */}
+            {!search && !topFitsOnly && status === 'all' && jobs.length === 0 && totalFetched > 0 ? (
+              <>
+                <div className="flex items-center gap-2 mb-1">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                    stroke="#0D9488" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                    style={{ animation: 'spin 1.4s linear infinite' }}
+                  >
+                    <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                  </svg>
+                  <span className="text-[13px] font-semibold text-teal-700">Agents are actively indexing fresh roles</span>
+                </div>
+                <p className="text-[12.5px] text-center text-slate-500 max-w-xs">
+                  {totalFetched} job{totalFetched !== 1 ? 's' : ''} found in the pipeline —
+                  scoring and JD enrichment in progress. Results will appear here automatically.
+                </p>
+                <button
+                  onClick={handleSync}
+                  disabled={syncing}
+                  className="mt-3 inline-flex items-center gap-1.5 h-8 px-4 rounded-lg text-[12px] font-medium border border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100 transition disabled:opacity-50"
+                >
+                  {syncing ? <Spinner size={12} /> : null}
+                  {syncing ? 'Syncing…' : 'Check for updates'}
+                </button>
+              </>
+            ) : !search && !topFitsOnly && status === 'all' && totalFetched === 0 ? (
+              /* Genuinely empty DB — no jobs at all yet */
+              <>
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+                  className="text-slate-300"
+                >
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  <line x1="8" y1="11" x2="14" y2="11" />
+                </svg>
+                <p className="text-[14px] font-medium text-slate-600">No jobs discovered yet</p>
+                <p className="text-[13px] text-center text-slate-500 max-w-xs">
+                  Agents are warming up. New roles will appear here once the first scraping cycle completes.
+                </p>
+              </>
+            ) : (
+              /* Filter returned nothing */
+              <>
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+                  className="text-slate-300"
+                >
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  <line x1="8" y1="11" x2="14" y2="11" />
+                </svg>
+                <p className="text-[14px] font-medium text-slate-600">No jobs found</p>
+                <p className="text-[13px] text-center">
+                  {search
+                    ? `No results for "${search}". Try a different search term.`
+                    : topFitsOnly
+                      ? `No matches with ATS score above ${TOP_FITS_THRESHOLD}. Try disabling Top Fits.`
+                      : `No jobs with status "${status}".`}
+                </p>
+              </>
+            )}
             {(search || topFitsOnly) && (
               <div className="mt-2 flex items-center gap-3">
                 {search && (

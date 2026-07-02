@@ -88,6 +88,23 @@ def _get_or_create_row(user_id: str, session: Session) -> MasterProfileRow:
 
 ARIEL_TOOLS: list[dict[str, Any]] = [
     {
+        "name": "get_full_candidate_profile",
+        "description": (
+            "Retrieve the candidate's complete, up-to-date professional profile. "
+            "Call this before answering ANY career, strategy, gap-analysis, or "
+            "profile-related question to ensure you are working with live data. "
+            "Returns the full USER_PROFILE JSON: experience (all roles), skills, "
+            "education, personal details, career goals, and key narratives. "
+            "Never rely on memory of a previous tool call — always re-fetch when "
+            "the user asks something that depends on their profile."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "update_experience",
         "description": (
             "Add a new role to the user's work history, or update an existing one "
@@ -190,6 +207,78 @@ ARIEL_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_tailored_cv_for_review",
+        "description": (
+            "READ the tailored CV the user is currently reviewing. Returns the "
+            "positioning summary and every experience section with 0-based bullet "
+            "indices. You MUST call this before any edit_tailored_cv_bullet call — "
+            "edits reference the exact company names and bullet indices this tool "
+            "returns; never edit from memory. Omit job_id to target the most "
+            "recently generated tailored CV."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "Job identifier. Omit to use the most recently "
+                                   "generated tailored CV.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "edit_tailored_cv_bullet",
+        "description": (
+            "WRITE one surgical edit to the tailored CV the user is reviewing: "
+            "replace a single bullet or the positioning summary. "
+            "The backend re-validates the new text through the zero-hallucination "
+            "gate: any number, company, product, or named entity that is not "
+            "already in the text being replaced AND not backed by a verified "
+            "evidence record causes the edit to be REJECTED — the document is "
+            "not modified. Therefore never write invented metrics or employers "
+            "into new_text, even if the user asks for them. "
+            "One bullet per call. Call get_tailored_cv_for_review first to get "
+            "the exact company name and bullet_index."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "Job identifier of the CV being edited. Omit to "
+                                   "target the most recently generated tailored CV.",
+                },
+                "section": {
+                    "type": "string",
+                    "enum": ["summary", "bullet"],
+                    "description": "'summary' edits the positioning summary; "
+                                   "'bullet' edits one experience bullet.",
+                },
+                "company": {
+                    "type": "string",
+                    "description": "Company name of the experience section holding the "
+                                   "bullet (as returned by the review tool). "
+                                   "Required when section='bullet'.",
+                },
+                "bullet_index": {
+                    "type": "integer",
+                    "description": "0-based index of the bullet within that section "
+                                   "(as returned by the review tool). "
+                                   "Required when section='bullet'.",
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "The full replacement text (max 240 chars). Must only "
+                                   "contain facts already present in the current text or "
+                                   "in the user's verified evidence.",
+                },
+            },
+            "required": ["section", "new_text"],
+        },
+    },
+    {
         "name": "finalize_onboarding",
         "description": (
             "Mark the user's onboarding as complete. "
@@ -216,6 +305,36 @@ ARIEL_TOOLS: list[dict[str, Any]] = [
 
 
 # ── Execution Handlers ────────────────────────────────────────────────────────
+
+def _handle_get_full_candidate_profile(
+    tool_input: dict[str, Any],
+    user_id:    str,
+    session:    Session,
+) -> str:
+    """
+    Return the full USER_PROFILE singleton as a JSON string.
+
+    Reads from the in-memory singleton in backend.services.user_profile,
+    which is kept current by master_profile_service.py.  The session
+    parameter is unused here but kept for dispatcher signature compatibility.
+
+    Returning the raw JSON (not a summary) lets Ariel reason over any field
+    without information being lost in a summarisation step.
+    """
+    try:
+        from backend.services.user_profile import USER_PROFILE  # always latest
+        payload = json.dumps(USER_PROFILE, ensure_ascii=False, indent=2)
+        logger.info(
+            "[ariel_tools] get_full_candidate_profile user=%s payload_len=%d",
+            user_id, len(payload),
+        )
+        return payload
+    except Exception as exc:
+        logger.error(
+            "[ariel_tools] get_full_candidate_profile failed user=%s: %s", user_id, exc,
+        )
+        return f"error: could not load candidate profile — {exc}"
+
 
 def _handle_update_experience(
     tool_input: dict[str, Any],
@@ -473,13 +592,89 @@ def _handle_finalize_onboarding(
         return f"error: could not finalize onboarding — {exc}"
 
 
+def _handle_get_tailored_cv_for_review(
+    tool_input: dict[str, Any],
+    user_id:    str,
+    session:    Session,
+) -> str:
+    """READ side of the CV edit loop — index-addressed view of the live document."""
+    try:
+        from backend.services.cv_tailor_service import describe_tailored_cv
+        view = describe_tailored_cv(job_id=tool_input.get("job_id") or None)
+        logger.info(
+            "[ariel_tools] get_tailored_cv_for_review user=%s job=%s status=%s",
+            user_id, view.get("job_id"), view.get("status"),
+        )
+        return json.dumps(view, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.error("[ariel_tools] get_tailored_cv_for_review failed user=%s: %s", user_id, exc)
+        return f"error: could not load the tailored CV — {exc}"
+
+
+def _handle_edit_tailored_cv_bullet(
+    tool_input: dict[str, Any],
+    user_id:    str,
+    session:    Session,
+) -> str:
+    """
+    WRITE side of the CV edit loop.
+
+    Delegates to cv_tailor_service.edit_tailored_cv_bullet, which enforces the
+    zero-hallucination gate (validate_bullet from cv_assembly_engine) BEFORE
+    touching the document. A "rejected" result is a hard logic-level refusal —
+    the model must relay it, not retry with the same invented content.
+    """
+    try:
+        from backend.services.cv_tailor_service import edit_tailored_cv_bullet
+
+        bullet_index = tool_input.get("bullet_index")
+        result = edit_tailored_cv_bullet(
+            user_id      = user_id,
+            section      = str(tool_input.get("section") or ""),
+            new_text     = str(tool_input.get("new_text") or ""),
+            job_id       = tool_input.get("job_id") or None,
+            company      = tool_input.get("company") or None,
+            bullet_index = int(bullet_index) if bullet_index is not None else None,
+        )
+
+        status = result.get("status")
+        if status == "applied":
+            return (
+                "EDIT APPLIED.\n"
+                f"Section: {result['section']}"
+                + (f" | {result['company']} bullet #{result['bullet_index']}"
+                   if result.get("company") else "")
+                + f"\nOld: {result['old_text']}\nNew: {result['new_text']}\n"
+                + (f"Newly introduced facts licensed by evidence records: "
+                   f"{', '.join(result['licensed_by'])}"
+                   if result.get("licensed_by")
+                   else "No new factual claims introduced (rephrasing only).")
+            )
+        if status == "rejected":
+            return (
+                "EDIT REJECTED — ZERO-HALLUCINATION GATE.\n"
+                f"{result['refusal']}\n"
+                "Do NOT retry with the same unverified content. Relay this refusal "
+                "to the user and offer to verify the claim via a STAR probe or "
+                "Whiteboard Challenge first."
+            )
+        return f"error: {result.get('message', 'edit failed for an unknown reason.')}"
+
+    except Exception as exc:
+        logger.error("[ariel_tools] edit_tailored_cv_bullet failed user=%s: %s", user_id, exc)
+        return f"error: could not apply the CV edit — {exc}"
+
+
 # ── Dispatcher ────────────────────────────────────────────────────────────────
 
 _HANDLERS = {
-    "update_experience":    _handle_update_experience,
-    "update_skills":        _handle_update_skills,
-    "update_career_goals":  _handle_update_career_goals,
-    "finalize_onboarding":  _handle_finalize_onboarding,
+    "get_full_candidate_profile": _handle_get_full_candidate_profile,
+    "update_experience":          _handle_update_experience,
+    "update_skills":              _handle_update_skills,
+    "update_career_goals":        _handle_update_career_goals,
+    "finalize_onboarding":        _handle_finalize_onboarding,
+    "get_tailored_cv_for_review": _handle_get_tailored_cv_for_review,
+    "edit_tailored_cv_bullet":    _handle_edit_tailored_cv_bullet,
 }
 
 

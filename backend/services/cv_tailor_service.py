@@ -50,18 +50,41 @@ _MIN_JD_LEN = 60   # chars — below this we warn but still proceed
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
 _SYSTEM = """\
-You are a senior tech recruiter and ATS optimization expert with 20 years of experience \
-placing candidates at top B2B SaaS companies in EMEA.
+You are a strategic matchmaker: a senior tech recruiter and ATS optimization expert \
+with 20 years of experience placing candidates at top B2B SaaS companies in EMEA. \
+You do not just match keywords — you position a candidate inside the target \
+company's CURRENT reality.
 
 Your task is to analyse how a candidate's VERIFIED experience intersects with a job \
-description, then produce a structured JSON brief that:
-  1. Positions the candidate for this specific role.
+description AND the company's present situation, then produce a structured JSON brief that:
+  1. Positions the candidate for this specific role at this specific moment in the \
+     company's trajectory.
   2. Rewrites 3-5 key experience bullets per relevant role to emphasise genuine overlaps \
      with the JD — using the JD's own terminology where it fits naturally.
 
-ABSOLUTE RULES — violating any of these invalidates the output:
+STRATEGIC SELECTION & FRAMING (when COMPANY_INTELLIGENCE is provided):
+  • lean / turnaround (layoffs, cost discipline, profitability push): lead with the \
+    candidate's REAL efficiency evidence — cost savings, automation, consolidation, \
+    retention. A hiring manager in cutting mode buys "does more with less".
+  • hypergrowth / growth (funding, expansion, aggressive hiring): lead with REAL \
+    scaling evidence — growth metrics, launches, 0→1 work, building teams and systems \
+    under speed.
+  • stable / unknown: balanced framing; do not force a narrative the intelligence \
+    does not support.
+  • Echo the company's strategic_focus and hiring_persona in the positioning_summary \
+    where the candidate's verified history genuinely intersects with them.
+  • When USER_PERSONA is provided, phrase bullets and the summary in a voice \
+    consistent with it (direct vs narrative, data-first vs story-first).
+
+THE STRATEGY CHANGES THE NARRATIVE, NEVER THE FACTS — ABSOLUTE RULES:
   • NEVER invent experience, metrics, company names, dates, or skills not present \
-    in the CANDIDATE_PROFILE or PROFICIENCY_MAP.
+    in the CANDIDATE_PROFILE or PROFICIENCY_MAP. This applies with full force to \
+    strategic framing: if the company needs efficiency and the candidate has no \
+    efficiency metrics, you write the honest bullets you have — you do NOT \
+    manufacture cost-saving numbers to fit the strategy.
+  • COMPANY_INTELLIGENCE and USER_PERSONA are context about the company and the \
+    candidate's style. They are NEVER a source of factual claims about the \
+    candidate's history.
   • ONLY reframe authentic experience using the JD's language — do not add \
     fictional quantification (e.g. "increased revenue by 40%") unless the number \
     already appears in the profile.
@@ -80,6 +103,12 @@ CANDIDATE_PROFILE:
 PROFICIENCY_MAP (skill → verified level: professional | academic | none | unknown):
 {proficiency_block}
 
+COMPANY_INTELLIGENCE (context for SELECTION and FRAMING only — never a source of candidate facts):
+{company_intel_block}
+
+USER_PERSONA (the candidate's implicit style — tone guidance only):
+{persona_block}
+
 JOB_TITLE: {title}
 COMPANY: {company}
 LOCATION: {location}
@@ -91,7 +120,9 @@ JOB_DESCRIPTION:
 Produce a single JSON object matching this exact schema (no extra keys):
 
 {{
-  "positioning_summary": "2-3 sentences specifically positioning this candidate for THIS role at THIS company. Reference the company and role explicitly. Be concrete — not generic.",
+  "positioning_summary": "2-3 sentences specifically positioning this candidate for THIS role at THIS company, in its CURRENT situation per COMPANY_INTELLIGENCE. Reference the company and role explicitly. Be concrete — not generic.",
+
+  "positioning_strategy": "1 sentence naming the strategy you applied (e.g. 'Company in lean mode — led with verified efficiency and retention metrics') or 'No company intelligence available — balanced framing.'",
 
   "tailored_sections": [
     {{
@@ -167,6 +198,7 @@ def _normalise(raw_dict: dict, job: JobMatch) -> dict:
         "company":             job.company,
         "generated_at":        datetime.now(timezone.utc).isoformat(),
         "positioning_summary": str(raw_dict.get("positioning_summary", "")),
+        "positioning_strategy": str(raw_dict.get("positioning_strategy", "")),
         "tailored_sections":   [],
     }
 
@@ -208,6 +240,71 @@ def _save_tailor_brief(job_id: str, brief: dict) -> None:
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
+
+def _build_verified_assembly(job: JobMatch, jd_text: str, company_vibe: str | None = None) -> dict:
+    """
+    Run the Zero-Hallucination CV Assembly Engine for this job.
+
+    Pipeline:
+      1. Load VerifiedFacts from the evidence ledger (Confidence Matrix).
+      2. Derive JD competency gaps deterministically (heuristic splitter +
+         confidence-matrix matching — no LLM call).
+      3. assemble_cv() → provenance-validated bullets, unserved gaps.
+
+    Returns a JSON-safe dict attached to the tailor brief as
+    brief["verified_assembly"].
+    """
+    from backend.services.active_user import get_active_user_id
+    from backend.services.ats_match_engine import (
+        extract_competencies, heuristic_structured_jd, score_competencies,
+    )
+    from backend.services.confidence_matrix_service import get_entity_breakdown
+    from backend.services.cv_assembly_engine import assemble_cv, load_verified_facts
+    from backend.services.db import ENGINE
+
+    user_id  = get_active_user_id()
+    facts    = load_verified_facts(user_id, ENGINE)
+    entities = list(get_entity_breakdown(user_id, ENGINE))
+
+    # Gap analysis: which JD must-haves are / aren't evidenced.
+    structured = heuristic_structured_jd(jd_text)
+    competencies = extract_competencies(structured)
+    _, detail, gap_lines = score_competencies(competencies, entities)
+
+    matched  = [m.matched_entity for m in detail if m.matched_entity]
+    gap_ents = [
+        m.competency.normalized for m in detail
+        if m.matched_entity is None and m.competency.tier.value == "must_have"
+    ]
+
+    # LLM phrasing layer: reuse the module-level Anthropic client config.
+    llm_client = None
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if api_key:
+        llm_client = anthropic.Anthropic(api_key=api_key)
+
+    assembled = assemble_cv(
+        facts            = facts,
+        gap_entities     = gap_ents,
+        matched_entities = matched,
+        candidate_title  = USER_PROFILE.get("personal", {}).get("title", "") or job.title,
+        llm_client       = llm_client,
+        company_vibe     = company_vibe,   # strategy biases fact SELECTION only
+    )
+
+    return {
+        "summary":        assembled.summary,
+        "bullets":        [
+            {"text": b.text, "entity": b.entity, "fact_ids": b.fact_ids}
+            for b in assembled.bullets
+        ],
+        "skills":         assembled.skills,
+        "unserved_gaps":  assembled.unserved_gaps,
+        "gap_lines":      gap_lines,
+        "rejected_count": assembled.rejected_count,
+        "fact_count":     len(facts),
+    }
+
 
 async def generate_tailor_brief(job_id: str, force_refresh: bool = False) -> dict:
     """
@@ -258,18 +355,48 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False) -> dic
             job_id, job.title, job.company,
         )
 
+    # ── 3b. Company Intelligence + User Persona (both strictly non-fatal) ────
+    # Framing/selection context ONLY — the fact source remains the profile and
+    # the VerifiedFact ledger. A failure here degrades to the un-strategic brief.
+    company_intel_block = "(no company intelligence available)"
+    company_vibe: str | None = None
+    try:
+        from backend.services.company_intelligence_service import (
+            format_for_prompt, get_company_profile,
+        )
+        intel = await get_company_profile(job.company or "")
+        if intel:
+            company_intel_block = format_for_prompt(intel)
+            company_vibe        = intel.financial_vibe
+    except Exception as exc:
+        logger.warning("[cv_tailor] company intelligence unavailable (non-fatal): %s", exc)
+
+    persona_block = "(no persona extracted yet — neutral professional tone)"
+    try:
+        from backend.services.active_user import get_active_user_id
+        from backend.services.master_profile_service import (
+            extract_user_persona, format_persona_for_prompt,
+        )
+        persona = await extract_user_persona(get_active_user_id())
+        if persona:
+            persona_block = format_persona_for_prompt(persona)
+    except Exception as exc:
+        logger.warning("[cv_tailor] persona extraction unavailable (non-fatal): %s", exc)
+
     # ── 4. Build and call the LLM ─────────────────────────────────────────────
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set.")
 
     user_msg = _USER_TMPL.format(
-        profile           = profile_text,
-        proficiency_block = proficiency_block,
-        title             = job.title,
-        company           = job.company,
-        location          = job.location or "Israel",
-        jd_text           = jd_text[:4000],   # cap to avoid token overflow
+        profile             = profile_text,
+        proficiency_block   = proficiency_block,
+        company_intel_block = company_intel_block,
+        persona_block       = persona_block,
+        title               = job.title,
+        company             = job.company,
+        location            = job.location or "Israel",
+        jd_text             = jd_text[:4000],   # cap to avoid token overflow
     )
 
     logger.info(
@@ -299,6 +426,20 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False) -> dic
 
     brief = _normalise(raw_dict, job)
 
+    # ── 5b. Zero-Hallucination assembly layer (LIVE) ──────────────────────────
+    # Attach provenance-validated bullets built exclusively from the evidence
+    # ledger. The LLM brief above remains for narrative sections; the bullets
+    # below are the only content guaranteed fact-backed. Non-fatal on failure —
+    # the brief is still returned without the assembly block.
+    try:
+        brief["verified_assembly"] = _build_verified_assembly(job, jd_text, company_vibe=company_vibe)
+    except Exception as exc:
+        logger.warning("[cv_tailor] verified assembly failed (non-fatal): %s", exc)
+        brief["verified_assembly"] = None
+    brief["company_intelligence"] = {
+        "vibe": company_vibe, "block": company_intel_block,
+    } if company_vibe else None
+
     # ── 6. Cache and return ───────────────────────────────────────────────────
     try:
         _save_tailor_brief(job_id, brief)
@@ -311,3 +452,270 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False) -> dic
         len(brief["tailored_sections"]),
     )
     return brief
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Ariel executor — surgical Read-Write edits on an EXISTING tailored CV
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Ariel does NOT build CVs (that is generate_tailor_brief / the Tailor engine).
+# She performs localized edits on the document the user is currently reviewing:
+# the JobRow.tailored_cv JSON ({"cv_data", "match_score", "tailor_brief"}).
+#
+# Zero-hallucination contract (enforced HERE, at the logic level — never
+# delegated to the model's good behaviour):
+#   The proposed text is passed through validate_bullet() — the exact same
+#   provenance gate assemble_cv() uses. The allowed literal universe is
+#     union(VerifiedFact.literals)  ∪  literals(current text being replaced)
+#   i.e. rephrasing/tightening what the document already says is always legal,
+#   but any NEW number, company, product, or named entity must trace to a
+#   VerifiedFact from the evidence ledger. Anything else → status="rejected"
+#   with the offending literals listed, and the document is NOT touched.
+
+_EDIT_MAX_CHARS = 240   # mirrors the CopilotAgent / brief bullet ceiling
+
+
+def _document_fact(text: str) -> "object":
+    """
+    Wrap existing document text as a synthetic VerifiedFact so its literals are
+    admissible during re-validation. Rationale: this text was licensed when the
+    document was generated; an edit must not lose that licence just because the
+    generation-time evidence has rotated. Only NEW literals need fresh provenance.
+    """
+    from backend.services.cv_assembly_engine import VerifiedFact
+    return VerifiedFact(
+        fact_id="__current_document__",
+        source_type="current_document",
+        entity="__document__",
+        action=text,
+    )
+
+
+def resolve_editable_cv(job_id: Optional[str] = None) -> tuple[Optional[str], Optional[dict]]:
+    """
+    Return (job_id, tailored_cv_doc) for the edit target.
+
+    With an explicit job_id → that job's document (or (job_id, None) if the job
+    has no tailored CV yet). Without one → the most recently generated tailored
+    CV, resolved by the brief's generated_at timestamp ("the CV" in conversation
+    means the one the user just produced and is reviewing).
+    """
+    from backend.services.db import ENGINE, JobRow
+    from sqlalchemy.orm import Session
+
+    with Session(ENGINE) as session:
+        if job_id:
+            row = session.get(JobRow, job_id)
+            return (job_id, dict(row.tailored_cv)) if row and row.tailored_cv else (job_id, None)
+
+        rows = (
+            session.query(JobRow)
+            .filter(JobRow.tailored_cv.isnot(None))
+            .all()
+        )
+        best: Optional[JobRow] = None
+        best_ts = ""
+        for row in rows:
+            doc = row.tailored_cv or {}
+            ts  = str((doc.get("tailor_brief") or {}).get("generated_at", ""))
+            if best is None or ts > best_ts:
+                best, best_ts = row, ts
+        if best is None:
+            return (None, None)
+        return (best.job_id, dict(best.tailored_cv))
+
+
+def describe_tailored_cv(job_id: Optional[str] = None) -> dict:
+    """
+    READ side of Ariel's loop: a compact, index-addressed view of the document
+    so the model can reference sections and bullets precisely ("bullet 2 of the
+    Go-Out section") instead of editing from memory.
+    """
+    resolved_id, doc = resolve_editable_cv(job_id)
+    if not doc:
+        return {"status": "not_found", "job_id": resolved_id,
+                "message": "No tailored CV exists yet — generate one with the Tailor CV button first."}
+
+    brief   = doc.get("tailor_brief") or {}
+    cv_data = doc.get("cv_data") or {}
+
+    sections = []
+    for s in brief.get("tailored_sections", []):
+        sections.append({
+            "company": s.get("company", ""),
+            "role":    s.get("role", ""),
+            "bullets": {str(i): b for i, b in enumerate(s.get("bullets", []))},
+        })
+    # Fall back to cv_data.experience when the brief has no sections.
+    if not sections:
+        for e in cv_data.get("experience", []):
+            sections.append({
+                "company": e.get("company", ""),
+                "role":    e.get("role", ""),
+                "bullets": {str(i): b for i, b in enumerate(e.get("bullets", []))},
+            })
+
+    return {
+        "status":   "ok",
+        "job_id":   resolved_id,
+        "job_title": brief.get("job_title", ""),
+        "target_company": brief.get("company", ""),
+        "summary":  brief.get("positioning_summary") or cv_data.get("summary", ""),
+        "sections": sections,
+    }
+
+
+def _replace_in_cv_data(cv_data: dict, old_text: str, new_text: str) -> bool:
+    """Mirror an applied bullet edit into cv_data.experience when the same text exists there."""
+    changed = False
+    for e in cv_data.get("experience", []):
+        bullets = e.get("bullets")
+        if isinstance(bullets, list):
+            for i, b in enumerate(bullets):
+                if str(b).strip() == old_text.strip():
+                    bullets[i] = new_text
+                    changed = True
+    return changed
+
+
+def edit_tailored_cv_bullet(
+    user_id:      str,
+    section:      str,                    # "summary" | "bullet"
+    new_text:     str,
+    job_id:       Optional[str] = None,
+    company:      Optional[str] = None,   # required for section="bullet"
+    bullet_index: Optional[int] = None,   # required for section="bullet"
+) -> dict:
+    """
+    WRITE side of Ariel's loop — apply ONE validated edit to the stored document.
+
+    Returns a dict with status:
+      "applied"  — document mutated and persisted; includes old/new + provenance.
+      "rejected" — zero-hallucination gate refused; includes offending literals
+                   and a user-facing refusal. Document untouched.
+      "error"    — target not found / bad reference. Document untouched.
+    """
+    from backend.services.cv_assembly_engine import (
+        _extract_literals, load_verified_facts, validate_bullet,
+    )
+    from backend.services.db import ENGINE, JobRow
+    from sqlalchemy.orm import Session
+
+    new_text = " ".join((new_text or "").split())
+    if not new_text:
+        return {"status": "error", "message": "new_text is empty."}
+    if len(new_text) > _EDIT_MAX_CHARS:
+        return {"status": "error",
+                "message": f"new_text is {len(new_text)} chars — the ceiling is {_EDIT_MAX_CHARS}. Tighten it."}
+
+    resolved_id, doc = resolve_editable_cv(job_id)
+    if not doc:
+        return {"status": "error", "job_id": resolved_id,
+                "message": "No tailored CV exists to edit — generate one with the Tailor CV engine first."}
+
+    brief   = doc.get("tailor_brief") or {}
+    cv_data = doc.get("cv_data") or {}
+
+    # ── 1. Locate the target text ─────────────────────────────────────────────
+    old_text: Optional[str] = None
+    apply_fn = None   # closure that mutates `doc` in place once validation passes
+
+    if section == "summary":
+        if brief.get("positioning_summary"):
+            old_text = str(brief["positioning_summary"])
+            def apply_fn() -> None:
+                brief["positioning_summary"] = new_text
+                if cv_data.get("summary"):
+                    cv_data["summary"] = new_text
+        elif cv_data.get("summary"):
+            old_text = str(cv_data["summary"])
+            def apply_fn() -> None:
+                cv_data["summary"] = new_text
+
+    elif section == "bullet":
+        if not company or bullet_index is None:
+            return {"status": "error",
+                    "message": "section='bullet' requires both 'company' and 'bullet_index'."}
+        needle = company.strip().lower()
+        pools: list[list] = [brief.get("tailored_sections", []), cv_data.get("experience", [])]
+        for pool in pools:
+            for entry in pool:
+                if needle in str(entry.get("company", "")).lower():
+                    bullets = entry.get("bullets") or []
+                    if 0 <= bullet_index < len(bullets):
+                        old_text = str(bullets[bullet_index])
+                        def apply_fn(entry=entry, bullets=bullets) -> None:
+                            bullets[bullet_index] = new_text
+                            entry["bullets"] = bullets
+                            _replace_in_cv_data(cv_data, old_text, new_text)  # keep both views in sync
+                        break
+            if old_text is not None:
+                break
+    else:
+        return {"status": "error", "message": f"Unknown section {section!r} — use 'summary' or 'bullet'."}
+
+    if old_text is None or apply_fn is None:
+        return {"status": "error", "job_id": resolved_id,
+                "message": (f"Could not locate {section} target "
+                            f"(company={company!r}, bullet_index={bullet_index}). "
+                            "Call the review tool and use its exact indices.")}
+
+    # ── 2. Zero-hallucination gate (assemble_cv's validate_bullet) ────────────
+    facts   = load_verified_facts(user_id, ENGINE)
+    allowed = facts + [_document_fact(old_text)]
+    if not validate_bullet(new_text, allowed):
+        allowed_literals = set()
+        for f in allowed:
+            allowed_literals |= f.literals
+        illegal = sorted(_extract_literals(new_text) - allowed_literals)
+        logger.warning(
+            "[cv_tailor] Ariel edit REJECTED job=%s section=%s illegal=%s",
+            resolved_id, section, illegal,
+        )
+        return {
+            "status":  "rejected",
+            "job_id":  resolved_id,
+            "illegal_literals": illegal,
+            "refusal": (
+                "Edit rejected by the zero-hallucination gate: "
+                f"{', '.join(repr(t) for t in illegal)} do(es) not appear in the current "
+                "CV text or in any verified evidence record. This CV only carries claims "
+                "that trace to verified facts. To include this, verify it first "
+                "(STAR probe / Whiteboard Challenge), then retry the edit."
+            ),
+        }
+
+    # Provenance report: which verified facts license the NEWLY introduced literals.
+    new_literals = _extract_literals(new_text) - _extract_literals(old_text)
+    licensed_by  = sorted({
+        f.fact_id for f in facts if new_literals & f.literals
+    }) if new_literals else []
+
+    # ── 3. Apply + persist ────────────────────────────────────────────────────
+    apply_fn()
+    with Session(ENGINE) as session:
+        row = session.get(JobRow, resolved_id)
+        if row is None:
+            return {"status": "error", "message": f"Job {resolved_id!r} vanished mid-edit."}
+        merged = dict(row.tailored_cv or {})
+        if brief:
+            merged["tailor_brief"] = brief
+        if cv_data:
+            merged["cv_data"] = cv_data
+        row.tailored_cv = merged          # reassign — JSON column change detection
+        session.commit()
+
+    logger.info(
+        "[cv_tailor] Ariel edit APPLIED job=%s section=%s company=%r idx=%s licensed_by=%s",
+        resolved_id, section, company, bullet_index, licensed_by,
+    )
+    return {
+        "status":      "applied",
+        "job_id":      resolved_id,
+        "section":     section,
+        "company":     company,
+        "bullet_index": bullet_index,
+        "old_text":    old_text,
+        "new_text":    new_text,
+        "licensed_by": licensed_by,   # fact_ids covering newly-introduced literals
+    }

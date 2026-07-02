@@ -61,7 +61,16 @@
       "Bash(CLAUDE_CODE_TMPDIR=/tmp grep -n \"\\\\.body\\\\|\\\\.page\\\\|\\\\.sidebar\\\\|\\\\.col\\\\|\\\\.left\\\\|\\\\.right\\\\|display.*flex\\\\|display.*grid\\\\|flex-direction\" /Users/ronmorim/Projects/JobApply_Venture/backend/templates/cv/t1_classic.html)",
       "Bash(CLAUDE_CODE_TMPDIR=/tmp grep -n \"\\\\.body\\\\|\\\\.page\\\\|\\\\.sidebar\\\\|\\\\.col\\\\|\\\\.left\\\\|\\\\.right\\\\|display.*flex\\\\|display.*grid\\\\|flex-direction\" /Users/ronmorim/Projects/JobApply_Venture/backend/templates/cv/t2_modern.html)",
       "Bash(CLAUDE_CODE_TMPDIR=/tmp grep -n \"Technical\\\\|Product Leadership\\\\|Customer Success\\\\|skill.*categor\\\\|categor.*label\" /Users/ronmorim/Projects/JobApply_Venture/backend/agents/tailor.py)",
-      "Bash(CLAUDE_CODE_TMPDIR=/tmp grep -n \"Technical\\\\|Product Leadership\\\\|Customer Success\\\\|Data Analysis\\\\|entity_type\\\\|skill.*categor\" /Users/ronmorim/Projects/JobApply_Venture/backend/agents/resume.py)"
+      "Bash(CLAUDE_CODE_TMPDIR=/tmp grep -n \"Technical\\\\|Product Leadership\\\\|Customer Success\\\\|Data Analysis\\\\|entity_type\\\\|skill.*categor\" /Users/ronmorim/Projects/JobApply_Venture/backend/agents/resume.py)",
+      "Bash(python3 -c \"from backend.api.routes.history import router; print\\('OK, routes:', [r.path for r in router.routes]\\)\")",
+      "Bash(echo \"exit:$?\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://127.0.0.1:8000/docs)",
+      "Bash(kill 39854 39857)",
+      "Bash(nohup npm run dev)",
+      "Bash(disown)",
+      "Read(//tmp/**)",
+      "Bash(echo \"%PDF-1.4 test\")",
+      "Bash(curl -s -o /tmp/resp.json -w \"HTTP_STATUS:%{http_code}\\\\n\" -X POST http://localhost:3000/api/profile/cv-upload -F \"files=@/tmp/test_cv.pdf;type=application/pdf\")"
     ]
   }
 }

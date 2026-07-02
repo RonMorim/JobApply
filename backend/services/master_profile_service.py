@@ -76,8 +76,11 @@ def _empty_profile() -> dict:
         "role_preferences": {
             "target_titles":       [],
             "preferred_locations": [],
-            "work_type":           "any",
+            "work_type":           "any",   # "remote" | "hybrid" | "onsite" | "any"
             "salary_min_usd":      None,
+            # Languages the candidate can work in — evaluated by the ATS Match
+            # Engine's knockout layer against JD language requirements.
+            "languages":           [],      # e.g. ["hebrew", "english"]
         },
         # Populated by ResearcherAgent — keyed by entity name (lowercase)
         "enriched_entities": {},
@@ -249,6 +252,30 @@ _SKILL_KEY_STOP_WORDS: frozenset[str] = frozenset({
     "usage", "context", "experience", "level", "proficiency",
     "background", "knowledge", "skill", "details", "info", "history",
 })
+
+
+def get_knockout_prefs(user_id: str = "default") -> dict:
+    """
+    Return the hard-constraint preferences consumed by the ATS Match Engine's
+    knockout layer (ats_match_engine.evaluate_knockouts).
+
+    Shape:
+        {
+          "work_model": "remote_only" | None,   # None = flexible → never knocks out
+          "languages":  ["hebrew", "english", ...],
+        }
+
+    "remote_only" is set ONLY when work_type is explicitly "remote" — "any",
+    "hybrid", and "onsite" all map to None so the on-site-only knockout can
+    never fire against a flexible candidate.
+    """
+    profile = load()
+    prefs   = profile.get("role_preferences", {}) or {}
+    work    = str(prefs.get("work_type", "any")).lower()
+    return {
+        "work_model": "remote_only" if work == "remote" else None,
+        "languages":  [str(l).lower() for l in prefs.get("languages", []) if str(l).strip()],
+    }
 
 
 def get_skill_proficiencies() -> dict[str, str]:
@@ -507,3 +534,175 @@ def _sync_personal_to_user_profile(profile: dict) -> None:
                 save_personal_field(field, value)
             except Exception:
                 pass  # never let a sync failure break profile loading
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# User Persona extraction — implicit profile from Ariel interaction history
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Distinct from the explicit master profile (facts the user stated): the persona
+# captures HOW the user operates — strengths they keep returning to, their
+# communication style, and their action-orientation — inferred from their own
+# messages in Ariel conversations (chat_sessions table).
+#
+# Used by the CV tailoring pipeline for tone and framing decisions ONLY. Like
+# CompanyProfile, the persona never becomes a factual claim on the CV: it steers
+# which VerifiedFacts lead and how bullets are phrased, and every bullet still
+# passes the cv_assembly_engine validation gate.
+
+_PERSONA_MODEL       = "claude-opus-4-8"
+_PERSONA_TTL_DAYS    = 7
+_PERSONA_MAX_CHARS   = 8000    # cap on user-message corpus sent to the LLM
+_PERSONA_MAX_SESSIONS = 12
+
+_PERSONA_SYSTEM = """\
+You infer a professional persona from a job seeker's own chat messages with
+their career agent. Work ONLY from what the user actually wrote — their word
+choices, what they emphasise, what they push back on. Do not flatter and do
+not invent: if the corpus is too thin to support a field, use an empty string
+or empty list.
+
+Respond with ONLY a JSON object (no markdown fences, no prose):
+{
+  "strengths": ["<recurring strength the user demonstrably leans on>", "..."],
+  "communication_style": "<1-2 sentences: direct/narrative, data-first/story-first, formal/casual>",
+  "action_orientation": "<1 sentence: builder/optimizer/strategist/firefighter etc., with the evidence pattern>",
+  "notes_for_cv_tone": "<1 sentence of guidance for phrasing their CV in a voice that sounds like them>"
+}"""
+
+
+def _collect_user_corpus(user_id: str) -> str:
+    """Concatenate the user's OWN messages from recent Ariel chat sessions."""
+    from sqlalchemy import text as _text
+    from backend.services.db import ENGINE
+
+    stmt = _text("""
+        SELECT messages_json FROM chat_sessions
+        WHERE user_id = :uid
+        ORDER BY updated_at DESC
+        LIMIT :lim
+    """)
+    chunks: list[str] = []
+    total = 0
+    try:
+        with ENGINE.connect() as conn:
+            rows = conn.execute(stmt, {"uid": user_id, "lim": _PERSONA_MAX_SESSIONS}).fetchall()
+    except Exception as exc:
+        logger.warning("[persona] chat_sessions unavailable (%s)", exc)
+        return ""
+
+    for (messages_json,) in rows:
+        try:
+            messages = json.loads(messages_json or "[]")
+        except json.JSONDecodeError:
+            continue
+        for m in messages:
+            if m.get("role") != "user":
+                continue
+            content = str(m.get("content", "")).strip()
+            if not content:
+                continue
+            chunks.append(content)
+            total += len(content)
+            if total >= _PERSONA_MAX_CHARS:
+                return "\n---\n".join(chunks)[:_PERSONA_MAX_CHARS]
+    return "\n---\n".join(chunks)
+
+
+def _load_cached_persona(user_id: str) -> dict | None:
+    """Return the cached persona from master_profiles if fresh (< TTL)."""
+    from sqlalchemy.orm import Session
+    from backend.services.db import ENGINE, MasterProfileRow
+
+    with Session(ENGINE) as s:
+        row = s.get(MasterProfileRow, user_id)
+        persona = (row.master_profile or {}).get("user_persona") if row else None
+    if not isinstance(persona, dict) or not persona.get("extracted_at"):
+        return None
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(persona["extracted_at"])
+    except ValueError:
+        return None
+    return persona if age.days < _PERSONA_TTL_DAYS else None
+
+
+def _save_persona(user_id: str, persona: dict) -> None:
+    import copy as _copy
+    from sqlalchemy.orm import Session
+    from backend.services.db import ENGINE, MasterProfileRow
+
+    with Session(ENGINE) as s:
+        row = s.get(MasterProfileRow, user_id)
+        if row is None:
+            return   # no master profile row yet — persona is cache-only, skip
+        profile = _copy.deepcopy(row.master_profile or {})
+        profile["user_persona"] = persona
+        row.master_profile = profile
+        s.commit()
+
+
+async def extract_user_persona(user_id: str, force_refresh: bool = False) -> dict | None:
+    """
+    Extract (or return cached) the user's persona from their Ariel history.
+
+    Returns a dict with strengths / communication_style / action_orientation /
+    notes_for_cv_tone / extracted_at, or None when there is no usable history
+    or extraction fails. Callers must treat None as "tailor without persona".
+    """
+    if not force_refresh:
+        cached = _load_cached_persona(user_id)
+        if cached:
+            return cached
+
+    corpus = _collect_user_corpus(user_id)
+    if len(corpus) < 200:   # too thin to say anything defensible
+        logger.info("[persona] insufficient chat history for user=%s (%d chars)", user_id, len(corpus))
+        return None
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+
+    import re as _re
+    import anthropic as _anthropic
+
+    try:
+        client = _anthropic.AsyncAnthropic(api_key=api_key)
+        response = await client.messages.create(
+            model      = _PERSONA_MODEL,
+            max_tokens = 800,
+            system     = _PERSONA_SYSTEM,
+            messages   = [{"role": "user", "content": f"USER'S MESSAGES (newest sessions first):\n\n{corpus}"}],
+        )
+        raw  = "".join(b.text for b in response.content if b.type == "text")
+        text = _re.sub(r"```(?:json)?", "", raw).strip()
+        start, end = text.find("{"), text.rfind("}")
+        data = json.loads(text[start:end + 1]) if (start != -1 and end > start) else json.loads(text)
+
+        persona = {
+            "strengths":           [str(x)[:200] for x in data.get("strengths", [])][:6],
+            "communication_style": str(data.get("communication_style", ""))[:400],
+            "action_orientation":  str(data.get("action_orientation", ""))[:400],
+            "notes_for_cv_tone":   str(data.get("notes_for_cv_tone", ""))[:400],
+            "extracted_at":        datetime.now(timezone.utc).isoformat(),
+        }
+        _save_persona(user_id, persona)
+        logger.info("[persona] extracted for user=%s: %d strengths", user_id, len(persona["strengths"]))
+        return persona
+    except Exception as exc:
+        logger.warning("[persona] extraction failed for user=%s: %s", user_id, exc)
+        return None
+
+
+def format_persona_for_prompt(persona: dict) -> str:
+    """Render the persona as a compact prompt block for the tailoring LLM."""
+    lines = []
+    if persona.get("strengths"):
+        lines.append("Recurring strengths: " + "; ".join(persona["strengths"]))
+    if persona.get("communication_style"):
+        lines.append(f"Communication style: {persona['communication_style']}")
+    if persona.get("action_orientation"):
+        lines.append(f"Action orientation: {persona['action_orientation']}")
+    if persona.get("notes_for_cv_tone"):
+        lines.append(f"CV tone guidance: {persona['notes_for_cv_tone']}")
+    return "\n".join(lines)

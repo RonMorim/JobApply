@@ -22,7 +22,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import agents, analytics, applications, ariel, auth, chat, crm, emails, jobs, outreach, profile, resumes, settings
+from api.routes import agents, analytics, applications, ariel, auth, chat, crm, emails, history, jobs, outreach, profile, resumes, settings
 from config import (
     AUTO_DISCOVERY,
     CREDIT_CONSERVATION_MODE,
@@ -43,30 +43,23 @@ logger = logging.getLogger(__name__)
 
 async def _enrichment_loop() -> None:
     """
-    Automatic enrichment worker — runs every 30 seconds regardless of whether
-    AUTO_DISCOVERY is enabled.
+    Automatic enrichment worker — runs every 30 seconds.
 
-    Picks up any job with score_is_proxy=True (including jobs that just came
-    through /api/jobs/analyze with a junk LLM response) and runs the full s2
-    enrichment pass until analysis is substantive or enrichment_failures reaches
-    the hard-stop threshold (ENRICHMENT_MAX_FAILURES).
-
-    This is the primary guarantee that 'Generating deep insights…' never becomes
-    a permanent dead end — even if the synchronous analyze pipeline failed to
-    produce analysis on the first attempt.
-
-    Backoff schedule (per job, governed by enrichment_failures counter):
-      failures=0 → eligible immediately
-      failures=1 → eligible (30s has passed since the loop last ran)
-      failures=2 → eligible (another 30s passes — total ~60s between first and third attempt)
-      failures>=3 → retired; UI shows 'Analysis Unavailable' error state
+    On transient failures the loop sleeps its normal interval and retries.
+    After _CONSEC_FAIL_THRESHOLD consecutive failures the loop enters a
+    long-backoff pause (_LONG_BACKOFF) and resets the counter, preventing
+    log spam when the Anthropic API is rate-limiting or unreachable.
     """
     from backend.services.active_user import get_active_user_id
     from backend.services.feed_service import refresh_user_scores
 
-    _INTERVAL = 30   # seconds between enrichment sweeps
+    _INTERVAL              = 30      # seconds between enrichment sweeps
+    _LONG_BACKOFF          = 1800    # 30-min pause after repeated failures
+    _CONSEC_FAIL_THRESHOLD = 5       # failures before entering long-backoff
 
     logger.info("[enrichment-loop] Automatic enrichment worker started — interval=%ds", _INTERVAL)
+
+    consecutive_failures = 0
 
     while True:
         await asyncio.sleep(_INTERVAL)
@@ -77,15 +70,44 @@ async def _enrichment_loop() -> None:
                 logger.info(
                     "[enrichment-loop] Enriched %d job(s) for user=%s", count, user_id,
                 )
+            consecutive_failures = 0   # reset on success
         except Exception:
-            # logger.exception prints the full stack trace — critical for diagnosing
-            # API-key failures, timeouts, and JSON parse errors from the LLM.
-            logger.exception("[enrichment-loop] Unhandled error in enrichment sweep")
+            consecutive_failures += 1
+            if consecutive_failures >= _CONSEC_FAIL_THRESHOLD:
+                logger.warning(
+                    "[enrichment-loop] %d consecutive failures — entering long-backoff "
+                    "(%ds) to avoid log spam. Will retry after pause.",
+                    consecutive_failures, _LONG_BACKOFF,
+                )
+                await asyncio.sleep(_LONG_BACKOFF)
+                consecutive_failures = 0
+            else:
+                logger.exception("[enrichment-loop] Unhandled error in enrichment sweep")
 
 
 async def _discovery_loop() -> None:
+    """
+    Background job-discovery worker.
+
+    Failure resilience
+    ------------------
+    Transient errors (network blips, a single 429 from the Anthropic enrichment
+    step) are logged once and the loop sleeps its normal interval before retrying.
+
+    After _CONSEC_FAIL_THRESHOLD consecutive failures the loop enters a long-
+    backoff pause (_LONG_BACKOFF_SECONDS) and resets the counter, preventing
+    log spam during an extended outage (e.g. Google rate-limiting all queries
+    for a cycle, or the Anthropic API being temporarily unreachable).
+
+    429-specific backoff at the Google-query level is handled inside
+    GoogleDorkScraper._run_queries — this loop-level backoff is a second
+    safety net for any other persistent failure mode that reaches here.
+    """
     from backend.services.discovery import run_discovery_cycle
     from backend.services.active_user import get_active_user_id
+
+    _LONG_BACKOFF_SECONDS  = 1800    # 30-min pause after repeated failures
+    _CONSEC_FAIL_THRESHOLD = 3       # failures before entering long-backoff
 
     if not AUTO_DISCOVERY:
         logger.warning(
@@ -93,7 +115,6 @@ async def _discovery_loop() -> None:
             "Set AUTO_DISCOVERY=True in backend/config.py to re-enable. "
             "Manual single-job analysis via POST /api/jobs/analyze remains fully operational."
         )
-        # Sleep indefinitely — task stays alive so cancellation on shutdown works.
         while True:
             await asyncio.sleep(3600)
 
@@ -101,14 +122,31 @@ async def _discovery_loop() -> None:
         "[discovery-loop] Background task started — interval=%ds  credit_conservation=%s",
         DISCOVERY_INTERVAL_SECONDS, CREDIT_CONSERVATION_MODE,
     )
+
+    consecutive_failures = 0
+
     while True:
         try:
-            # Re-read on every cycle so a newly logged-in user is picked up
-            # without requiring a server restart.
             active_user = get_active_user_id()
             await run_discovery_cycle(user_id=active_user)
+            consecutive_failures = 0   # reset on success
         except Exception as exc:
-            logger.error("[discovery-loop] Unhandled error: %s", exc)
+            consecutive_failures += 1
+            is_rate_limit = "429" in str(exc) or "too many requests" in str(exc).lower()
+            if consecutive_failures >= _CONSEC_FAIL_THRESHOLD or is_rate_limit:
+                backoff = _LONG_BACKOFF_SECONDS
+                logger.warning(
+                    "[discovery-loop] %d consecutive failure(s)%s — entering long-backoff "
+                    "(%ds). Will retry after pause. Last error: %s",
+                    consecutive_failures,
+                    " (rate-limit)" if is_rate_limit else "",
+                    backoff, exc,
+                )
+                await asyncio.sleep(backoff)
+                consecutive_failures = 0
+            else:
+                logger.error("[discovery-loop] Error (attempt %d/%d): %s",
+                             consecutive_failures, _CONSEC_FAIL_THRESHOLD, exc)
         await asyncio.sleep(DISCOVERY_INTERVAL_SECONDS)
 
 
@@ -299,6 +337,7 @@ app.add_middleware(
 app.include_router(ariel.router,        prefix="/api/ariel",        tags=["ariel"])
 app.include_router(auth.router,         prefix="/api/auth",         tags=["auth"])
 app.include_router(chat.router,         prefix="/api/chat",         tags=["chat"])
+app.include_router(history.router,      prefix="/api/chat",         tags=["chat-history"])
 app.include_router(jobs.router,         prefix="/api/jobs",         tags=["jobs"])
 app.include_router(agents.router,       prefix="/api/agents",       tags=["agents"])
 app.include_router(applications.router, prefix="/api/applications", tags=["applications"])

@@ -14,9 +14,11 @@ still holds a thin placeholder JD is treated as un-enriched and re-processed.
 
 hydrate_job(job)
 ────────────────
-Single gateway for all live JD fetching.  On failure it writes
+Single gateway for all live JD fetching.  Uses unauthenticated requests only —
+no cookies, no Playwright, no ScraperAPI.  On failure it writes
 _HYDRATE_FAILED_SENTINEL to the jd_text column so the job is permanently
 excluded from retry loops without requiring a schema change.
+LinkedIn challenge/redirect errors are treated as transient (no penalty).
 
 force_rescore_all(user_id)
 ───────────────────────────
@@ -29,9 +31,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 from models.job import JobMatch
 from backend.services import job_store
@@ -46,106 +50,10 @@ logger = logging.getLogger(__name__)
 _JD_MIN_CHARS = 250
 
 # Sentinel written to jd_text when hydration fails irrecoverably (HTTP 403/404,
-# content too short after scraping, etc.).  Prevents infinite retry loops by
-# making _is_thin() return False so the job is never re-queued for hydration.
+# content too short after scraping, login wall, etc.).  Prevents infinite retry
+# loops by making _is_thin() return False so the job is never re-queued.
 # We reuse the existing jd_text column to avoid a schema migration.
 _HYDRATE_FAILED_SENTINEL = "__hydrate_failed__"
-
-# Sentinel written when scraper returns LinkedInAuthWallError.
-# Distinct from the generic failure sentinel so:
-#   • _is_thin() returns False → no re-queue
-#   • UI can show "Manual Auth Required" instead of "Analysis unavailable"
-#   • enrichment_failures is NOT incremented (not a job-data problem)
-# Cleared automatically if a future enrichment pass finds LINKEDIN_LI_AT refreshed.
-_HYDRATE_AUTH_WALL_SENTINEL = "__auth_wall__"
-
-# ── LinkedIn scraper block detection ─────────────────────────────────────────
-# KV keys used to track redirect-loop errors and the resulting BLOCKED state.
-_KV_REDIRECT_COUNT  = "linkedin_redirect_error_count"
-_KV_SCRAPER_STATUS  = "linkedin_scraper_status"
-_KV_BLOCKED_AT      = "linkedin_scraper_blocked_at"
-# Number of ERR_TOO_MANY_REDIRECTS hits before the scraper is marked BLOCKED.
-_REDIRECT_BLOCK_THRESHOLD = 2
-
-
-def _get_redirect_error_count() -> int:
-    """Return the current redirect-error count from the KV store."""
-    from backend.services.db import ENGINE, KVRow
-    from sqlalchemy.orm import Session
-    with Session(ENGINE) as db:
-        row = db.get(KVRow, _KV_REDIRECT_COUNT)
-        if row is None:
-            return 0
-        try:
-            return int(row.value)
-        except (ValueError, TypeError):
-            return 0
-
-
-def _record_redirect_error() -> int:
-    """
-    Increment the redirect-error counter and, if the threshold is reached,
-    write linkedin_scraper_status='BLOCKED' to the KV store.
-
-    Returns the new count after incrementing.
-    """
-    from backend.services.db import ENGINE, KVRow
-    from sqlalchemy.orm import Session
-
-    now = datetime.now(timezone.utc).isoformat()
-    with Session(ENGINE) as db:
-        # Increment counter
-        count_row = db.get(KVRow, _KV_REDIRECT_COUNT)
-        new_count = (int(count_row.value) if count_row else 0) + 1
-        if count_row:
-            count_row.value      = str(new_count)
-            count_row.updated_at = now
-        else:
-            db.add(KVRow(key=_KV_REDIRECT_COUNT, value=str(new_count), updated_at=now))
-
-        # Flag cookie as suspicious on first hit
-        cookie_row = db.get(KVRow, "linkedin_cookie_status")
-        if cookie_row:
-            cookie_row.value      = "suspicious"
-            cookie_row.updated_at = now
-        else:
-            db.add(KVRow(key="linkedin_cookie_status", value="suspicious", updated_at=now))
-
-        # Promote to BLOCKED once threshold is reached
-        if new_count >= _REDIRECT_BLOCK_THRESHOLD:
-            status_row = db.get(KVRow, _KV_SCRAPER_STATUS)
-            if status_row:
-                status_row.value      = "BLOCKED"
-                status_row.updated_at = now
-            else:
-                db.add(KVRow(key=_KV_SCRAPER_STATUS, value="BLOCKED", updated_at=now))
-
-            blocked_row = db.get(KVRow, _KV_BLOCKED_AT)
-            if blocked_row:
-                blocked_row.value      = now
-                blocked_row.updated_at = now
-            else:
-                db.add(KVRow(key=_KV_BLOCKED_AT, value=now, updated_at=now))
-
-            logger.critical(
-                "[feed_service] LinkedIn scraper BLOCKED after %d redirect errors. "
-                "Enrichment loop will pause until linkedin_scraper_status is cleared "
-                "and LINKEDIN_LI_AT is refreshed in backend/.env.",
-                new_count,
-            )
-
-        db.commit()
-
-    return new_count
-
-
-def is_linkedin_scraper_blocked() -> bool:
-    """Return True when the KV store marks the LinkedIn scraper as BLOCKED."""
-    from backend.services.db import ENGINE, KVRow
-    from sqlalchemy.orm import Session
-    with Session(ENGINE) as db:
-        row = db.get(KVRow, _KV_SCRAPER_STATUS)
-        return row is not None and row.value == "BLOCKED"
 
 # ── DEV_MODE JD Overrides ─────────────────────────────────────────────────────
 # Hard-coded real JD text for specific jobs so the semantic scorer can be
@@ -206,12 +114,12 @@ def _is_thin(jd_text: str | None) -> bool:
     """
     Return True when the stored JD text is too thin for reliable LLM scoring.
 
-    Sentinel values written by hydrate_job() on failure are explicitly
-    excluded — they look thin by length but must not trigger re-fetching.
+    The failure sentinel written by hydrate_job() on irrecoverable errors is
+    excluded — it looks thin by length but must not trigger re-fetching.
     """
     text = (jd_text or "").strip()
-    if text in (_HYDRATE_FAILED_SENTINEL, _HYDRATE_AUTH_WALL_SENTINEL):
-        return False          # already tried; permanent skip until sentinel is cleared
+    if text == _HYDRATE_FAILED_SENTINEL:
+        return False          # already tried; permanent skip
     return len(text) < _JD_MIN_CHARS
 
 
@@ -244,24 +152,33 @@ def is_substantive_analysis(text: str | None) -> bool:
     )
 
 
+def _is_linkedin_url(url: str | None) -> bool:
+    """Return True when the URL points to a linkedin.com host."""
+    return bool(url and "linkedin.com" in url.lower())
+
+
 def _needs_enrichment(job: JobMatch) -> bool:
     """
     Source-of-truth predicate for enrichment eligibility.
 
     A job needs enrichment if ANY of the following are true:
-      • JD text is thin (< _JD_MIN_CHARS, not a failure or auth-wall sentinel)
+      • JD text is thin (< _JD_MIN_CHARS, not the failure sentinel)
       • why_ron is None — never received a real LLM evaluation
       • score_is_proxy=True — LLM scoring didn't complete cleanly last time
 
+    LinkedIn jobs are permanently excluded from JD hydration — the
+    unauthenticated scraper produces 999/redirect errors on most pages.
+    They are still scored via the thin-proxy fallback (title + company).
+
     A job is permanently retired once enrichment_failures >= ENRICHMENT_MAX_FAILURES.
-    Auth-wall jobs are held in limbo (jd_text=_HYDRATE_AUTH_WALL_SENTINEL) until
-    the sentinel is cleared externally — _is_thin() returns False for them so
-    they are excluded here without consuming a failure count.
     """
     if job.enrichment_failures >= ENRICHMENT_MAX_FAILURES:
         return False   # hard stop — show "Manual analysis required" in UI
-    if (job.jd_text or "").strip() == _HYDRATE_AUTH_WALL_SENTINEL:
-        return False   # auth-wall limbo — waiting for cookie refresh
+    if _is_linkedin_url(job.apply_url) and _is_thin(job.jd_text):
+        # LinkedIn JD cannot be hydrated — skip enrichment for thin rows.
+        # If why_ron or score_is_proxy need fixing, fall through to scoring
+        # only when the JD text is already rich enough (i.e. not thin).
+        return False
     return _is_thin(job.jd_text) or job.why_ron is None or job.score_is_proxy
 
 
@@ -409,6 +326,15 @@ async def hydrate_job(job: JobMatch) -> str | None:
         )
         return None
 
+    if _is_linkedin_url(job.apply_url):
+        logger.debug(
+            "[feed_service] hydrate_job: LinkedIn URL bypassed for job %s (%s @ %s) "
+            "— unauthenticated scraper produces 999/redirect errors; "
+            "job will use thin-proxy scoring",
+            job.job_id, job.title, job.company,
+        )
+        return None
+
     logger.info(
         "[feed_service] hydrate_job: fetching JD for job %s (%s @ %s) from %s",
         job.job_id, job.title, job.company, job.apply_url,
@@ -419,6 +345,7 @@ async def hydrate_job(job: JobMatch) -> str | None:
             scrape_jd_text_async as _scrape,
             LinkedInAuthWallError,
             LinkedInRedirectError,
+            LinkedInChallengeError,
         )
         fetched = await _scrape(job.apply_url)
         fetched = fetched.strip()
@@ -431,47 +358,39 @@ async def hydrate_job(job: JobMatch) -> str | None:
             )
             return fetched
 
-        # Scraped content exists but is still too short to be useful.
+        if len(fetched) == 0:
+            # Transient: empty body — rate-limit or bot-check on this attempt.
+            # Do not burn an enrichment_failures count; retry next cycle.
+            logger.warning(
+                "[feed_service] hydrate_job: empty body for job %s (%s @ %s) "
+                "— transient, skipping without penalty",
+                job.job_id, job.title, job.company,
+            )
+            return None
+
         logger.warning(
-            "[feed_service] hydrate_job: content too short after fetch (%d chars) "
-            "for job %s (%s @ %s) — marking as failed",
+            "[feed_service] hydrate_job: content too short (%d chars) for job %s "
+            "(%s @ %s) — marking as failed",
             len(fetched), job.job_id, job.title, job.company,
         )
 
-    except LinkedInRedirectError as exc:
-        # ── Redirect loop — bot-detection, infra problem ───────────────────────
-        # Immediately halt retries (no enrichment_failures increment).
-        # Track the count; promote to BLOCKED after _REDIRECT_BLOCK_THRESHOLD hits.
-        new_count = _record_redirect_error()
-        logger.error(
-            "[feed_service] hydrate_job: ERR_TOO_MANY_REDIRECTS for job %s (%s @ %s) "
-            "(redirect_error_count=%d threshold=%d). Cookie flagged suspicious. "
-            "Error: %s",
-            job.job_id, job.title, job.company, new_count, _REDIRECT_BLOCK_THRESHOLD, exc,
+    except (LinkedInChallengeError, LinkedInRedirectError) as exc:
+        # Transient bot-check or redirect loop — no penalty, retry next cycle.
+        logger.warning(
+            "[feed_service] hydrate_job: LinkedIn transient block for job %s "
+            "(%s @ %s) — skipping without penalty. Error: %s",
+            job.job_id, job.title, job.company, exc,
         )
-        job_store.update_jd_text(job.job_id, _HYDRATE_AUTH_WALL_SENTINEL)
-        job_store.update_status(job.job_id, "auth_wall")
         return None
 
     except LinkedInAuthWallError as exc:
-        # ── Auth wall — infra problem, not a job-data problem ─────────────────
-        # Do NOT increment enrichment_failures.
-        # Do NOT use the generic failed sentinel (that would trigger the
-        # "Analysis unavailable" UI state which implies a permanent failure).
-        # Use the auth-wall sentinel instead so:
-        #   • This job is held in 'auth_wall' limbo until the cookie is refreshed.
-        #   • _is_thin() returns False so the enrichment loop skips it.
-        #   • The UI shows "Auth Required" rather than "Unavailable".
-        logger.error(
-            "[feed_service] hydrate_job: AUTH WALL for job %s (%s @ %s) — "
-            "LinkedIn session expired.  Cookie: update LINKEDIN_LI_AT in backend/.env "
-            "and delete the browser profile at data/linkedin_browser_profile/ to reset. "
-            "Error: %s",
+        # The page requires a login — permanently inaccessible via unauthenticated
+        # requests.  Mark as failed so the enrichment loop stops retrying it.
+        logger.warning(
+            "[feed_service] hydrate_job: LinkedIn login wall for job %s (%s @ %s) "
+            "— page requires authentication, marking as failed. Error: %s",
             job.job_id, job.title, job.company, exc,
         )
-        job_store.update_jd_text(job.job_id, _HYDRATE_AUTH_WALL_SENTINEL)
-        job_store.update_status(job.job_id, "auth_wall")
-        return None
 
     except Exception as exc:
         logger.warning(
@@ -480,7 +399,7 @@ async def hydrate_job(job: JobMatch) -> str | None:
             job.job_id, job.title, job.company, exc,
         )
 
-    # Generic failure — mark permanently so the enrichment loop stops retrying.
+    # Generic/permanent failure — mark so the enrichment loop stops retrying.
     job_store.update_jd_text(job.job_id, _HYDRATE_FAILED_SENTINEL)
     return None
 
@@ -518,28 +437,15 @@ async def refresh_user_scores(user_id: str) -> int:
 
     CONCURRENCY
     ────────────
-    hydrate_job() runs outside the semaphore so HTTP fetches can overlap.
-    asyncio.Semaphore(5) gates only the Anthropic API calls, preventing
-    rate-limit hammering while still processing many jobs in parallel.
+    LinkedIn jobs are processed ONE AT A TIME with a 5–12 s random jitter
+    between requests to avoid triggering rate-limits.
+    Non-LinkedIn jobs run concurrently, gated by asyncio.Semaphore(5) on
+    Anthropic API calls only.
 
     Returns the number of jobs successfully LLM-enriched this cycle.
     """
     from backend.services.user_profile import USER_PROFILE  # lazy import avoids circular deps
     from backend.services.master_profile_service import get_skill_proficiencies
-
-    # ── LinkedIn BLOCKED guard ────────────────────────────────────────────────
-    # When ERR_TOO_MANY_REDIRECTS has fired ≥ _REDIRECT_BLOCK_THRESHOLD times
-    # the enrichment loop is paused entirely to protect the IP from being
-    # blacklisted.  The status must be cleared manually via the KV store after
-    # refreshing LINKEDIN_LI_AT in backend/.env.
-    if is_linkedin_scraper_blocked():
-        logger.warning(
-            "[feed_service] s2: LinkedIn scraper is BLOCKED — enrichment loop "
-            "paused for user=%s.  Clear kv_store.linkedin_scraper_status and "
-            "refresh LINKEDIN_LI_AT in backend/.env to resume.",
-            user_id,
-        )
-        return 0
 
     # ── Pass A: Identify candidates ───────────────────────────────────────────
     all_feed = job_store.get_feed(user_id)
@@ -618,7 +524,7 @@ async def refresh_user_scores(user_id: str) -> int:
                 else:
                     logger.warning(
                         "[feed_service] s2: hydration still failing for job %s (%s @ %s) "
-                        "— check LINKEDIN_LI_AT cookie validity and Playwright install. "
+                        "— page may be behind a login wall or have been removed. "
                         "Skipping without incrementing enrichment_failures.",
                         job.job_id, job.title, job.company,
                     )
@@ -661,16 +567,19 @@ async def refresh_user_scores(user_id: str) -> int:
 
                 # Re-use the s1 local proxy score when available to avoid
                 # score fluctuation from re-computing on the same (possibly
-                # thin) jd_text.
+                # thin) jd_text. MUST go through finalize_composite so the
+                # ATS blend and knockout cap are never dropped by this
+                # rebuild (inlining 0.30/0.50/0.20 here previously bypassed
+                # the unified pipeline).
                 if local_stored is not None and result.local_score == 0.0:
-                    from backend.services.match_score_service import compute_local_proxy_score
-                    composite = round(
-                        0.30 * local_stored
-                        + 0.50 * result.semantic_score
-                        + 0.20 * result.management_score,
-                        1,
+                    from backend.services.match_score_service import finalize_composite
+                    composite = finalize_composite(
+                        local_stored,
+                        result.semantic_score,
+                        result.management_score,
+                        ats_base        = result.ats_score,
+                        knockout_failed = result.knockout_failed,
                     )
-                    composite = min(100.0, max(0.0, composite))
                     result = type(result)(
                         **{**result.__dict__,
                            "total":       composite,
@@ -725,8 +634,40 @@ async def refresh_user_scores(user_id: str) -> int:
                 type(exc).__name__, exc,
             )
 
-    # Fire all tasks concurrently; semaphore controls Anthropic I/O concurrency.
-    await asyncio.gather(*(_enrich_one(j) for j in pending))
+    # ── Dispatch: LinkedIn sequentially with jitter; others concurrently ─────
+    def _is_linkedin_job(job: JobMatch) -> bool:
+        """True when the job's apply_url points to a linkedin.com host."""
+        if not job.apply_url:
+            return False
+        try:
+            host = urlparse(job.apply_url).hostname or ""
+            return host == "linkedin.com" or host.endswith(".linkedin.com")
+        except Exception:
+            return False
+
+    linkedin_jobs = [j for j in pending if _is_linkedin_job(j)]
+    other_jobs    = [j for j in pending if not _is_linkedin_job(j)]
+
+    logger.info(
+        "[feed_service] s2: dispatch — %d LinkedIn (sequential+jitter) "
+        "+ %d other (concurrent) for user=%s",
+        len(linkedin_jobs), len(other_jobs), user_id,
+    )
+
+    # Non-LinkedIn: run concurrently (semaphore gates Anthropic calls).
+    if other_jobs:
+        await asyncio.gather(*(_enrich_one(j) for j in other_jobs))
+
+    # LinkedIn: strictly sequential with a 5–12 s jitter to stay under rate limits.
+    for idx, job in enumerate(linkedin_jobs):
+        if idx > 0:
+            jitter = random.uniform(5.0, 12.0)
+            logger.debug(
+                "[feed_service] s2: LinkedIn jitter %.1fs before job %s (%s @ %s)",
+                jitter, job.job_id, job.title, job.company,
+            )
+            await asyncio.sleep(jitter)
+        await _enrich_one(job)
 
     logger.info(
         "[feed_service] s2 complete — user=%s enriched=%d/%d candidates",

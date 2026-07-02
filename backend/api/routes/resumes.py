@@ -741,11 +741,12 @@ class CopilotRequest(BaseModel):
 
 
 class CopilotResponse(BaseModel):
-    status:      str
-    message:     Optional[str]  = None   # explanation for warning / rejected
-    cv_data:     Optional[dict] = None
-    pdf_b64:     Optional[str]  = None
-    match_score: Optional[dict] = None
+    status:          str
+    message:         Optional[str]  = None   # explanation for warning / rejected
+    changes_summary: Optional[str]  = None   # what was added/removed/edited (success only)
+    cv_data:         Optional[dict] = None
+    pdf_b64:         Optional[str]  = None
+    match_score:     Optional[dict] = None
 
 
 @router.post("/copilot", response_model=CopilotResponse)
@@ -787,8 +788,9 @@ async def copilot_edit(req: CopilotRequest):
             result["status"], req.job_id, (result.get("message") or "")[:100],
         )
         return CopilotResponse(
-            status  = result["status"],
-            message = result.get("message"),
+            status          = result["status"],
+            message         = result.get("message"),
+            changes_summary = None,
         )
 
     # ── success: rebuild PDF, recompute score, save to cache ─────────────────
@@ -966,10 +968,11 @@ async def copilot_edit(req: CopilotRequest):
         logger.warning("[resumes/copilot] Cache save failed (non-fatal): %s", exc)
 
     return CopilotResponse(
-        status      = "success",
-        cv_data     = cv_data,
-        pdf_b64     = base64.b64encode(pdf_bytes).decode(),
-        match_score = match_score_dict,
+        status          = "success",
+        changes_summary = result.get("changes_summary"),
+        cv_data         = cv_data,
+        pdf_b64         = base64.b64encode(pdf_bytes).decode(),
+        match_score     = match_score_dict,
     )
 
 
