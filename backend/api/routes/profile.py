@@ -167,9 +167,9 @@ async def update_metrics(
 # ── GET /api/profile/research ─────────────────────────────────────────────────
 
 @router.get("/research")
-async def get_research():
-    """Return cached enriched entity data from the last research run."""
-    entities = get_enriched_entities()
+async def get_research(user: CurrentUser = Depends(get_current_user)):
+    """Return the caller's cached enriched entity data from the last research run."""
+    entities = get_enriched_entities(user.user_id)
     return {
         "status":   "ok",
         "count":    len(entities),
@@ -186,7 +186,7 @@ class ResearchRequest(BaseModel):
 
 
 @router.post("/research")
-async def trigger_research(req: ResearchRequest):
+async def trigger_research(req: ResearchRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Run the ResearcherAgent for all profile entities (or a subset).
 
@@ -211,7 +211,7 @@ async def trigger_research(req: ResearchRequest):
         results = await agent.research(entities)
 
         # Persist to master profile
-        save_enriched_entities([e.as_dict() for e in results])
+        save_enriched_entities([e.as_dict() for e in results], user.user_id)
 
         logger.info(
             "[profile/research] Completed: %d entities researched",

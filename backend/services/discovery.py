@@ -101,26 +101,27 @@ async def _enrich_job(match: JobMatch, user_id: str) -> None:
             is_substantive_analysis,
         )
         from backend.services.match_score_service import compute_match_score_async
-        from backend.services.user_profile import USER_PROFILE
+        from backend.services.user_profile import get_profile
 
-        cv_proxy = _build_profile_cv_proxy(USER_PROFILE)
+        cv_proxy = _build_profile_cv_proxy(get_profile(user_id))
         result   = await compute_match_score_async(
             cv_data            = cv_proxy,
             jd_text            = jd_text,
             run_llm_validation = True,
             job_title          = match.title,
             company_name       = match.company or "",
+            user_id            = user_id,
         )
 
         analysis_ok = is_substantive_analysis(result.why_ron)
         # Only mark as fully scored when analysis is real.  A junk why_ron
         # keeps is_proxy=True so the enrichment loop re-attempts it.
         job_store.update_match_score(
-            match.job_id, float(result.total), is_proxy=not analysis_ok
+            match.job_id, user_id, float(result.total), is_proxy=not analysis_ok
         )
 
         if analysis_ok:
-            job_store.update_why_ron(match.job_id, result.why_ron)
+            job_store.update_why_ron(match.job_id, user_id, result.why_ron)
             scored_ok = True
         else:
             job_store.increment_enrichment_failures(match.job_id)
@@ -137,7 +138,7 @@ async def _enrich_job(match: JobMatch, user_id: str) -> None:
                 from backend.services.feed_service import _proficiency_reason_tags
                 tags = _proficiency_reason_tags(result.proficiency_notes)
                 if tags:
-                    job_store.update_reasons(match.job_id, tags)
+                    job_store.update_reasons(match.job_id, user_id, tags)
             except Exception as tag_exc:
                 logger.debug(
                     "[discovery] enrich: reason tags failed (non-critical) — job_id=%s: %s",
@@ -158,7 +159,7 @@ async def _enrich_job(match: JobMatch, user_id: str) -> None:
 
     # ── Finalise: flip 'analysing' → 'new' only when both steps succeeded ──────
     if structured_ok and scored_ok:
-        job_store.update_status(match.job_id, "new")
+        job_store.update_status(match.job_id, user_id, "new")
         logger.info(
             "[discovery] enrich COMPLETE — job_id=%s '%s' @ '%s' status='new'",
             match.job_id, match.title, match.company,
@@ -231,7 +232,7 @@ async def run_discovery_cycle(user_id: str = "default") -> None:
             title = (job.title or "").strip()
 
             # Deduplication
-            if not url or job_store.contains_url(url):
+            if not url or job_store.contains_url(url, user_id):
                 logger.debug("[discovery] SKIP (dup) '%s' @ %s", title, job.company)
                 skipped += 1
                 continue

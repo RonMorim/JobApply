@@ -1,4 +1,12 @@
 """
+DEPRECATED — single-tenant shim, do not add callers.
+
+Replaced by services/tenant_registry.list_pipeline_user_ids() (Phase 2
+multi-tenant fan-out). get_active_user_id() has NO remaining callers;
+set_active_user_id() is retained only because the legacy migration
+endpoint (api/routes/auth.py) still writes it for observability.
+
+Original description:
 Active-user registry for background pipeline tasks.
 
 The discovery loop and ScraperManager run globally (not per-request).

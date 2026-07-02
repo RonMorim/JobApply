@@ -444,7 +444,7 @@ async def refresh_user_scores(user_id: str) -> int:
 
     Returns the number of jobs successfully LLM-enriched this cycle.
     """
-    from backend.services.user_profile import USER_PROFILE  # lazy import avoids circular deps
+    from backend.services.user_profile import get_profile  # lazy import avoids circular deps
     from backend.services.master_profile_service import get_skill_proficiencies
 
     # ── Pass A: Identify candidates ───────────────────────────────────────────
@@ -476,8 +476,8 @@ async def refresh_user_scores(user_id: str) -> int:
         len(pending), len(all_feed), user_id, len(retired),
     )
 
-    cv_proxy      = _build_profile_cv_proxy(USER_PROFILE)
-    proficiencies = get_skill_proficiencies()
+    cv_proxy      = _build_profile_cv_proxy(get_profile(user_id))
+    proficiencies = get_skill_proficiencies(user_id)
     if proficiencies:
         logger.info("[feed_service] s2 proficiency context: %s", list(proficiencies.keys()))
 
@@ -561,6 +561,7 @@ async def refresh_user_scores(user_id: str) -> int:
                     jd_text             = jd_text,
                     run_llm_validation  = True,
                     skill_proficiencies = proficiencies,
+                    user_id             = user_id,
                     job_title           = job.title,
                     company_name        = job.company or "",
                 )
@@ -593,11 +594,11 @@ async def refresh_user_scores(user_id: str) -> int:
                 _why         = (result.why_ron or "").strip()
                 has_analysis = is_substantive_analysis(_why)
                 job_store.update_match_score(
-                    job.job_id, float(result.total), is_proxy=not has_analysis
+                    job.job_id, user_id, float(result.total), is_proxy=not has_analysis
                 )
 
                 if has_analysis:
-                    job_store.update_why_ron(job.job_id, result.why_ron)
+                    job_store.update_why_ron(job.job_id, user_id, result.why_ron)
                 else:
                     fail_count = job_store.increment_enrichment_failures(job.job_id)
                     logger.warning(
@@ -610,7 +611,7 @@ async def refresh_user_scores(user_id: str) -> int:
 
                 skill_tags = _match_skill_tags(result.matched_skills)
                 prof_tags  = _proficiency_reason_tags(result.proficiency_notes)
-                job_store.update_reasons(job.job_id, skill_tags + prof_tags)
+                job_store.update_reasons(job.job_id, user_id, skill_tags + prof_tags)
 
                 enriched += 1
                 logger.info(
@@ -692,7 +693,7 @@ async def force_rescore_all(user_id: str) -> int:
 
     Returns the number of jobs successfully re-scored.
     """
-    from backend.services.user_profile import USER_PROFILE
+    from backend.services.user_profile import get_profile
     from backend.services.master_profile_service import get_skill_proficiencies
 
     all_jobs = job_store.get_feed(user_id)
@@ -700,8 +701,8 @@ async def force_rescore_all(user_id: str) -> int:
         logger.info("[feed_service] s4: no jobs for user_id=%s", user_id)
         return 0
 
-    cv_proxy      = _build_profile_cv_proxy(USER_PROFILE)
-    proficiencies = get_skill_proficiencies()
+    cv_proxy      = _build_profile_cv_proxy(get_profile(user_id))
+    proficiencies = get_skill_proficiencies(user_id)
     if proficiencies:
         logger.info("[feed_service] s4 proficiency context: %s", proficiencies)
     scored = 0
@@ -739,11 +740,12 @@ async def force_rescore_all(user_id: str) -> int:
                 cv_proxy, jd_text,
                 run_llm_validation  = False,
                 skill_proficiencies = proficiencies,
+                user_id             = user_id,
             )
-            job_store.update_match_score(job.job_id, float(result.total), is_proxy=False)
+            job_store.update_match_score(job.job_id, user_id, float(result.total), is_proxy=False)
             skill_tags = _match_skill_tags(result.matched_skills)
             prof_tags  = _proficiency_reason_tags(result.proficiency_notes)
-            job_store.update_reasons(job.job_id, skill_tags + prof_tags)
+            job_store.update_reasons(job.job_id, user_id, skill_tags + prof_tags)
             scored += 1
             logger.info(
                 "[feed_service] s4: scored job %s (%.1f)%s",

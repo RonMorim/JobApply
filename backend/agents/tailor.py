@@ -1120,7 +1120,7 @@ def _build_entity_intelligence_block() -> str:
     """
     try:
         from backend.services.master_profile_service import get_enriched_entities
-        entities = get_enriched_entities()
+        entities = get_enriched_entities("default")   # legacy single-user path (Phase 2 carve-out)
     except Exception:
         return ""
 

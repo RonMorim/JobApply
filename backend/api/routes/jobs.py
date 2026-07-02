@@ -374,9 +374,9 @@ async def list_jobs(
 
 
 @router.get("/categories", response_model=list[str])
-async def list_categories():
-    """Return sorted list of unique category tags currently in the job store."""
-    return job_store.get_categories()
+async def list_categories(user: CurrentUser = Depends(get_current_user)):
+    """Return sorted list of unique category tags in the caller's job store."""
+    return job_store.get_categories(user.user_id)
 
 
 # ── Single-job JD fetch ───────────────────────────────────────────────────────
@@ -407,11 +407,9 @@ async def fetch_single_jd(
     Raises HTTP 403 if the job belongs to a different user.
     Raises HTTP 422 if the URL cannot be scraped.
     """
-    job = job_store.get_by_id(job_id)
+    job = job_store.get_by_id(job_id, user.user_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found.")
-    if getattr(job, 'user_id', None) not in (None, user.user_id):
-        raise HTTPException(status_code=403, detail="You do not have access to this job.")
     if not job.apply_url:
         raise HTTPException(status_code=422, detail="Job has no apply URL to scrape.")
 
@@ -448,7 +446,7 @@ async def fetch_single_jd(
     new_match_score: Optional[float] = None
     final_is_proxy: bool = True   # stays True unless rescore succeeds below
     try:
-        from backend.services.user_profile import USER_PROFILE
+        from backend.services.user_profile import get_profile
         from backend.services.master_profile_service import get_skill_proficiencies
         from backend.services.feed_service import (
             _build_profile_cv_proxy,
@@ -456,20 +454,21 @@ async def fetch_single_jd(
         )
         from backend.services.match_score_service import compute_match_score_async
 
-        cv_proxy      = _build_profile_cv_proxy(USER_PROFILE)
-        proficiencies = get_skill_proficiencies()
+        cv_proxy      = _build_profile_cv_proxy(get_profile(user.user_id))
+        proficiencies = get_skill_proficiencies(user.user_id)
         result        = await compute_match_score_async(
             cv_proxy, jd_text,
             run_llm_validation=False,
             skill_proficiencies=proficiencies,
+            user_id=user.user_id,
         )
         new_match_score = round(float(result.total), 1)
         final_is_proxy  = False
-        job_store.update_match_score(job_id, new_match_score, is_proxy=False)
+        job_store.update_match_score(job_id, user.user_id, new_match_score, is_proxy=False)
         if result.proficiency_notes:
             tags = _proficiency_reason_tags(result.proficiency_notes)
             if tags:
-                job_store.update_reasons(job_id, tags)
+                job_store.update_reasons(job_id, user.user_id, tags)
         logger.info(
             "[fetch-jd] Rescored job %s → %.1f%s",
             job_id, new_match_score,
@@ -503,6 +502,7 @@ class TailorBriefResponse(BaseModel):
 async def tailor_cv_brief(
     job_id:        str,
     force_refresh: bool = Query(False, description="Bypass cache and re-generate"),
+    user:          CurrentUser = Depends(get_current_user),
 ):
     """
     Generate a focused CV-tailoring brief for a single job:
@@ -520,16 +520,16 @@ async def tailor_cv_brief(
 
     # Fast-path: check cache before importing heavy deps
     if not force_refresh:
-        cached = get_cached_tailor_brief(job_id)
+        cached = get_cached_tailor_brief(job_id, user.user_id)
         if cached:
             return TailorBriefResponse(**cached, cached=True)
 
-    job = job_store.get_by_id(job_id)
+    job = job_store.get_by_id(job_id, user.user_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found.")
 
     try:
-        brief = await generate_tailor_brief(job_id, force_refresh=force_refresh)
+        brief = await generate_tailor_brief(job_id, force_refresh=force_refresh, user_id=user.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
@@ -575,7 +575,7 @@ RULES:
 
 
 @router.post("/{job_id}/tailor-cv/edit", response_model=TailorEditResponse)
-async def tailor_cv_edit(job_id: str, body: TailorEditRequest):
+async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser = Depends(get_current_user)):
     """
     CV Copilot: apply a natural-language editing instruction to the tailored sections.
 
@@ -656,9 +656,9 @@ async def _check_liveness(url: str) -> bool:
 
 
 @router.post("/analyze-job", response_model=JobMatch)
-async def analyze_job_url(request: JobUrlRequest):
+async def analyze_job_url(request: JobUrlRequest, user: CurrentUser = Depends(get_current_user)):
     """
-    Analyze a job URL against Ron's profile.
+    Analyze a job URL against the caller's profile.
 
     - If the URL is already in the database, return the cached record immediately
       (after a quick liveness check to update is_open).
@@ -667,12 +667,12 @@ async def analyze_job_url(request: JobUrlRequest):
     url = request.url.strip()
 
     # ── Step 1: cache hit — return stored record (no LLM call) ───────────────
-    cached = job_store.get_by_url(url)
+    cached = job_store.get_by_url(url, user.user_id)
     if cached is not None:
         # Refresh liveness in background; return cached immediately
         is_live = await _check_liveness(url)
         if not is_live and cached.is_open:
-            job_store.mark_closed(cached.job_id)
+            job_store.mark_closed(cached.job_id, user.user_id)
             cached = cached.model_copy(update={"is_open": False})
         logger.info("[analyze-job] Cache hit for %s (job_id=%s)", url, cached.job_id)
         return cached
@@ -710,7 +710,7 @@ async def analyze_job_url(request: JobUrlRequest):
     # ── Step 4: AI match analysis ─────────────────────────────────────────────
     try:
         agent = MatcherAgent()
-        match = await agent.match(posting)
+        match = await agent.match(posting, user_id=user.user_id)
     except EnvironmentError as exc:
         logger.error("MatcherAgent config error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -722,7 +722,7 @@ async def analyze_job_url(request: JobUrlRequest):
         raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
 
     # ── Step 5: tag as manual and persist ────────────────────────────────────
-    match = match.model_copy(update={"source": "manual", "is_open": True})
+    match = match.model_copy(update={"source": "manual", "is_open": True, "user_id": user.user_id})
     job_store.save(match)
 
     return match
@@ -767,8 +767,8 @@ async def analyze_job(
     logger.info("[analyze] Starting — url=%s user=%s", url, user.user_id)
 
     # ── 1. Cache check ────────────────────────────────────────────────────────
-    cached = job_store.get_by_url(url)
-    if cached is not None and getattr(cached, "user_id", None) == user.user_id:
+    cached = job_store.get_by_url(url, user.user_id)
+    if cached is not None:
         logger.info("[analyze] Cache hit — job_id=%s", cached.job_id)
         return cached   # return the full JobMatch so the frontend can prepend it
 
@@ -835,15 +835,16 @@ async def analyze_job(
     try:
         from backend.services.feed_service import _build_profile_cv_proxy
         from backend.services.match_score_service import compute_match_score_async
-        from backend.services.user_profile import USER_PROFILE
+        from backend.services.user_profile import get_profile
 
-        cv_proxy = _build_profile_cv_proxy(USER_PROFILE)
+        cv_proxy = _build_profile_cv_proxy(get_profile(user.user_id))
         result   = await compute_match_score_async(
             cv_data            = cv_proxy,
             jd_text            = jd_text,
             run_llm_validation = True,
             job_title          = match.title,
             company_name       = match.company or "",
+            user_id            = user.user_id,
         )
         final_score = round(float(result.total), 1)
     except Exception as exc:
@@ -882,7 +883,7 @@ async def analyze_job(
 
     job_store.save(match)
     if why_ron_save:
-        job_store.update_why_ron(match.job_id, why_ron_save)
+        job_store.update_why_ron(match.job_id, user.user_id, why_ron_save)
 
     logger.info(
         "[analyze] Complete — job_id=%s title=%r score=%.1f "
@@ -927,6 +928,7 @@ async def scrape_company_jobs(
         False,
         description="After scraping, immediately run ATS scoring on the new jobs.",
     ),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Trigger the scraper registry for one or more company career pages.
@@ -939,6 +941,9 @@ async def scrape_company_jobs(
     """
     configs = request.companies
 
+    _uid = user.user_id   # every scraped job belongs to the CALLER — client-supplied
+                          # cfg.user_id is deliberately ignored (tenancy invariant).
+
     async def _run() -> None:
         manager = SCRAPER_MANAGER
 
@@ -948,26 +953,21 @@ async def scrape_company_jobs(
             from backend.scrapers.scraper_manager import ScraperManager
             manager = ScraperManager()
             for cfg in configs:
-                scraper = scraper_from_config(cfg.model_dump())
+                cfg_dict = cfg.model_dump()
+                cfg_dict["user_id"] = _uid
+                scraper = scraper_from_config(cfg_dict)
                 if scraper:
                     manager.register(scraper)
 
-        new_count = await manager.run_all()
+        new_count = await manager.run_all(user_id=_uid)
         logger.info("[jobs/scrape] Scrape complete — %d new jobs saved.", new_count)
 
         if auto_score and new_count > 0:
-            user_ids = list({
-                (cfg.user_id if configs else "default")
-                for cfg in (configs or [ScrapeConfig(company_name="", company_url="")])
-            })
-            for uid in user_ids:
-                try:
-                    scored = await feed_service.refresh_user_scores(uid)
-                    logger.info(
-                        "[jobs/scrape] Auto-score for user=%s: %d scored", uid, scored
-                    )
-                except Exception as exc:
-                    logger.warning("[jobs/scrape] Auto-score failed for user=%s: %s", uid, exc)
+            try:
+                scored = await feed_service.refresh_user_scores(_uid)
+                logger.info("[jobs/scrape] Auto-score for user=%s: %d scored", _uid, scored)
+            except Exception as exc:
+                logger.warning("[jobs/scrape] Auto-score failed for user=%s: %s", _uid, exc)
 
     background_tasks.add_task(_run)
     return ScrapeResponse(
@@ -1007,7 +1007,7 @@ class VerifyChatResponse(BaseModel):
 
 
 @router.post("/{job_id}/verify/chat", response_model=VerifyChatResponse)
-async def verify_chat(job_id: str, body: VerifyChatRequest, background_tasks: BackgroundTasks):
+async def verify_chat(job_id: str, body: VerifyChatRequest, background_tasks: BackgroundTasks, user: CurrentUser = Depends(get_current_user)):
     """
     Process one turn of the truth-verification conversation.
 
@@ -1016,18 +1016,19 @@ async def verify_chat(job_id: str, body: VerifyChatRequest, background_tasks: Ba
     When a verdict is returned with a negative fit_score_adjustment, the
     job's score is automatically updated in the database.
     """
-    job = job_store.get_by_id(job_id)
+    job = job_store.get_by_id(job_id, user.user_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
 
     cv_data = body.cv_data
     if not cv_data:
-        from backend.services.user_profile import USER_PROFILE, build_full_text
+        from backend.services.user_profile import build_full_text, get_profile
+        _profile = get_profile(user.user_id)
         cv_data = {
-            "name":                 USER_PROFILE.get("personal", {}).get("name", ""),
-            "professional_summary": build_full_text()[:600],
-            "experience":           USER_PROFILE.get("experience", []),
-            "skills":               USER_PROFILE.get("skills", []),
+            "name":                 _profile.get("personal", {}).get("name", ""),
+            "professional_summary": build_full_text(user.user_id)[:600],
+            "experience":           _profile.get("experience", []),
+            "skills":               _profile.get("skills", []),
         }
 
     critical_gaps = (
@@ -1059,7 +1060,7 @@ async def verify_chat(job_id: str, body: VerifyChatRequest, background_tasks: Ba
     if result["status"] in ("verified", "failed") and adj < 0:
         current = float(job.score or 0)
         new_fit = round(max(0.0, current + adj), 1)
-        job_store.update_scores(job_id, fit_score=new_fit)
+        job_store.update_scores(job_id, user.user_id, fit_score=new_fit)
         logger.info(
             "[jobs/verify/chat] %s verdict=%s fit %.1f→%.1f (Δ%.1f)",
             job_id, result["status"], current, new_fit, adj,
@@ -1072,12 +1073,14 @@ async def verify_chat(job_id: str, body: VerifyChatRequest, background_tasks: Ba
         verdict_str   = result["status"]
         summary_str   = result.get("summary", "")
 
+        _uid = user.user_id
+
         async def _persist_and_rescore() -> None:
             try:
                 from backend.services.master_profile_service import update_profile_from_interaction
-                count = await update_profile_from_interaction(history_snap, verdict_str, summary_str)
+                count = await update_profile_from_interaction(history_snap, verdict_str, summary_str, _uid)
                 if count:
-                    await feed_service.refresh_user_scores("default")
+                    await feed_service.refresh_user_scores(_uid)
             except Exception as exc:
                 logger.warning("[jobs/verify/chat] background profile update failed: %s", exc)
 
@@ -1098,10 +1101,12 @@ async def verify_chat(job_id: str, body: VerifyChatRequest, background_tasks: Ba
 # ── Single job lookup ─────────────────────────────────────────────────────────
 
 @router.get("/{job_id}", response_model=JobMatch)
-async def get_job(job_id: str):
-    """Return a single job match by ID."""
-    # TODO: fetch from DB
-    return {}
+async def get_job(job_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Return a single job match by ID — caller's own jobs only."""
+    job = job_store.get_by_id(job_id, user.user_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 # ── Single-job analysis poll ──────────────────────────────────────────────────
@@ -1125,8 +1130,8 @@ async def get_job_analysis(
     showing the skeleton or render the analysis.  Designed for 5-second
     polling while score_is_proxy=True; much cheaper than fetching the full feed.
     """
-    job = job_store.get_by_id(job_id)
-    if job is None or job.user_id != user.user_id:
+    job = job_store.get_by_id(job_id, user.user_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return JobAnalysisState(
         job_id=job.job_id,
@@ -1146,7 +1151,7 @@ class StatusUpdateRequest(BaseModel):
 
 
 @router.patch("/{job_id}/status")
-async def update_job_status(job_id: str, body: StatusUpdateRequest):
+async def update_job_status(job_id: str, body: StatusUpdateRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Update the workflow status for a single job.
     Valid values: new | saved | ignored | applied.
@@ -1156,7 +1161,7 @@ async def update_job_status(job_id: str, body: StatusUpdateRequest):
             status_code=422,
             detail=f"Invalid status '{body.status}'. Must be one of: {sorted(_VALID_STATUSES)}",
         )
-    found = job_store.update_status(job_id, body.status)
+    found = job_store.update_status(job_id, user.user_id, body.status)
     if not found:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
     return {"job_id": job_id, "status": body.status}
@@ -1182,7 +1187,7 @@ class AtsKeywordsResponse(BaseModel):
 
 
 @router.post("/{job_id}/ats-keywords", response_model=AtsKeywordsResponse)
-async def get_ats_keywords(job_id: str):
+async def get_ats_keywords(job_id: str, user: CurrentUser = Depends(get_current_user)):
     """
     Extract ATS keywords from a job's JD text, classify them as present in the
     candidate's profile or missing (need to be added to LinkedIn).
@@ -1193,7 +1198,7 @@ async def get_ats_keywords(job_id: str):
     from backend.services.ats_keyword_service import extract_ats_keywords
 
     try:
-        result = extract_ats_keywords(job_id)
+        result = extract_ats_keywords(job_id, user.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -1261,6 +1266,7 @@ async def dev_flush_jobs(
 async def purge_jobs(
     min_score: float = Query(30.0, description="Delete rows with match_score below this value"),
     dry_run:   bool  = Query(True,  description="Preview without deleting (default: True for safety)"),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     One-time cleanup: remove job rows where match_score < min_score OR title
@@ -1271,5 +1277,5 @@ async def purge_jobs(
     """
     from backend.main import purge_irrelevant_jobs
 
-    result = purge_irrelevant_jobs(min_score=min_score, dry_run=dry_run)
+    result = purge_irrelevant_jobs(min_score=min_score, dry_run=dry_run, user_id=user.user_id)
     return PurgeResponse(**result, dry_run=dry_run)

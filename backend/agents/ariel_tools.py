@@ -322,8 +322,8 @@ def _handle_get_full_candidate_profile(
     without information being lost in a summarisation step.
     """
     try:
-        from backend.services.user_profile import USER_PROFILE  # always latest
-        payload = json.dumps(USER_PROFILE, ensure_ascii=False, indent=2)
+        from backend.services.user_profile import get_profile
+        payload = json.dumps(get_profile(user_id), ensure_ascii=False, indent=2)
         logger.info(
             "[ariel_tools] get_full_candidate_profile user=%s payload_len=%d",
             user_id, len(payload),
@@ -600,7 +600,7 @@ def _handle_get_tailored_cv_for_review(
     """READ side of the CV edit loop — index-addressed view of the live document."""
     try:
         from backend.services.cv_tailor_service import describe_tailored_cv
-        view = describe_tailored_cv(job_id=tool_input.get("job_id") or None)
+        view = describe_tailored_cv(job_id=tool_input.get("job_id") or None, user_id=user_id)
         logger.info(
             "[ariel_tools] get_tailored_cv_for_review user=%s job=%s status=%s",
             user_id, view.get("job_id"), view.get("status"),

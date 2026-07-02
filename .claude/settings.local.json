@@ -70,7 +70,16 @@
       "Bash(disown)",
       "Read(//tmp/**)",
       "Bash(echo \"%PDF-1.4 test\")",
-      "Bash(curl -s -o /tmp/resp.json -w \"HTTP_STATUS:%{http_code}\\\\n\" -X POST http://localhost:3000/api/profile/cv-upload -F \"files=@/tmp/test_cv.pdf;type=application/pdf\")"
+      "Bash(curl -s -o /tmp/resp.json -w \"HTTP_STATUS:%{http_code}\\\\n\" -X POST http://localhost:3000/api/profile/cv-upload -F \"files=@/tmp/test_cv.pdf;type=application/pdf\")",
+      "Bash(python3 -)",
+      "Bash(python3 -m py_compile api/deps.py)",
+      "Bash(xargs python3 -m py_compile)",
+      "Bash(python3 -m py_compile api/routes/profile.py)",
+      "Bash(xargs -n 50 python3 -m py_compile)",
+      "Bash(../venv/bin/python -c ' *)",
+      "Bash(awk -F: '{print $1\":\"$2}')",
+      "Bash(venv/bin/python -c ' *)",
+      "Bash(echo \"── tsc exit: $? ──\")"
     ]
   }
 }

@@ -236,7 +236,7 @@ class MatcherAgent:
     async def match(
         self,
         posting: RawJobPosting,
-        user_id: str = "default",
+        user_id: str,
     ) -> JobMatch:
         """
         Compute an initial proxy score and return a minimal JobMatch for DB storage.

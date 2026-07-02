@@ -12,22 +12,15 @@ from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
 import backend.services.agent_store as store
 import backend.services.job_store as job_store
-from backend.services.user_profile import (
-    USER_PROFILE,
-    TRAIT_CLUSTERS,
-    get_candidate_name,
-    get_all_companies,
-    get_all_roles_text,
-    get_narrative,
-)
+from backend.services.user_profile import get_profile
 
 logger = logging.getLogger(__name__)
 
 # ── Dynamic Candidate Extraction ──────────────────────────────────────────────
 
-def _get_candidate_seniority() -> int:
-    """Calculates professional span dynamically from USER_PROFILE dates."""
-    exp = USER_PROFILE.get("experience", [])
+def _get_candidate_seniority(profile: dict) -> int:
+    """Calculates professional span dynamically from the user's profile dates."""
+    exp = profile.get("experience", [])
     if not exp: return 3
     years = []
     for e in exp:
@@ -35,10 +28,10 @@ def _get_candidate_seniority() -> int:
         if found: years.extend([int(y) for y in found])
     return 2026 - min(years) if years else 3
 
-def _get_held_titles() -> frozenset[str]:
+def _get_held_titles(profile: dict) -> frozenset[str]:
     """Extracts all titles held by the candidate."""
     titles = set()
-    for e in USER_PROFILE.get("experience", []):
+    for e in profile.get("experience", []):
         if e.get("role"): titles.add(e["role"].lower())
         for sub in e.get("roles", []):
             if sub.get("title"): titles.add(sub["title"].lower())
@@ -48,6 +41,8 @@ def _get_held_titles() -> frozenset[str]:
 
 class AnalysisState(TypedDict):
     url:          str
+    user_id:      str
+    profile:      dict
     job_info:     dict
     gap_analysis: dict
     why_ron:      str
@@ -76,7 +71,7 @@ async def _fetch_with_playwright(url: str) -> tuple[str, dict]:
 
 async def scraper_node(state: AnalysisState) -> dict:
     url = state["url"]
-    store.set_active("s1", f"Scraping job data from {url}")
+    store.set_active_for_user(state["user_id"], "s1", f"Scraping job data from {url}")
     try:
         html, meta = await _fetch_with_playwright(url)
         soup = BeautifulSoup(html, "lxml")
@@ -96,12 +91,13 @@ async def scraper_node(state: AnalysisState) -> dict:
 
 async def sourcing_specialist_node(state: AnalysisState) -> dict:
     job = state["job_info"]
-    name = get_candidate_name()
-    store.set_active("s2", f"Matching requirements for {name}")
-    
+    profile = state["profile"]
+    name = profile.get("personal", {}).get("name", "") or "the candidate"
+    store.set_active_for_user(state["user_id"], "s2", f"Matching requirements for {name}")
+
     desc = job.get("description", "").lower()
-    titles_held = _get_held_titles()
-    years_exp = _get_candidate_seniority()
+    titles_held = _get_held_titles(profile)
+    years_exp = _get_candidate_seniority(profile)
 
     # Universal Seniority Logic
     req_years_match = re.search(r"(\d+)\+?\s*years?", desc)
@@ -131,15 +127,17 @@ async def sourcing_specialist_node(state: AnalysisState) -> dict:
 # ── Node 3: Content Strategist (The Narrative) ───────────────────────────────
 
 async def content_strategist_node(state: AnalysisState) -> dict:
-    name = get_candidate_name()
+    profile = state["profile"]
+    name = profile.get("personal", {}).get("name", "") or "the candidate"
     score = state["gap_analysis"]["overall_fit_score"]
-    
+    role_count = len([e for e in profile.get("experience", []) if e.get("company") or e.get("unit")])
+
     report = f"""# Recruiter Report: {name}
 Match Score: {score}/100
 
 ## Why this candidate?
-The candidate demonstrates strong alignment based on {len(get_all_companies())} verified roles.
-Key highlight: {_get_candidate_seniority()} years of cumulative professional impact.
+The candidate demonstrates strong alignment based on {role_count} verified roles.
+Key highlight: {_get_candidate_seniority(profile)} years of cumulative professional impact.
 """
     return {"why_ron": report}
 
@@ -148,7 +146,7 @@ Key highlight: {_get_candidate_seniority()} years of cumulative professional imp
 async def quality_guard_node(state: AnalysisState) -> dict:
     score = state["gap_analysis"]["overall_fit_score"]
     # B2B Skeptic: Penalize high scores if no leadership titles exist
-    if score > 90 and not any(kw in str(_get_held_titles()) for kw in ["lead", "manager", "head"]):
+    if score > 90 and not any(kw in str(_get_held_titles(state["profile"])) for kw in ["lead", "manager", "head"]):
         score = 84
     
     return {"passed": True, "truth_report": {"final_score": score}}
@@ -170,8 +168,16 @@ def _build_graph() -> StateGraph:
 
 _compiled = _build_graph().compile()
 
-async def run_analysis(url: str) -> AnalysisState:
-    initial = {"url": url, "job_info": {}, "gap_analysis": {}, "why_ron": "", "passed": False}
+async def run_analysis(url: str, user_id: str) -> AnalysisState:
+    """
+    Run the four-node pipeline strictly within user_id's context: the profile
+    is loaded ONCE from the user's own data and passed through the graph state.
+    Nodes may only assert what exists in that profile / the user's VerifiedFacts.
+    """
+    initial = {
+        "url": url, "user_id": user_id, "profile": get_profile(user_id),
+        "job_info": {}, "gap_analysis": {}, "why_ron": "", "passed": False,
+    }
     result = await _compiled.ainvoke(initial)
     return result
 
@@ -180,7 +186,7 @@ if __name__ == "__main__":
     async def test():
         test_url = "https://www.comeet.com/jobs/example/123" # לינק לדוגמה
         print(f"--- Starting Test Analysis for: {test_url} ---")
-        result = await run_analysis(test_url)
+        result = await run_analysis(test_url, user_id="default")
         print("\n--- Result Summary ---")
         print(f"Candidate: {result['gap_analysis']['candidate']}")
         print(f"Final Score: {result['gap_analysis']['overall_fit_score']}")

@@ -1419,10 +1419,14 @@ def _run_ats_engine(
     jd_text: str,
     company_name: str,
     local: float,
+    user_id: str,
 ) -> "object | None":
     """
     Run the ATS Match Engine against the caller's data. Returns AtsMatchResult
     or None when the engine cannot run (thin JD, entity fetch failure, …).
+
+    user_id is REQUIRED and must come from the caller's verified context
+    (JWT or per-user pipeline loop) — tenancy invariant, never a global lookup.
 
     None means "degrade gracefully to the pure LLM composite" — scoring a job
     must never crash the feed because the Confidence Matrix was unreachable.
@@ -1431,11 +1435,9 @@ def _run_ats_engine(
         from backend.services.ats_match_engine import (
             ThinJdError, compute_ats_match, heuristic_structured_jd,
         )
-        from backend.services.active_user import get_active_user_id
         from backend.services.confidence_matrix_service import get_entity_breakdown
         from backend.services.db import ENGINE
 
-        user_id  = get_active_user_id()
         entities = get_entity_breakdown(user_id, ENGINE)   # list[EntityScore] dicts
 
         # Prefer knockout prefs from the master profile when available.
@@ -1468,6 +1470,7 @@ def _persist_score_audit(
     llm_composite: float,
     unified: float,
     ats: "object",
+    user_id: str,
 ) -> None:
     """
     Persist the LLM-only vs ATS vs unified scores for calibration review.
@@ -1477,13 +1480,12 @@ def _persist_score_audit(
         import json as _json
         from datetime import datetime, timezone
 
-        from backend.services.active_user import get_active_user_id
         from backend.services.db import ENGINE, ShadowScoreRow
         from sqlalchemy.orm import Session as _Session
 
         with _Session(ENGINE) as s:
             s.add(ShadowScoreRow(
-                user_id        = get_active_user_id(),
+                user_id        = user_id,
                 job_title      = job_title[:200],
                 company        = company_name[:200],
                 existing_score = llm_composite,
@@ -1517,6 +1519,8 @@ async def compute_match_score_async(
     skill_proficiencies: dict[str, str] | None = None,
     job_title: str = "",
     company_name: str = "",
+    *,
+    user_id: str,
 ) -> MatchScoreResult:
     """
     Async composite scorer — primary entry point for route handlers.
@@ -1550,6 +1554,10 @@ async def compute_match_score_async(
     job_title : str
         Job title string — improves LLM prompt context and local proxy accuracy.
         If omitted, extracted from the first 60 chars of jd_text.
+    user_id : str  (keyword-only, REQUIRED)
+        Owner of the CV / Confidence Matrix being scored. Must originate from
+        a verified JWT (route handlers) or the per-user pipeline loop — the
+        tenancy invariant forbids resolving it from any global registry.
     company_name : str
         Target company name — used by _find_prior_employer to detect Company
         Legacy matches.  Must be passed from the job object, NOT derived from
@@ -1628,7 +1636,7 @@ async def compute_match_score_async(
     )
 
     # ATS Match Engine — None ⇒ degrade gracefully to the pure LLM composite.
-    ats = _run_ats_engine(cv_data, jd_text, company_name, local)
+    ats = _run_ats_engine(cv_data, jd_text, company_name, local, user_id)
 
     llm_composite   = finalize_composite(local, semantic, management)
     knockout_failed = bool(ats and not ats.knockout.passed)
@@ -1652,7 +1660,7 @@ async def compute_match_score_async(
             "FAIL" if knockout_failed else "pass", inferred_title,
         )
         # Calibration audit trail (non-fatal) — LLM-only vs ATS vs unified.
-        _persist_score_audit(inferred_title, company_name, llm_composite, composite, ats)
+        _persist_score_audit(inferred_title, company_name, llm_composite, composite, ats, user_id)
     else:
         logger.info(
             "match_score composite (LLM-only, ATS engine unavailable): "

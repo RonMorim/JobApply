@@ -131,6 +131,7 @@ async def main() -> None:
         cv_data=cv_data,
         jd_text=MINT_JD,
         run_llm_validation=True,
+        user_id="default",   # legacy single-user dev script
     )
 
     new_score = result.total

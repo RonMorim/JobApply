@@ -31,24 +31,30 @@ async def list_applications(user: CurrentUser = Depends(get_current_user)):
 
 
 @router.post("/run", response_model=RunCycleResponse)
-async def run_applier_cycle(background_tasks: BackgroundTasks):
+async def run_applier_cycle(
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(get_current_user),
+):
     """
     Trigger the ApplierAgent cycle synchronously.
     Finds all jobs with score >= 85 that haven't been applied to yet,
     submits simulated applications, and returns the results.
     """
     from backend.agents.applier import ApplierAgent
-    agent   = ApplierAgent()
+    agent   = ApplierAgent(user_id=user.user_id)
     results = await asyncio.to_thread(agent.run_cycle)
     logger.info("[api/applications] run_cycle completed — %d submitted", len(results))
     return RunCycleResponse(submitted=len(results), applications=results)
 
 
 @router.post("/{job_id}/apply", response_model=Application)
-async def apply_to_job(job_id: str):
+async def apply_to_job(
+    job_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
     """Manually trigger an application for a specific job."""
     from backend.agents.applier import ApplierAgent
-    app = await asyncio.to_thread(ApplierAgent().apply_single, job_id)
+    app = await asyncio.to_thread(ApplierAgent(user_id=user.user_id).apply_single, job_id)
     if app is None:
         raise HTTPException(
             status_code=404,

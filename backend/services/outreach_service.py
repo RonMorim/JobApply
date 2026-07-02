@@ -144,6 +144,7 @@ def generate_outreach_message(
     target_company: str,
     context:        str = "",
     job_id:         str | None = None,
+    user_id:        str,
 ) -> str:
     """
     Generate a LinkedIn outreach message of the requested type.
@@ -162,12 +163,12 @@ def generate_outreach_message(
     str — the ready-to-send message text.
     """
     client  = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-    profile = build_full_text()
+    profile = build_full_text(user_id)
 
     # Build job context for escalation messages
     job_context = ""
     if job_id:
-        cached = job_store.get_tailored_cv(job_id)
+        cached = job_store.get_tailored_cv(job_id, user_id)
         if cached:
             job_context = f"Role: {cached.get('job_title', '')} at {cached.get('company', '')}"
         # Try fetching raw job metadata
@@ -176,7 +177,7 @@ def generate_outreach_message(
             from sqlalchemy.orm import Session
             with Session(ENGINE) as s:
                 row = s.get(JobRow, job_id)
-                if row:
+                if row and row.user_id == user_id:
                     job_context = (
                         f"Role: {row.title} at {row.company}\n"
                         f"Location: {row.location or 'Israel'}\n"

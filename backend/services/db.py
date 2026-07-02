@@ -188,6 +188,17 @@ def _migrate() -> None:
             ))
             conn.commit()
 
+    # ── master_profiles — add is_admin (Phase 2 admin foundation) ────────────
+    with ENGINE.connect() as conn:
+        tables = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
+        if "master_profiles" in tables:
+            existing_mp = {row[1] for row in conn.execute(text("PRAGMA table_info(master_profiles)"))}
+            if "is_admin" not in existing_mp:
+                conn.execute(text(
+                    "ALTER TABLE master_profiles ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"
+                ))
+                conn.commit()
+
     # ── master_profiles — create if not yet present (safe on existing DBs) ──────
     with ENGINE.connect() as conn:
         tables = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
@@ -285,6 +296,9 @@ class MasterProfileRow(Base):
     user_id            = Column(String, primary_key=True)
     onboarding_status  = Column(String, nullable=False, default="incomplete")
     master_profile     = Column(JSON,   nullable=False, default=dict)
+    # Admin-dashboard foundation (Phase 2) — flipped manually in the DB for
+    # now; require_admin (api/deps.py) is the only consumer.
+    is_admin           = Column(Boolean, nullable=False, default=False)
     created_at         = Column(String, nullable=True)
     updated_at         = Column(String, nullable=True)
 

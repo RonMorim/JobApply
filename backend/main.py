@@ -1,4 +1,5 @@
 import asyncio
+from typing import Optional
 import logging
 import os
 import sys
@@ -50,8 +51,8 @@ async def _enrichment_loop() -> None:
     long-backoff pause (_LONG_BACKOFF) and resets the counter, preventing
     log spam when the Anthropic API is rate-limiting or unreachable.
     """
-    from backend.services.active_user import get_active_user_id
     from backend.services.feed_service import refresh_user_scores
+    from backend.services.tenant_registry import list_pipeline_user_ids
 
     _INTERVAL              = 30      # seconds between enrichment sweeps
     _LONG_BACKOFF          = 1800    # 30-min pause after repeated failures
@@ -64,12 +65,14 @@ async def _enrichment_loop() -> None:
     while True:
         await asyncio.sleep(_INTERVAL)
         try:
-            user_id = get_active_user_id()
-            count   = await refresh_user_scores(user_id)
-            if count:
-                logger.info(
-                    "[enrichment-loop] Enriched %d job(s) for user=%s", count, user_id,
-                )
+            # Multi-tenant fan-out: one strictly-isolated sweep per user,
+            # sequential by design (Phase 2 — no cross-tenant concurrency).
+            for user_id in list_pipeline_user_ids():
+                count = await refresh_user_scores(user_id)
+                if count:
+                    logger.info(
+                        "[enrichment-loop] Enriched %d job(s) for user=%s", count, user_id,
+                    )
             consecutive_failures = 0   # reset on success
         except Exception:
             consecutive_failures += 1
@@ -104,7 +107,7 @@ async def _discovery_loop() -> None:
     safety net for any other persistent failure mode that reaches here.
     """
     from backend.services.discovery import run_discovery_cycle
-    from backend.services.active_user import get_active_user_id
+    from backend.services.tenant_registry import list_pipeline_user_ids
 
     _LONG_BACKOFF_SECONDS  = 1800    # 30-min pause after repeated failures
     _CONSEC_FAIL_THRESHOLD = 3       # failures before entering long-backoff
@@ -127,8 +130,10 @@ async def _discovery_loop() -> None:
 
     while True:
         try:
-            active_user = get_active_user_id()
-            await run_discovery_cycle(user_id=active_user)
+            # Multi-tenant fan-out: one discovery cycle per user, each cycle
+            # scoped to that user's feed, profile, and dedup space.
+            for uid in list_pipeline_user_ids():
+                await run_discovery_cycle(user_id=uid)
             consecutive_failures = 0   # reset on success
         except Exception as exc:
             consecutive_failures += 1
@@ -229,7 +234,7 @@ def _seed_scraper_registry() -> None:
     )
 
 
-def purge_irrelevant_jobs(min_score: float = 30.0, dry_run: bool = False) -> dict:
+def purge_irrelevant_jobs(min_score: float = 30.0, dry_run: bool = False, user_id: Optional[str] = None) -> dict:
     """
     One-time cleanup utility: remove job rows that fall below quality threshold.
 
@@ -256,7 +261,10 @@ def purge_irrelevant_jobs(min_score: float = 30.0, dry_run: bool = False) -> dic
     from sqlalchemy.orm import Session
 
     with Session(ENGINE) as session:
-        all_rows = session.query(JobRow).all()
+        query = session.query(JobRow)
+        if user_id is not None:
+            query = query.filter(JobRow.user_id == user_id)   # tenant-scoped purge
+        all_rows = query.all()
         to_delete = [
             r for r in all_rows
             if (r.match_score or 0.0) < min_score or not is_title_relevant(r.title or "")
@@ -292,7 +300,7 @@ async def lifespan(app: FastAPI):
 
     try:
         from backend.services.master_profile_service import bootstrap_from_supplemental
-        n = bootstrap_from_supplemental()
+        n = bootstrap_from_supplemental("default")   # legacy single-user seed
         if n:
             logger.info("[startup] Bootstrapped %d answer(s) from supplemental store into master profile", n)
     except Exception as exc:

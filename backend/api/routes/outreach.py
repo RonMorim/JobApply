@@ -14,9 +14,10 @@ from __future__ import annotations
 import logging
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from backend.api.deps import CurrentUser, get_current_user
 from backend.services.outreach_service import generate_outreach_message
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ class HeadhunterRequest(BaseModel):
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/message", response_model=OutreachResponse)
-async def generate_message(body: OutreachRequest) -> OutreachResponse:
+async def generate_message(body: OutreachRequest, user: CurrentUser = Depends(get_current_user)) -> OutreachResponse:
     """
     Generate a LinkedIn outreach message.
 
@@ -66,6 +67,7 @@ async def generate_message(body: OutreachRequest) -> OutreachResponse:
             target_company = body.target_company,
             context        = body.context or "",
             job_id         = body.job_id,
+            user_id        = user.user_id,
         )
     except Exception as exc:
         logger.exception("[outreach] Message generation failed: %s", exc)
@@ -79,7 +81,7 @@ async def generate_message(body: OutreachRequest) -> OutreachResponse:
 
 
 @router.post("/headhunter", response_model=OutreachResponse)
-async def generate_headhunter_message(body: HeadhunterRequest) -> OutreachResponse:
+async def generate_headhunter_message(body: HeadhunterRequest, user: CurrentUser = Depends(get_current_user)) -> OutreachResponse:
     """
     Shortcut: generate a headhunter-optimised outreach message for a named agency recruiter.
     """
@@ -90,6 +92,7 @@ async def generate_headhunter_message(body: HeadhunterRequest) -> OutreachRespon
             target_title   = body.recruiter_title or "Recruiter",
             target_company = body.agency_name,
             context        = body.context or "",
+            user_id        = user.user_id,
         )
     except Exception as exc:
         logger.exception("[outreach] Headhunter message generation failed: %s", exc)

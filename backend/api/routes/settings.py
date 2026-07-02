@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from backend.api.deps import CurrentUser, get_current_user
 from models.user import AutomationSettings, UserProfile
 from services.db import ENGINE, KVRow
 
@@ -27,7 +28,7 @@ class ScraperStatusResponse(BaseModel):
 
 
 @router.get("/scraper-status", response_model=ScraperStatusResponse)
-async def get_scraper_status() -> ScraperStatusResponse:
+async def get_scraper_status(user: CurrentUser = Depends(get_current_user)) -> ScraperStatusResponse:
     """
     Return the current LinkedIn scraper health status.
 
@@ -77,7 +78,7 @@ class GmailVerificationCodeResponse(BaseModel):
 
 
 @router.get("/gmail-verification-code", response_model=GmailVerificationCodeResponse)
-async def get_gmail_verification_code() -> GmailVerificationCodeResponse:
+async def get_gmail_verification_code(user: CurrentUser = Depends(get_current_user)) -> GmailVerificationCodeResponse:
     """
     Return the most recently captured Gmail forwarding verification code.
 
@@ -109,28 +110,28 @@ async def get_gmail_verification_code() -> GmailVerificationCodeResponse:
 
 
 @router.get("/automation", response_model=AutomationSettings)
-async def get_automation_settings():
+async def get_automation_settings(user: CurrentUser = Depends(get_current_user)):
     """Return the current automation settings for the authenticated user."""
     # TODO: fetch from DB
     return AutomationSettings()
 
 
 @router.put("/automation", response_model=AutomationSettings)
-async def update_automation_settings(settings: AutomationSettings):
+async def update_automation_settings(settings: AutomationSettings, user: CurrentUser = Depends(get_current_user)):
     """Persist updated automation settings."""
     # TODO: persist to DB, propagate limits to AutoApplierAgent
     return settings
 
 
 @router.get("/profile", response_model=UserProfile)
-async def get_profile():
+async def get_profile(user: CurrentUser = Depends(get_current_user)):
     """Return the authenticated user's structured profile."""
     # TODO: fetch from DB
     return UserProfile()
 
 
 @router.put("/profile", response_model=UserProfile)
-async def update_profile(profile: UserProfile):
+async def update_profile(profile: UserProfile, user: CurrentUser = Depends(get_current_user)):
     """Update the user's profile (triggers re-scoring of existing matches)."""
     # TODO: persist to DB, enqueue re-score task
     return profile

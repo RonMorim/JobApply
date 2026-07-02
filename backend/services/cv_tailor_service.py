@@ -144,9 +144,9 @@ BULLET LIMITS (hard): most recent role → max 4 bullets; every other role → m
 
 # ── Proficiency block builder ─────────────────────────────────────────────────
 
-def _build_proficiency_block() -> str:
-    """Format the skill→level map into a readable block for the prompt."""
-    proficiencies = get_skill_proficiencies()
+def _build_proficiency_block(user_id: str) -> str:
+    """Format the user's skill→level map into a readable block for the prompt."""
+    proficiencies = get_skill_proficiencies(user_id)
     if not proficiencies:
         return "(No verified proficiency data — profile Q&A not yet completed)"
 
@@ -217,22 +217,22 @@ def _normalise(raw_dict: dict, job: JobMatch) -> dict:
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────
 
-def get_cached_tailor_brief(job_id: str) -> Optional[dict]:
-    """Return the cached tailor brief for a job, or None if not yet generated."""
-    cached = job_store.get_tailored_cv(job_id)
+def get_cached_tailor_brief(job_id: str, user_id: str) -> Optional[dict]:
+    """Return the cached tailor brief for a job owned by user_id, or None."""
+    cached = job_store.get_tailored_cv(job_id, user_id)
     if cached and isinstance(cached, dict):
         return cached.get("tailor_brief")
     return None
 
 
-def _save_tailor_brief(job_id: str, brief: dict) -> None:
-    """Persist the brief under the tailor_brief key in the tailored_cv JSON column."""
+def _save_tailor_brief(job_id: str, user_id: str, brief: dict) -> None:
+    """Persist the brief under the tailor_brief key — only on a row owned by user_id."""
     from backend.services.db import ENGINE, JobRow
     from sqlalchemy.orm import Session
 
     with Session(ENGINE) as session:
         row = session.get(JobRow, job_id)
-        if row:
+        if row and row.user_id == user_id:
             existing = dict(row.tailored_cv or {})
             existing["tailor_brief"] = brief
             row.tailored_cv = existing
@@ -241,7 +241,7 @@ def _save_tailor_brief(job_id: str, brief: dict) -> None:
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-def _build_verified_assembly(job: JobMatch, jd_text: str, company_vibe: str | None = None) -> dict:
+def _build_verified_assembly(job: JobMatch, jd_text: str, user_id: str, company_vibe: str | None = None) -> dict:
     """
     Run the Zero-Hallucination CV Assembly Engine for this job.
 
@@ -254,7 +254,6 @@ def _build_verified_assembly(job: JobMatch, jd_text: str, company_vibe: str | No
     Returns a JSON-safe dict attached to the tailor brief as
     brief["verified_assembly"].
     """
-    from backend.services.active_user import get_active_user_id
     from backend.services.ats_match_engine import (
         extract_competencies, heuristic_structured_jd, score_competencies,
     )
@@ -262,7 +261,6 @@ def _build_verified_assembly(job: JobMatch, jd_text: str, company_vibe: str | No
     from backend.services.cv_assembly_engine import assemble_cv, load_verified_facts
     from backend.services.db import ENGINE
 
-    user_id  = get_active_user_id()
     facts    = load_verified_facts(user_id, ENGINE)
     entities = list(get_entity_breakdown(user_id, ENGINE))
 
@@ -306,7 +304,7 @@ def _build_verified_assembly(job: JobMatch, jd_text: str, company_vibe: str | No
     }
 
 
-async def generate_tailor_brief(job_id: str, force_refresh: bool = False) -> dict:
+async def generate_tailor_brief(job_id: str, force_refresh: bool = False, *, user_id: str) -> dict:
     """
     Generate (or return cached) a tailor brief for the given job.
 
@@ -314,6 +312,8 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False) -> dic
     ----------
     job_id        : DB identifier of the job
     force_refresh : when True, bypass the cache and re-generate
+    user_id       : REQUIRED owner — from a verified JWT or the pipeline loop.
+                    All job access is ownership-checked against this value.
 
     Returns
     -------
@@ -321,24 +321,25 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False) -> dic
 
     Raises
     ------
-    ValueError  when the job doesn't exist or has no usable JD/profile text.
+    ValueError  when the job doesn't exist (or isn't owned by user_id) or has
+                no usable JD/profile text.
     RuntimeError on LLM API failure.
     """
-    # ── 1. Load job ───────────────────────────────────────────────────────────
-    job = job_store.get_by_id(job_id)
+    # ── 1. Load job (ownership-checked) ───────────────────────────────────────
+    job = job_store.get_by_id(job_id, user_id)
     if not job:
         raise ValueError(f"Job {job_id!r} not found in the store.")
 
     # ── 2. Check cache ────────────────────────────────────────────────────────
     if not force_refresh:
-        cached = get_cached_tailor_brief(job_id)
+        cached = get_cached_tailor_brief(job_id, user_id)
         if cached:
             logger.info("[cv_tailor] Cache hit for job_id=%s", job_id)
             return cached
 
     # ── 3. Prepare context ────────────────────────────────────────────────────
-    profile_text     = build_full_text()
-    proficiency_block = _build_proficiency_block()
+    profile_text      = build_full_text(user_id)
+    proficiency_block = _build_proficiency_block(user_id)
 
     jd_text = (job.jd_text or "").strip()
     if len(jd_text) < _MIN_JD_LEN:
@@ -373,11 +374,10 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False) -> dic
 
     persona_block = "(no persona extracted yet — neutral professional tone)"
     try:
-        from backend.services.active_user import get_active_user_id
         from backend.services.master_profile_service import (
             extract_user_persona, format_persona_for_prompt,
         )
-        persona = await extract_user_persona(get_active_user_id())
+        persona = await extract_user_persona(user_id)
         if persona:
             persona_block = format_persona_for_prompt(persona)
     except Exception as exc:
@@ -432,7 +432,7 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False) -> dic
     # below are the only content guaranteed fact-backed. Non-fatal on failure —
     # the brief is still returned without the assembly block.
     try:
-        brief["verified_assembly"] = _build_verified_assembly(job, jd_text, company_vibe=company_vibe)
+        brief["verified_assembly"] = _build_verified_assembly(job, jd_text, user_id, company_vibe=company_vibe)
     except Exception as exc:
         logger.warning("[cv_tailor] verified assembly failed (non-fatal): %s", exc)
         brief["verified_assembly"] = None
@@ -442,7 +442,7 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False) -> dic
 
     # ── 6. Cache and return ───────────────────────────────────────────────────
     try:
-        _save_tailor_brief(job_id, brief)
+        _save_tailor_brief(job_id, user_id, brief)
     except Exception as exc:
         logger.warning("[cv_tailor] Failed to cache brief for job %s: %s", job_id, exc)
 
@@ -491,14 +491,15 @@ def _document_fact(text: str) -> "object":
     )
 
 
-def resolve_editable_cv(job_id: Optional[str] = None) -> tuple[Optional[str], Optional[dict]]:
+def resolve_editable_cv(job_id: Optional[str] = None, *, user_id: str) -> tuple[Optional[str], Optional[dict]]:
     """
-    Return (job_id, tailored_cv_doc) for the edit target.
+    Return (job_id, tailored_cv_doc) for the edit target — user_id's rows ONLY.
 
-    With an explicit job_id → that job's document (or (job_id, None) if the job
-    has no tailored CV yet). Without one → the most recently generated tailored
-    CV, resolved by the brief's generated_at timestamp ("the CV" in conversation
-    means the one the user just produced and is reviewing).
+    With an explicit job_id → that job's document if owned by user_id (else
+    (job_id, None) — same response as "no CV yet", never leaking existence).
+    Without one → the user's most recently generated tailored CV, resolved by
+    the brief's generated_at timestamp ("the CV" in conversation means the one
+    THIS user just produced and is reviewing).
     """
     from backend.services.db import ENGINE, JobRow
     from sqlalchemy.orm import Session
@@ -506,11 +507,13 @@ def resolve_editable_cv(job_id: Optional[str] = None) -> tuple[Optional[str], Op
     with Session(ENGINE) as session:
         if job_id:
             row = session.get(JobRow, job_id)
-            return (job_id, dict(row.tailored_cv)) if row and row.tailored_cv else (job_id, None)
+            if row and row.user_id == user_id and row.tailored_cv:
+                return (job_id, dict(row.tailored_cv))
+            return (job_id, None)
 
         rows = (
             session.query(JobRow)
-            .filter(JobRow.tailored_cv.isnot(None))
+            .filter(JobRow.tailored_cv.isnot(None), JobRow.user_id == user_id)
             .all()
         )
         best: Optional[JobRow] = None
@@ -525,13 +528,13 @@ def resolve_editable_cv(job_id: Optional[str] = None) -> tuple[Optional[str], Op
         return (best.job_id, dict(best.tailored_cv))
 
 
-def describe_tailored_cv(job_id: Optional[str] = None) -> dict:
+def describe_tailored_cv(job_id: Optional[str] = None, *, user_id: str) -> dict:
     """
     READ side of Ariel's loop: a compact, index-addressed view of the document
     so the model can reference sections and bullets precisely ("bullet 2 of the
-    Go-Out section") instead of editing from memory.
+    Go-Out section") instead of editing from memory. Scoped to user_id.
     """
-    resolved_id, doc = resolve_editable_cv(job_id)
+    resolved_id, doc = resolve_editable_cv(job_id, user_id=user_id)
     if not doc:
         return {"status": "not_found", "job_id": resolved_id,
                 "message": "No tailored CV exists yet — generate one with the Tailor CV button first."}
@@ -608,7 +611,7 @@ def edit_tailored_cv_bullet(
         return {"status": "error",
                 "message": f"new_text is {len(new_text)} chars — the ceiling is {_EDIT_MAX_CHARS}. Tighten it."}
 
-    resolved_id, doc = resolve_editable_cv(job_id)
+    resolved_id, doc = resolve_editable_cv(job_id, user_id=user_id)
     if not doc:
         return {"status": "error", "job_id": resolved_id,
                 "message": "No tailored CV exists to edit — generate one with the Tailor CV engine first."}
@@ -695,7 +698,7 @@ def edit_tailored_cv_bullet(
     apply_fn()
     with Session(ENGINE) as session:
         row = session.get(JobRow, resolved_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             return {"status": "error", "message": f"Job {resolved_id!r} vanished mid-edit."}
         merged = dict(row.tailored_cv or {})
         if brief:

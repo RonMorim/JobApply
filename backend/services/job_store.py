@@ -289,14 +289,15 @@ def save_with_source_priority(job: JobMatch) -> bool:
 
 def update_scores(
     job_id: str,
+    user_id: str,
     *,
     fit_score: Optional[float] = None,
     ats_score: Optional[float] = None,
 ) -> bool:
-    """Update fit score and/or ATS match_score for a job. Returns True if found."""
+    """Update fit score and/or ATS match_score for a job owned by user_id. Returns True if found."""
     with Session(ENGINE) as session:
         row = session.get(JobRow, job_id)
-        if not row:
+        if not row or row.user_id != user_id:
             return False
         if fit_score is not None:
             row.score = max(0.0, float(fit_score))
@@ -306,101 +307,114 @@ def update_scores(
         return True
 
 
-def get_all() -> list[JobMatch]:
-    """Return all stored jobs sorted by score descending."""
-    with Session(ENGINE) as session:
-        rows = session.query(JobRow).order_by(JobRow.score.desc()).all()
-        return [_from_row(r) for r in rows]
-
-
-def is_empty() -> bool:
-    with Session(ENGINE) as session:
-        return session.query(JobRow).count() == 0
-
-
-def contains_url(url: str) -> bool:
-    """Return True if a job with this apply_url is already in the database."""
-    with Session(ENGINE) as session:
-        return (
-            session.query(JobRow)
-            .filter(JobRow.apply_url == url)
-            .count() > 0
-        )
-
-
-def get_by_id(job_id: str) -> Optional[JobMatch]:
-    """Return the stored JobMatch for a job_id, or None if not found."""
-    with Session(ENGINE) as session:
-        row = session.get(JobRow, job_id)
-        return _from_row(row) if row else None
-
-
-def get_by_url(url: str) -> Optional[JobMatch]:
-    """Return the stored JobMatch for a URL, or None if not found."""
-    with Session(ENGINE) as session:
-        row = (
-            session.query(JobRow)
-            .filter(JobRow.apply_url == url)
-            .first()
-        )
-        return _from_row(row) if row else None
-
-
-def mark_closed(job_id: str) -> None:
-    """Set is_open=False on an existing job row."""
-    with Session(ENGINE) as session:
-        row = session.get(JobRow, job_id)
-        if row:
-            row.is_open = False
-            session.commit()
-
-
-def get_categories() -> list[str]:
-    """Return sorted list of unique non-null category tags in the database."""
-    with Session(ENGINE) as session:
-        rows = (
-            session.query(JobRow.category)
-            .filter(JobRow.category.isnot(None))
-            .distinct()
-            .all()
-        )
-        return sorted(r[0] for r in rows)
-
-
-def get_eligible_for_apply(threshold: float = 85.0) -> list[JobMatch]:
-    """Return jobs with score >= threshold that have not been applied to yet."""
+def get_all(user_id: str) -> list[JobMatch]:
+    """Return all stored jobs owned by user_id, sorted by score descending."""
     with Session(ENGINE) as session:
         rows = (
             session.query(JobRow)
-            .filter(JobRow.score >= threshold, JobRow.applied == False)  # noqa: E712
+            .filter(JobRow.user_id == user_id)
             .order_by(JobRow.score.desc())
             .all()
         )
         return [_from_row(r) for r in rows]
 
 
-def mark_applied(job_id: str, applied_at: str) -> None:
-    """Set applied=True and record the timestamp on an existing job row."""
+def is_empty(user_id: str) -> bool:
+    with Session(ENGINE) as session:
+        return session.query(JobRow).filter(JobRow.user_id == user_id).count() == 0
+
+
+def contains_url(url: str, user_id: str) -> bool:
+    """Return True if a job with this apply_url already exists for user_id."""
+    with Session(ENGINE) as session:
+        return (
+            session.query(JobRow)
+            .filter(JobRow.apply_url == url, JobRow.user_id == user_id)
+            .count() > 0
+        )
+
+
+def get_by_id(job_id: str, user_id: str) -> Optional[JobMatch]:
+    """Return the stored JobMatch for a job_id owned by user_id, or None if not found/not owned."""
     with Session(ENGINE) as session:
         row = session.get(JobRow, job_id)
-        if row:
+        if not row or row.user_id != user_id:
+            return None
+        return _from_row(row)
+
+
+def get_by_url(url: str, user_id: str) -> Optional[JobMatch]:
+    """Return the stored JobMatch for a URL owned by user_id, or None if not found."""
+    with Session(ENGINE) as session:
+        row = (
+            session.query(JobRow)
+            .filter(JobRow.apply_url == url, JobRow.user_id == user_id)
+            .first()
+        )
+        return _from_row(row) if row else None
+
+
+def mark_closed(job_id: str, user_id: str) -> None:
+    """Set is_open=False on an existing job row owned by user_id."""
+    with Session(ENGINE) as session:
+        row = session.get(JobRow, job_id)
+        if row and row.user_id == user_id:
+            row.is_open = False
+            session.commit()
+
+
+def get_categories(user_id: str) -> list[str]:
+    """Return sorted list of unique non-null category tags for user_id."""
+    with Session(ENGINE) as session:
+        rows = (
+            session.query(JobRow.category)
+            .filter(JobRow.category.isnot(None), JobRow.user_id == user_id)
+            .distinct()
+            .all()
+        )
+        return sorted(r[0] for r in rows)
+
+
+def get_eligible_for_apply(threshold: float, user_id: str) -> list[JobMatch]:
+    """Return jobs for user_id with score >= threshold that have not been applied to yet."""
+    with Session(ENGINE) as session:
+        rows = (
+            session.query(JobRow)
+            .filter(
+                JobRow.score >= threshold,
+                JobRow.applied == False,  # noqa: E712
+                JobRow.user_id == user_id,
+            )
+            .order_by(JobRow.score.desc())
+            .all()
+        )
+        return [_from_row(r) for r in rows]
+
+
+def mark_applied(job_id: str, applied_at: str, user_id: str) -> None:
+    """Set applied=True and record the timestamp on a job row owned by user_id."""
+    with Session(ENGINE) as session:
+        row = session.get(JobRow, job_id)
+        if row and row.user_id == user_id:
             row.applied    = True
             row.applied_at = applied_at
             session.commit()
 
 
-def get_tailored_cv(job_id: str) -> Optional[dict]:
-    """Return the cached tailored CV payload for a job, or None if not yet generated."""
+def get_tailored_cv(job_id: str, user_id: str) -> Optional[dict]:
+    """Return the cached tailored CV payload for a job owned by user_id, or None."""
     with Session(ENGINE) as session:
         row = session.get(JobRow, job_id)
-        return (row.tailored_cv or None) if row else None
+        if not row or row.user_id != user_id:
+            return None
+        return row.tailored_cv or None
 
 
-def save_tailored_cv(job_id: str, cv_data: dict, match_score: Optional[dict]) -> None:
-    """Persist the generated CV data + match score for a job."""
+def save_tailored_cv(job_id: str, user_id: str, cv_data: dict, match_score: Optional[dict]) -> None:
+    """Persist the generated CV data + match score for a job owned by user_id."""
     with Session(ENGINE) as session:
         row = session.get(JobRow, job_id)
-        if row:
+        if row and row.user_id == user_id:
             row.tailored_cv = {"cv_data": cv_data, "match_score": match_score}
             session.commit()
 
@@ -429,8 +443,8 @@ def get_feed(user_id: str, status_filter: Optional[str] = None) -> List[JobMatch
         return jobs
 
 
-def update_match_score(job_id: str, score: float, is_proxy: bool = False) -> None:
-    """Persist a newly computed ATS match_score onto an existing job row.
+def update_match_score(job_id: str, user_id: str, score: float, is_proxy: bool = False) -> None:
+    """Persist a newly computed ATS match_score onto a job row owned by user_id.
 
     Pass is_proxy=False (the default) when this is a full LLM-backed Phase B
     score so the UI can stop showing "Analysing…".  Pass is_proxy=True only
@@ -438,34 +452,34 @@ def update_match_score(job_id: str, score: float, is_proxy: bool = False) -> Non
     """
     with Session(ENGINE) as session:
         row = session.get(JobRow, job_id)
-        if row:
+        if row and row.user_id == user_id:
             row.match_score   = score
             row.score_is_proxy = is_proxy
             session.commit()
 
 
-def update_reasons(job_id: str, reasons: list[dict]) -> None:
+def update_reasons(job_id: str, user_id: str, reasons: list[dict]) -> None:
     """
-    Replace the reasons column on an existing job row.
+    Replace the reasons column on a job row owned by user_id.
     Each reason must be {kind: 'skill'|'exp'|'loc'|'neg', label: str}.
     Called after proficiency-aware rescoring to surface context tags like
     "Academic Python vs. Professional req." in the UI.
     """
     with Session(ENGINE) as session:
         row = session.get(JobRow, job_id)
-        if row:
+        if row and row.user_id == user_id:
             row.reasons = reasons
             session.commit()
 
 
-def update_status(job_id: str, status: str) -> bool:
+def update_status(job_id: str, user_id: str, status: str) -> bool:
     """
-    Set the status field on an existing job row.
-    Returns True if the row was found and updated, False if job_id unknown.
+    Set the status field on a job row owned by user_id.
+    Returns True if the row was found and updated, False if job_id unknown or not owned.
     """
     with Session(ENGINE) as session:
         row = session.get(JobRow, job_id)
-        if not row:
+        if not row or row.user_id != user_id:
             return False
         row.status = status
         session.commit()
@@ -581,9 +595,9 @@ def get_jobs_needing_llm_enrichment(user_id: str) -> List[JobMatch]:
         return [_from_row(r) for r in rows]
 
 
-def update_why_ron(job_id: str, why_ron: str) -> None:
+def update_why_ron(job_id: str, user_id: str, why_ron: str) -> None:
     """
-    Persist the LLM-generated 'why apply' brief onto an existing job row.
+    Persist the LLM-generated 'why apply' brief onto a job row owned by user_id.
 
     Called by feed_service after s2 enrichment completes.  A non-NULL
     why_ron signals that this job has been fully LLM-scored and should
@@ -591,7 +605,7 @@ def update_why_ron(job_id: str, why_ron: str) -> None:
     """
     with Session(ENGINE) as session:
         row = session.get(JobRow, job_id)
-        if row:
+        if row and row.user_id == user_id:
             row.why_ron = why_ron
             session.commit()
 

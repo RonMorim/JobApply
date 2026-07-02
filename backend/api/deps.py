@@ -137,8 +137,24 @@ _bearer = HTTPBearer(auto_error=False)
 
 @dataclass
 class CurrentUser:
-    user_id: str
-    email:   str = field(default="")
+    user_id:  str
+    email:    str  = field(default="")
+    is_admin: bool = field(default=False)
+
+
+def _load_is_admin(user_id: str) -> bool:
+    """Cheap master_profiles lookup; absent row (or any DB error) → False."""
+    try:
+        from sqlalchemy import text as _text
+        from backend.services.db import ENGINE
+        with ENGINE.connect() as conn:
+            row = conn.execute(
+                _text("SELECT is_admin FROM master_profiles WHERE user_id = :uid"),
+                {"uid": user_id},
+            ).fetchone()
+        return bool(row[0]) if row else False
+    except Exception:
+        return False
 
 
 async def get_current_user(
@@ -178,10 +194,30 @@ async def get_current_user(
 
     # ── RS256/JWKS path ───────────────────────────────────────────────────────
     if _SUPABASE_URL:
-        return await _verify_rs256(token, jwt, JWTError)
+        user = await _verify_rs256(token, jwt, JWTError)
+    else:
+        # ── HS256 fallback ────────────────────────────────────────────────────
+        user = _verify_hs256(token, jwt, JWTError)
 
-    # ── HS256 fallback ────────────────────────────────────────────────────────
-    return _verify_hs256(token, jwt, JWTError)
+    user.is_admin = _load_is_admin(user.user_id)
+    return user
+
+
+async def require_admin(
+    user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """
+    FastAPI dependency for admin-only routes (Phase 2 foundation — defined
+    and exported, not yet mounted on any route).
+
+        user: CurrentUser = Depends(require_admin)
+    """
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required.",
+        )
+    return user
 
 
 async def _verify_rs256(token: str, jwt, JWTError) -> CurrentUser:
