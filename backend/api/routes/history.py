@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Session
 
+from backend.api.deps import CurrentUser, get_current_user
 from backend.services.db import ENGINE as MAIN_ENGINE   # reuse the same DB file
 
 logger = logging.getLogger(__name__)
@@ -131,14 +132,14 @@ router = APIRouter()
 
 @router.get("/history", response_model=List[SessionSummary])
 def list_sessions(
-    user_id: str = "default",
-    db: Session = Depends(_get_db),
+    user: CurrentUser = Depends(get_current_user),
+    db:   Session     = Depends(_get_db),
 ):
-    """Return all sessions for a user, newest first."""
+    """Return all sessions for the authenticated user, newest first."""
     rows = (
         db.execute(
             select(ChatSessionRow)
-            .where(ChatSessionRow.user_id == user_id)
+            .where(ChatSessionRow.user_id == user.user_id)
             .order_by(ChatSessionRow.updated_at.desc())
         )
         .scalars()
@@ -163,13 +164,18 @@ def list_sessions(
 @router.get("/history/{session_id}", response_model=SessionDetail)
 def get_session(
     session_id: str,
-    db: Session        = Depends(_get_db),
+    user: CurrentUser = Depends(get_current_user),
+    db:   Session     = Depends(_get_db),
 ):
-    """Return the full message list for a session."""
+    """Return the full message list for a session owned by the caller."""
     row = db.execute(
-        select(ChatSessionRow).where(ChatSessionRow.session_id == session_id)
+        select(ChatSessionRow).where(
+            ChatSessionRow.session_id == session_id,
+            ChatSessionRow.user_id    == user.user_id,
+        )
     ).scalar_one_or_none()
 
+    # 404 on both absent and not-owned — never leak another user's session existence.
     if row is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -190,15 +196,21 @@ def get_session(
 @router.post("/history", response_model=SessionSummary)
 def upsert_session(
     payload: ChatSessionUpsert,
-    user_id: str = "default",
-    db:      Session = Depends(_get_db),
+    user: CurrentUser = Depends(get_current_user),
+    db:   Session     = Depends(_get_db),
 ):
     """Create or fully replace a session's message list (upsert by session_id)."""
     now = datetime.now(timezone.utc)
 
+    # session_id is globally unique, so look it up by id then verify ownership.
+    # A row that exists under a different user is treated as 404 (don't leak,
+    # and don't let one user overwrite another's session).
     row = db.execute(
         select(ChatSessionRow).where(ChatSessionRow.session_id == payload.session_id)
     ).scalar_one_or_none()
+
+    if row is not None and row.user_id != user.user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     serialised = json.dumps(
         [m.model_dump(exclude_none=True) for m in payload.messages],
@@ -208,7 +220,7 @@ def upsert_session(
     if row is None:
         row = ChatSessionRow(
             session_id    = payload.session_id,
-            user_id       = user_id,
+            user_id       = user.user_id,
             messages_json = serialised,
             created_at    = now,
             updated_at    = now,
@@ -223,7 +235,7 @@ def upsert_session(
 
     logger.info(
         "[history] Upserted session %s for user=%s  messages=%d",
-        payload.session_id, user_id, len(payload.messages),
+        payload.session_id, user.user_id, len(payload.messages),
     )
 
     return SessionSummary(

@@ -79,7 +79,9 @@
       "Bash(../venv/bin/python -c ' *)",
       "Bash(awk -F: '{print $1\":\"$2}')",
       "Bash(venv/bin/python -c ' *)",
-      "Bash(echo \"── tsc exit: $? ──\")"
+      "Bash(echo \"── tsc exit: $? ──\")",
+      "Bash(grep -rn \"fetch\\(\\\\`\\\\|fetch\\('/api\\\\|fetch\\(\\\\\"/api\\\\|fetch\\(\\\\`\\\\${\" --include=\"*.tsx\" --include=\"*.ts\" .)",
+      "Bash(echo \"EXIT=$?\")"
     ]
   }
 }

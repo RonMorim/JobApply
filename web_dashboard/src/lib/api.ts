@@ -58,6 +58,25 @@ async function _ensureFreshToken(): Promise<void> {
   }
 }
 
+/**
+ * Public token-freshness guard for components that call fetch() directly
+ * instead of going through the get/post/patch wrappers.
+ *
+ * The internal wrappers already await _ensureFreshToken() before every
+ * request. Direct-fetch call sites (e.g. the Confidence Matrix and
+ * Trust Score fetches in TrustDashboard) must do the same, or they will
+ * send an empty Authorization header on the first mount-time request —
+ * before AuthContext has called setAuthToken() — receive a 401, and trip
+ * the global _onAuthError() sign-out (the auto-logout loop).
+ *
+ * Usage:
+ *   await ensureFreshToken()
+ *   const res = await fetch(url, { headers: getAuthHeaders() })
+ */
+export async function ensureFreshToken(): Promise<void> {
+  return _ensureFreshToken()
+}
+
 // ── Auth error handler ────────────────────────────────────────────────────────
 // AuthContext wires this up so any 401 or 503 from the backend triggers an
 // immediate sign-out and clears the stale session from local storage.
@@ -192,7 +211,11 @@ export interface TailorOkResponse {
 }
 
 export async function fetchCachedCV(jobId: string): Promise<TailorOkResponse | null> {
-  const res = await fetch(`${BASE}/api/resumes/cached/${jobId}`, { cache: 'no-store' })
+  await _ensureFreshToken()
+  const res = await fetch(`${BASE}/api/resumes/cached/${jobId}`, {
+    headers: _authHeaders(),
+    cache:   'no-store',
+  })
   if (res.status === 204 || !res.ok) return null
   return res.json() as Promise<TailorOkResponse>
 }
@@ -263,6 +286,7 @@ export async function fetchJobJd(jobId: string): Promise<FetchJdResponse> {
 }
 
 export async function backfillJdText(minScore = 50.0): Promise<BackfillResponse> {
+  await _ensureFreshToken()
   const url = `${BASE}/api/jobs/feed/backfill-jd?min_score=${minScore}`
   console.log('[backfillJdText] POST', url, '— no body, no Content-Type')
 
@@ -380,6 +404,7 @@ export async function uploadVerificationDocument(
   docType:   string,
   file:      File,
 ): Promise<{ verification: VerificationResult; session_id: string }> {
+  await _ensureFreshToken()
   const fd = new FormData()
   fd.append('claim',    claim)
   fd.append('doc_type', docType)
@@ -415,6 +440,7 @@ export interface CvUploadResponse {
  * to the user's profile so Jonathan can use them during gap-analysis.
  */
 export async function uploadCvFiles(files: File[]): Promise<CvUploadResponse> {
+  await _ensureFreshToken()
   const fd = new FormData()
   for (const file of files) {
     fd.append('files', file)
@@ -518,6 +544,7 @@ export interface ScraperStatus {
 }
 
 export async function fetchScraperStatus(): Promise<ScraperStatus> {
+  await _ensureFreshToken()
   const res = await fetch(`${BASE}/api/settings/scraper-status`, {
     headers: getAuthHeaders(),
     cache:   'no-store',

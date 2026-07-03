@@ -1,7 +1,7 @@
 'use client'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { ApiFeedJob, JobSourceType, ReasonKind } from '@/lib/apiTypes'
-import { markJobApplied, refreshFeedScores, fetchJobJd, getAuthHeaders } from '@/lib/api'
+import { markJobApplied, refreshFeedScores, fetchJobJd, ensureFreshToken, getAuthHeaders } from '@/lib/api'
 import { ProbeModal, type ProbeState } from './TrustDashboard'
 
 const IS_DEV = process.env.NODE_ENV === 'development'
@@ -599,6 +599,8 @@ function ArielInsightButton({
     setLoading(true)
     setError(null)
     try {
+      // Guard both fetches below against the mount-time token race.
+      await ensureFreshToken()
       // 1. Fetch trust entities to find the matching entity_id
       const trustRes = await fetch(`/api/profile/${userId}/trust-score`, {
         headers: getAuthHeaders(),

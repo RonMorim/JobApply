@@ -7,7 +7,7 @@ import {
 import ReactMarkdown from 'react-markdown'
 import remarkGfm    from 'remark-gfm'
 import { TOKENS }         from '@/lib/tokens'
-import { getAuthHeaders } from '@/lib/api'
+import { ensureFreshToken, getAuthHeaders } from '@/lib/api'
 import { useOnboarding }  from '@/contexts/OnboardingContext'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,6 +103,7 @@ function serializeMessages(msgs: ChatMessage[]): ChatMessage[] {
 async function syncSession(sessionId: string, messages: ChatMessage[]): Promise<void> {
   if (!sessionId || messages.length === 0) return
   try {
+    await ensureFreshToken()
     await fetch('/api/chat/history', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -116,6 +117,7 @@ async function syncSession(sessionId: string, messages: ChatMessage[]): Promise<
 /** GET /api/chat/history — returns [] on error. */
 async function fetchSessionList(): Promise<SessionSummary[]> {
   try {
+    await ensureFreshToken()
     const res = await fetch('/api/chat/history', { headers: getAuthHeaders() })
     if (!res.ok) return []
     return (await res.json()) as SessionSummary[]
@@ -127,6 +129,7 @@ async function fetchSessionList(): Promise<SessionSummary[]> {
 /** GET /api/chat/history/:id — returns null on error. */
 async function fetchSessionMessages(sessionId: string): Promise<ChatMessage[] | null> {
   try {
+    await ensureFreshToken()
     const res = await fetch(`/api/chat/history/${sessionId}`, { headers: getAuthHeaders() })
     if (!res.ok) return null
     const data = await res.json() as { messages: ChatMessage[] }
@@ -631,6 +634,7 @@ async function consumeStream(
       mimeType: a.mediaType,
     }))
   }
+  await ensureFreshToken()
   const res = await fetch('/api/chat/ariel/private', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },

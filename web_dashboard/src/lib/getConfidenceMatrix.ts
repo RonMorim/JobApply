@@ -14,7 +14,7 @@
  *   certification     → 0.70
  */
 
-import { getAuthHeaders } from './api'
+import { ensureFreshToken, getAuthHeaders } from './api'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -66,6 +66,10 @@ const CATEGORY_LABELS: Record<MatrixCategory, string> = {
 export async function getConfidenceMatrix(
   userId: string
 ): Promise<ConfidenceMatrixResponse> {
+  // Populate the auth token before reading headers — this fetch fires at
+  // mount, potentially before AuthContext has called setAuthToken(); without
+  // this an empty Authorization header 401s and trips the global sign-out.
+  await ensureFreshToken()
   const res = await fetch(`/api/profile/${userId}/confidence-matrix`, {
     headers: { ...getAuthHeaders() },
   })

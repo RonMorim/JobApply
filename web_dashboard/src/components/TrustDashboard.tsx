@@ -31,7 +31,7 @@ import {
 } from 'react'
 import Link from 'next/link'
 import { TOKENS } from '@/lib/tokens'
-import { getAuthHeaders, setAuthToken } from '@/lib/api'
+import { ensureFreshToken, getAuthHeaders, setAuthToken } from '@/lib/api'
 import { supabase } from '@/lib/supabase'
 import type {
   TrustScoreResponse, TrustProfileEntity, TrustEvidenceEntry, EntityType,
@@ -768,10 +768,10 @@ function ManualReviewModal({ entity, onClose, onDone }: ManualReviewModalProps) 
   useEffect(() => {
     let cancelled = false
     setLoadingAudit(true)
-    fetch(`/api/ariel/audit/${entity.entity_id}`, {
+    ensureFreshToken().then(() => fetch(`/api/ariel/audit/${entity.entity_id}`, {
       headers: getAuthHeaders(),
       cache:   'no-store',
-    })
+    }))
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then(data => { if (!cancelled) { setAudit(data as AuditResponse); setLoadingAudit(false) } })
       .catch(e  => { if (!cancelled) { setAuditError(e.message); setLoadingAudit(false) } })
@@ -785,6 +785,7 @@ function ManualReviewModal({ entity, onClose, onDone }: ManualReviewModalProps) 
       const form = new FormData()
       form.append('file',     file)
       form.append('entity_id', entity.entity_id)
+      await ensureFreshToken()
       const res = await fetch('/api/profile/cv-upload', {
         method:  'POST',
         headers: getAuthHeaders(),
@@ -1023,6 +1024,7 @@ export function ProbeModal({ probe: initialProbe, onClose, onDone }: ProbeModalP
       : text
     setAttachment(null)
     try {
+      await ensureFreshToken()
       const res = await fetch('/api/ariel/probe/respond', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -1587,6 +1589,7 @@ function UploadZone({ userId, onUploaded }: UploadZoneProps) {
       const form = new FormData()
       allowed.forEach(f => form.append('files', f))
 
+      await ensureFreshToken()
       const res = await fetch('/api/profile/cv-upload', {
         method:  'POST',
         headers: getAuthHeaders(),
@@ -2135,6 +2138,7 @@ export function CapabilitiesList({ userId, className = '' }: { userId: string; c
     setProbeTarget(null)
     setProbingId(entity.entity_id)
     try {
+      await ensureFreshToken()
       const res = await fetch('/api/ariel/probe/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -2154,6 +2158,7 @@ export function CapabilitiesList({ userId, className = '' }: { userId: string; c
   const handleManualVerify = useCallback(async (entity: TrustProfileEntity) => {
     setManualTarget(entity); setManualLoading(true)
     try {
+      await ensureFreshToken()
       const res = await fetch('/api/ariel/manual-verify/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -2324,6 +2329,12 @@ export function TrustDashboard({
     setLoading(true)
     setError(null)
     try {
+      // Ensure the auth token is populated before these mount-time fetches —
+      // both /trust-score and /confidence-matrix fire on first render, before
+      // AuthContext may have called setAuthToken(). An empty Authorization
+      // header 401s and trips the global sign-out (the auto-logout loop).
+      await ensureFreshToken()
+
       // Fetch entity list + evidence (drives accordion rows and avg score)
       const res = await fetch(`/api/profile/${userId}/trust-score`, {
         headers: getAuthHeaders(),
@@ -2368,6 +2379,7 @@ export function TrustDashboard({
     setProbeTarget(null)
     setProbingId(entity.entity_id)
     try {
+      await ensureFreshToken()
       const res = await fetch('/api/ariel/probe/start', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -2418,6 +2430,7 @@ export function TrustDashboard({
     setManualTarget(entity)
     setManualLoading(true)
     try {
+      await ensureFreshToken()
       const res = await fetch(`/api/profile/${userId}/manual-verify/start`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },

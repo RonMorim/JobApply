@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { TOKENS } from '@/lib/tokens'
 import type { Job } from '@/lib/data'
 import type { ApiFeedJob, MatchScoreResult, TemplateInfo } from '@/lib/apiTypes'
-import { fetchTemplates, renderPdf, fetchMatchScore, fetchCachedCV, markJobApplied, getAuthHeaders } from '@/lib/api'
+import { fetchTemplates, renderPdf, fetchMatchScore, fetchCachedCV, markJobApplied, ensureFreshToken, getAuthHeaders } from '@/lib/api'
 import { MatchScorePanel } from './MatchScorePanel'
 import { TemplateSelectorBar } from './TemplateSelectorBar'
 import { LiveEditor } from './LiveEditor'
@@ -431,6 +431,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
       const timeoutId  = setTimeout(() => controller.abort(), 90_000)
       let res: Response
       try {
+        await ensureFreshToken()
         res = await fetch('/api/resumes/tailor', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -570,6 +571,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
     setCopilotError('')
     setCopilotFeedback(null)
     try {
+      await ensureFreshToken()
       const res = await fetch('/api/resumes/copilot', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },

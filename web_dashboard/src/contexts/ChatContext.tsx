@@ -8,7 +8,7 @@ import {
   useRef,
   type ReactNode,
 } from 'react'
-import { getAuthHeaders } from '@/lib/api'
+import { ensureFreshToken, getAuthHeaders } from '@/lib/api'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -131,6 +131,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     let accumulated    = ''
 
     try {
+      await ensureFreshToken()
       // /api/chat/stream accepts {messages, job_context} — the correct schema for
       // this context-aware chat.  /api/chat/private (ArielChat) expects {message, chat_history}.
       const res = await fetch('/api/chat/stream', {
