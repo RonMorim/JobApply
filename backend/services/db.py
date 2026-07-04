@@ -80,6 +80,8 @@ class JobRow(Base):
     # Incremented each time s2 LLM enrichment returns a non-substantive result.
     # UI uses this to show a hard-failure state after 3 failed attempts.
     enrichment_failures   = Column(Integer, nullable=False, default=0)
+    # Phase 3 — generated hiring-manager outreach message; persists across reloads.
+    outreach_text         = Column(Text,    nullable=True)
 
 
 class ProfileInterviewRow(Base):
@@ -233,6 +235,7 @@ def _migrate() -> None:
         ("dedup_key",            "TEXT"),
         ("jd_structured",        "TEXT"),
         ("enrichment_failures",  "INTEGER NOT NULL DEFAULT 0"),
+        ("outreach_text",        "TEXT"),   # Phase 3 — persisted outreach message
     ]
     with ENGINE.connect() as conn:
         result  = conn.execute(text("PRAGMA table_info(jobs)"))

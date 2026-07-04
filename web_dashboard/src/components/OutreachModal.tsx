@@ -1,9 +1,12 @@
 'use client'
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { TOKENS } from '@/lib/tokens'
 import type { ApiFeedJob } from '@/lib/apiTypes'
 import type { OutreachMessageType } from '@/lib/apiTypes'
-import { generateOutreachMessage, generateHeadhunterMessage } from '@/lib/api'
+import {
+  generateOutreachMessage, generateHeadhunterMessage,
+  generateJobOutreach, fetchJobOutreach,
+} from '@/lib/api'
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -33,7 +36,7 @@ function SpinnerIcon({ s = 16 }: { s?: number }) {
 
 // ── Tab config ────────────────────────────────────────────────────────────────
 
-type TabId = 'consultation' | 'escalation' | 'headhunter'
+type TabId = 'hiring_manager' | 'consultation' | 'escalation' | 'headhunter'
 
 interface TabMeta {
   id:       TabId
@@ -44,6 +47,13 @@ interface TabMeta {
 }
 
 const TABS: TabMeta[] = [
+  {
+    id:         'hiring_manager',
+    label:      'Hiring Manager',
+    subtitle:   'One message for THIS role, grounded in your tailored CV. Saved automatically.',
+    badge:      'This role',
+    badgeColor: 'bg-violet-50 text-violet-700 border-violet-200',
+  },
   {
     id:         'consultation',
     label:      'Step 1 — Consultation',
@@ -88,7 +98,7 @@ interface Props {
 }
 
 export function OutreachModal({ job, onClose }: Props) {
-  const [activeTab,     setActiveTab]     = useState<TabId>('consultation')
+  const [activeTab,     setActiveTab]     = useState<TabId>('hiring_manager')
   const [targetName,    setTargetName]    = useState('')
   const [targetTitle,   setTargetTitle]   = useState('')
   const [targetCompany, setTargetCompany] = useState(job.company)
@@ -97,6 +107,35 @@ export function OutreachModal({ job, onClose }: Props) {
   const [isGenerating,  setIsGenerating]  = useState(false)
   const [error,         setError]         = useState<string | null>(null)
   const { copied, copy } = useCopyButton()
+
+  // ── Phase 3: job-anchored outreach (persisted per job) ───────────────────────
+  const [jobMsg,     setJobMsg]     = useState('')      // generated / persisted text
+  const [jobLoading, setJobLoading] = useState(false)   // POST generate in flight
+  const [jobLoaded,  setJobLoaded]  = useState(false)   // initial GET completed
+  const [jobError,   setJobError]   = useState<string | null>(null)
+
+  // On mount, load any previously-generated message so it survives reloads.
+  useEffect(() => {
+    let cancelled = false
+    fetchJobOutreach(job.job_id)
+      .then(res => { if (!cancelled) setJobMsg(res.outreach_text ?? '') })
+      .catch(() => { /* absent / transient — leave empty, user can generate */ })
+      .finally(() => { if (!cancelled) setJobLoaded(true) })
+    return () => { cancelled = true }
+  }, [job.job_id])
+
+  const handleGenerateJobOutreach = useCallback(async () => {
+    setJobError(null)
+    setJobLoading(true)
+    try {
+      const res = await generateJobOutreach(job.job_id)
+      setJobMsg(res.outreach_text ?? '')
+    } catch (e) {
+      setJobError(e instanceof Error ? e.message : 'Generation failed')
+    } finally {
+      setJobLoading(false)
+    }
+  }, [job.job_id])
 
   const currentTab = TABS.find(t => t.id === activeTab)!
 
@@ -216,6 +255,71 @@ export function OutreachModal({ job, onClose }: Props) {
             <p className="text-[12.5px] text-slate-500">{currentTab.subtitle}</p>
           </div>
 
+          {/* ── Phase 3: job-anchored hiring-manager outreach ─────────────── */}
+          {activeTab === 'hiring_manager' && (
+            <>
+              {jobError && (
+                <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-[12.5px] text-red-700">
+                  {jobError}
+                </div>
+              )}
+
+              <button
+                onClick={handleGenerateJobOutreach}
+                disabled={jobLoading || !jobLoaded}
+                className="h-10 rounded-xl text-[13px] font-semibold text-white transition flex items-center justify-center gap-2 disabled:opacity-60"
+                style={{ background: TOKENS.color.primary }}
+              >
+                {jobLoading ? (
+                  <><SpinnerIcon s={15} /> Generating…</>
+                ) : !jobLoaded ? (
+                  <><SpinnerIcon s={15} /> Loading…</>
+                ) : jobMsg ? (
+                  '↺ Regenerate Message'
+                ) : (
+                  '✦ Generate Message'
+                )}
+              </button>
+
+              {jobMsg && (
+                <div className="rounded-2xl border border-slate-100 bg-slate-50 overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 bg-white">
+                    <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                      Hiring Manager · {jobMsg.split(/\s+/).length} words · saved
+                    </span>
+                    <button
+                      onClick={() => copy(jobMsg)}
+                      className={`flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[12px] font-medium border transition ${
+                        copied
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                          : 'border-slate-200 bg-white text-slate-600 hover:text-slate-900 hover:border-slate-300'
+                      }`}
+                    >
+                      {copied ? <><CheckIcon s={12} /> Copied!</> : <><CopyIcon s={12} /> Copy</>}
+                    </button>
+                  </div>
+                  <div className="px-4 py-4 text-[13px] text-slate-800 leading-relaxed whitespace-pre-wrap font-[system-ui]">
+                    {jobMsg}
+                  </div>
+                </div>
+              )}
+
+              {!jobMsg && jobLoaded && (
+                <div className="rounded-2xl border border-slate-100 px-4 py-3">
+                  <p className="text-[11.5px] font-semibold text-slate-600 mb-2">💡 How this differs</p>
+                  <ul className="space-y-1 text-[12px] text-slate-500">
+                    <li>• One message tailored to <strong>this specific role</strong>, mapped to its requirements</li>
+                    <li>• Grounded only in your verified CV — no invented claims</li>
+                    <li>• Saved automatically, so it&apos;s here when you come back</li>
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── Person-targeted networking flow (consultation / escalation / headhunter) ── */}
+          {activeTab !== 'hiring_manager' && (
+          <>
           {/* Form fields */}
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
@@ -353,6 +457,8 @@ export function OutreachModal({ job, onClose }: Props) {
                 </>}
               </ul>
             </div>
+          )}
+          </>
           )}
         </div>
       </div>

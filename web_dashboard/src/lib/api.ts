@@ -472,6 +472,26 @@ export async function generateHeadhunterMessage(req: HeadhunterRequest): Promise
   return post<HeadhunterRequest, OutreachResponse>('/api/outreach/headhunter', req)
 }
 
+// ── Phase 3: job-anchored outreach (generate + persist + fetch) ───────────────
+// Both go through the internal get/post helpers, which already await
+// _ensureFreshToken() before attaching auth — no token race.
+
+export interface JobOutreachResponse {
+  job_id:        string
+  outreach_text: string | null
+  word_count:    number
+}
+
+/** POST — generate + persist the hiring-manager outreach message for a job. */
+export async function generateJobOutreach(jobId: string): Promise<JobOutreachResponse> {
+  return postEmpty<JobOutreachResponse>(`/api/outreach/generate/${jobId}`)
+}
+
+/** GET — the persisted outreach message for a job (outreach_text=null if none). */
+export async function fetchJobOutreach(jobId: string): Promise<JobOutreachResponse> {
+  return get<JobOutreachResponse>(`/api/outreach/${jobId}`)
+}
+
 // ── CRM Kanban ────────────────────────────────────────────────────────────────
 
 export async function fetchCrmBoard(): Promise<CrmBoard> {

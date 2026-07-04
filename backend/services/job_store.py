@@ -610,6 +610,24 @@ def update_why_ron(job_id: str, user_id: str, why_ron: str) -> None:
             session.commit()
 
 
+def get_outreach_text(job_id: str, user_id: str) -> Optional[str]:
+    """Return the persisted outreach message for a job owned by user_id, or None."""
+    with Session(ENGINE) as session:
+        row = session.get(JobRow, job_id)
+        if not row or row.user_id != user_id:
+            return None
+        return row.outreach_text or None
+
+
+def save_outreach_text(job_id: str, user_id: str, text: str) -> None:
+    """Persist a generated outreach message onto a job row owned by user_id."""
+    with Session(ENGINE) as session:
+        row = session.get(JobRow, job_id)
+        if row and row.user_id == user_id:
+            row.outreach_text = text
+            session.commit()
+
+
 def increment_enrichment_failures(job_id: str) -> int:
     """
     Increment the enrichment_failures counter for a job and return the new count.
