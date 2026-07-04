@@ -33,6 +33,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from backend.services.user_profile import USER_PROFILE, build_full_text
+from backend.services.llm_validation import harden_system_prompt, sanitize_text
 import backend.services.job_store as job_store
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
@@ -181,7 +182,7 @@ def generate_outreach_message(
                     job_context = (
                         f"Role: {row.title} at {row.company}\n"
                         f"Location: {row.location or 'Israel'}\n"
-                        f"JD snippet: {(row.jd_text or '')[:400]}"
+                        f"JD snippet: {sanitize_text((row.jd_text or '')[:400])}"
                     )
         except Exception:
             pass
@@ -215,7 +216,7 @@ def generate_outreach_message(
     response = client.messages.create(
         model      = _MODEL,
         max_tokens = _MAX_TOKENS,
-        system     = _SYSTEM,
+        system     = harden_system_prompt(_SYSTEM),
         messages   = [{"role": "user", "content": user_prompt}],
     )
 
@@ -304,12 +305,13 @@ def generate_outreach(job_id: str, user_id: str) -> str:
     if not jd_text:
         jd_text = f"(No full description stored — role: {job.title} at {job.company}.)"
 
+    # Sanitize untrusted text (JD + assembled CV material) before it enters the prompt.
     user_prompt = _OUTREACH_USER_TMPL.format(
         title              = job.title,
         company            = job.company,
         location           = job.location or "Israel",
-        jd_text            = jd_text[:4000],
-        candidate_material = _candidate_material(job_id, user_id),
+        jd_text            = sanitize_text(jd_text[:4000]),
+        candidate_material = sanitize_text(_candidate_material(job_id, user_id)),
     )
 
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
@@ -320,7 +322,7 @@ def generate_outreach(job_id: str, user_id: str) -> str:
     response = client.messages.create(
         model      = _MODEL,
         max_tokens = _MAX_TOKENS,
-        system     = _OUTREACH_SYSTEM,
+        system     = harden_system_prompt(_OUTREACH_SYSTEM),
         messages   = [{"role": "user", "content": user_prompt}],
     )
     message = response.content[0].text.strip()

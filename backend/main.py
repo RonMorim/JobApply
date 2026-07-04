@@ -22,6 +22,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.routes import agents, analytics, applications, ariel, auth, chat, crm, emails, history, jobs, outreach, profile, resumes, settings
 from config import (
@@ -326,6 +327,29 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Job Apply API", version="0.1.0", lifespan=lifespan)
+
+
+# ── Security headers ──────────────────────────────────────────────────────────
+# Inject hardening headers on every response. Native Starlette middleware — no
+# new dependency. Placed as a class so the header set lives in one auditable
+# spot; values are static and cheap to apply per-request.
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    _HEADERS = {
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+        "X-Content-Type-Options":    "nosniff",
+        "X-Frame-Options":           "DENY",
+        "X-XSS-Protection":          "1; mode=block",
+    }
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        for key, value in self._HEADERS.items():
+            response.headers.setdefault(key, value)
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

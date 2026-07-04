@@ -323,7 +323,10 @@ def _handle_get_full_candidate_profile(
     """
     try:
         from backend.services.user_profile import get_profile
-        payload = json.dumps(get_profile(user_id), ensure_ascii=False, indent=2)
+        from backend.services.llm_validation import sanitize_text
+        # Profile text (CV-derived, user-controlled) re-enters Ariel's context as
+        # a tool result — sanitize it so a hostile CV can't smuggle instructions.
+        payload = sanitize_text(json.dumps(get_profile(user_id), ensure_ascii=False, indent=2))
         logger.info(
             "[ariel_tools] get_full_candidate_profile user=%s payload_len=%d",
             user_id, len(payload),

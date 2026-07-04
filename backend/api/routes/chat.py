@@ -32,16 +32,18 @@ from typing import Any, AsyncIterator, List, Optional
 import anthropic
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from api.deps import CurrentUser, get_current_user
+from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit
 from backend.services.db import ENGINE, MasterProfileRow
 from backend.agents.ariel_tools import ARIEL_TOOLS, execute_tool
 from backend.services.user_profile import USER_PROFILE
+from backend.services.llm_validation import harden_system_prompt, sanitize_text
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# All chat routes hit the LLM → strict per-caller budget.
+router = APIRouter(dependencies=[Depends(llm_rate_limit)])
 
 _MODEL      = "claude-sonnet-4-6"
 _MAX_TOKENS = 1024
@@ -109,13 +111,13 @@ _TOOLS: list[dict] = [
 
 class ChatMessage(BaseModel):
     role:      str            # "user" | "assistant"
-    content:   str
+    content:   str = Field(..., max_length=20_000)
     isPinned:  Optional[bool] = None   # Phase 3 — pinned messages become CoreContext
 
 class JobContext(BaseModel):
-    topic:     str
-    job_title: Optional[str] = None
-    company:   Optional[str] = None
+    topic:     str = Field(..., max_length=300)
+    job_title: Optional[str] = Field(default=None, max_length=200)
+    company:   Optional[str] = Field(default=None, max_length=200)
 
 class ChatStreamRequest(BaseModel):
     messages:    List[ChatMessage]
@@ -157,10 +159,10 @@ def _build_system_prompt(job_context: Optional[JobContext]) -> str:
     if USER_PROFILE:
         parts.append(
             "CANDIDATE PROFILE (verified — treat as ground truth):\n"
-            + _json.dumps(USER_PROFILE, ensure_ascii=False, indent=2)
+            + sanitize_text(_json.dumps(USER_PROFILE, ensure_ascii=False, indent=2))
         )
 
-    return "\n\n---\n\n".join(parts)
+    return harden_system_prompt("\n\n---\n\n".join(parts))
 
 # ── SSE helpers ────────────────────────────────────────────────────────────────
 
@@ -501,7 +503,7 @@ def _build_ariel_system(pinned_messages: list[ChatMessage]) -> str:
         )
 
     parts.append(_ARIEL_STRATEGIST_CORE)
-    return "\n\n".join(parts)
+    return harden_system_prompt("\n\n".join(parts))
 
 # ── Tool-loop + streaming pipeline ───────────────────────────────────────────
 
@@ -618,12 +620,12 @@ async def _ariel_tool_loop_then_stream(
 
 class AttachmentItem(BaseModel):
     base64:   str
-    filename: str
-    mimeType: str
+    filename: str = Field(..., max_length=300)
+    mimeType: str = Field(..., max_length=100)
 
 
 class ArielPrivateRequest(BaseModel):
-    message:      str
+    message:      str = Field(..., max_length=20_000)
     chat_history: List[ChatMessage] = []
     attachments:  List[AttachmentItem] = []
 

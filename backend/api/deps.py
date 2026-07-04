@@ -30,12 +30,14 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 logger = logging.getLogger(__name__)
@@ -300,3 +302,98 @@ def _extract_user(payload: dict) -> CurrentUser:
         user_id=user_id,
         email=payload.get("email", ""),
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Rate limiting — lightweight, memory-backed, dependency-injectable
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# A sliding-window counter keyed per identity (authenticated user_id when a
+# Bearer token is present, else the client IP). No external store (Redis, etc.)
+# — a process-local dict of timestamp deques, guarded by a lock so it is safe
+# under the threadpool that runs sync path operations.
+#
+# Buckets are namespaced by `scope` so an endpoint's strict LLM budget and the
+# standard budget are counted independently for the same identity.
+#
+# NOTE: state is per-process. Behind multiple workers each has its own window,
+# so effective limits scale with worker count — acceptable for abuse/overload
+# protection at this stage; swap the backing store for Redis if global limits
+# are later required.
+
+_RATE_BUCKETS: dict[str, deque] = defaultdict(deque)
+_RATE_LOCK = threading.Lock()
+_RATE_MAX_KEYS = 50_000   # opportunistic-cleanup threshold to bound memory
+
+
+def _rate_identity(request: Request) -> str:
+    """
+    Best-effort caller identity for rate keying.
+
+    Prefers the JWT `sub` (unverified decode — keying only, never trusted for
+    authz), falls back to a token prefix, then to the client IP. Unverified
+    decode is safe here: a forged `sub` only changes which bucket the caller's
+    own requests land in, so a caller can throttle only themselves — they can
+    never lift another identity's limit.
+    """
+    auth = request.headers.get("authorization", "")
+    if auth[:7].lower() == "bearer ":
+        token = auth[7:].strip()
+        if token:
+            try:
+                from jose import jwt as _jwt
+                sub = _jwt.get_unverified_claims(token).get("sub")
+                if sub:
+                    return f"user:{sub}"
+            except Exception:
+                pass
+            return f"token:{token[:24]}"
+    client = request.client
+    return f"ip:{client.host if client else 'unknown'}"
+
+
+class RateLimiter:
+    """
+    FastAPI dependency enforcing `max_requests` per `window_seconds` per caller.
+
+    Usage — router-level:   APIRouter(dependencies=[Depends(llm_rate_limit)])
+            per-route:       @router.post(..., dependencies=[Depends(llm_rate_limit)])
+
+    Raises 429 (with a Retry-After header) when the window is saturated.
+    """
+
+    def __init__(self, max_requests: int, window_seconds: int = 60, scope: str = "default"):
+        self.max_requests   = max_requests
+        self.window_seconds = window_seconds
+        self.scope          = scope
+
+    async def __call__(self, request: Request) -> None:
+        key = f"{self.scope}:{_rate_identity(request)}"
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        with _RATE_LOCK:
+            # Opportunistic memory bound: drain fully-expired buckets when the
+            # key space grows large (cheap amortised cleanup, no timers).
+            if len(_RATE_BUCKETS) > _RATE_MAX_KEYS:
+                for k in [k for k, dq in _RATE_BUCKETS.items() if not dq or dq[-1] < cutoff]:
+                    del _RATE_BUCKETS[k]
+
+            bucket = _RATE_BUCKETS[key]
+            while bucket and bucket[0] < cutoff:
+                bucket.popleft()
+
+            if len(bucket) >= self.max_requests:
+                retry_after = max(1, int(self.window_seconds - (now - bucket[0])) + 1)
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Rate limit exceeded. Please slow down and try again shortly.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+            bucket.append(now)
+
+
+# Shared limiter instances — import and attach as route/router dependencies.
+#   llm_rate_limit      → strict budget for expensive LLM-generation endpoints
+#   standard_rate_limit → generous budget for ordinary reads/writes
+llm_rate_limit      = RateLimiter(max_requests=10, window_seconds=60, scope="llm")
+standard_rate_limit = RateLimiter(max_requests=60, window_seconds=60, scope="std")

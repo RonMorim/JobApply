@@ -9,7 +9,7 @@ from typing import List, Optional
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.deps import CurrentUser, get_current_user
 from models.job import DetailedAnalysis, JobMatch, RawJobPosting, ReasonTag
@@ -552,7 +552,7 @@ class TailoredSection(BaseModel):
 
 class TailorEditRequest(BaseModel):
     sections:    list[TailoredSection]
-    instruction: str
+    instruction: str = Field(..., max_length=10_000)
 
 class TailorEditResponse(BaseModel):
     sections: list[TailoredSection]
@@ -635,7 +635,7 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
 # ── Scrape → RawJobPosting endpoint ──────────────────────────────────────────
 
 class JobUrlRequest(BaseModel):
-    url: str
+    url: str = Field(..., max_length=500)
 
 
 async def _check_liveness(url: str) -> bool:
@@ -731,7 +731,7 @@ async def analyze_job_url(request: JobUrlRequest, user: CurrentUser = Depends(ge
 # ── Full workflow trigger ─────────────────────────────────────────────────────
 
 class AnalyzeRequest(BaseModel):
-    url: str
+    url: str = Field(..., max_length=500)
 
 
 class AnalyzeResponse(BaseModel):
@@ -904,9 +904,9 @@ async def analyze_job(
 
 
 class ScrapeConfig(BaseModel):
-    company_name: str
-    company_url:  str
-    adapter:      str = "comeet"   # "comeet" | future adapters
+    company_name: str = Field(..., max_length=200)
+    company_url:  str = Field(..., max_length=500)
+    adapter:      str = Field(default="comeet", max_length=40)   # "comeet" | future adapters
     user_id:      str = "default"
 
 

@@ -22,25 +22,26 @@ import logging
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from backend.api.deps import CurrentUser, get_current_user
+from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit
 from backend.services import job_store
 from backend.services.outreach_service import generate_outreach, generate_outreach_message
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# Every outreach route is an LLM generation call → strict per-caller budget.
+router = APIRouter(dependencies=[Depends(llm_rate_limit)])
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
 
 class OutreachRequest(BaseModel):
     message_type:   Literal["consultation", "escalation", "headhunter"]
-    target_name:    str
-    target_title:   str
-    target_company: str
-    context:        Optional[str] = None
-    job_id:         Optional[str] = None  # for escalation — fetches JD for context
+    target_name:    str = Field(..., max_length=200)
+    target_title:   str = Field(..., max_length=200)
+    target_company: str = Field(..., max_length=200)
+    context:        Optional[str] = Field(default=None, max_length=10_000)
+    job_id:         Optional[str] = Field(default=None, max_length=200)  # for escalation — fetches JD for context
 
 
 class OutreachResponse(BaseModel):
@@ -50,10 +51,10 @@ class OutreachResponse(BaseModel):
 
 
 class HeadhunterRequest(BaseModel):
-    recruiter_name:    str
-    recruiter_title:   Optional[str] = "Recruiter"
-    agency_name:       str
-    context:           Optional[str] = None
+    recruiter_name:    str = Field(..., max_length=200)
+    recruiter_title:   Optional[str] = Field(default="Recruiter", max_length=200)
+    agency_name:       str = Field(..., max_length=200)
+    context:           Optional[str] = Field(default=None, max_length=10_000)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.services import job_store
 from backend.agents.resume import ResumeAgent
@@ -23,13 +23,15 @@ from backend.services.match_score_service import (
     _cv_experience_text,
     _is_experience_backed,
 )
-from backend.api.deps import CurrentUser, get_current_user
+from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, standard_rate_limit
 from backend.services.master_profile_service import get_cached_answer, merge_answers
 from backend.services.job_store import get_tailored_cv, save_tailored_cv
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+# Standard budget on every resumes route; the LLM-generation endpoints below
+# additionally carry the strict llm_rate_limit.
+router = APIRouter(dependencies=[Depends(standard_rate_limit)])
 
 # Accepted MIME types and their human-readable labels
 _ALLOWED_FILE_TYPES: dict[str, str] = {
@@ -61,7 +63,7 @@ class ResumeGenerateResponse(BaseModel):
     layout_variant: str
 
 
-@router.post("/generate", response_model=ResumeGenerateResponse)
+@router.post("/generate", response_model=ResumeGenerateResponse, dependencies=[Depends(llm_rate_limit)])
 async def generate_resume(
     job_id: str = Form(...),
     supplemental_answers_json: str = Form(default="{}"),
@@ -455,7 +457,7 @@ def _build_match_proxy(job) -> str:
     return proxy
 
 
-@router.post("/tailor", response_model=TailorResponse)
+@router.post("/tailor", response_model=TailorResponse, dependencies=[Depends(llm_rate_limit)])
 async def tailor_resume(req: TailorRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Run TailorAgent for a job.
@@ -738,7 +740,7 @@ async def get_cached_resume(job_id: str, user: CurrentUser = Depends(get_current
 class CopilotRequest(BaseModel):
     job_id:       str
     cv_data:      dict
-    user_prompt:  str
+    user_prompt:  str = Field(..., max_length=10_000)
     chat_history: Optional[list[dict]] = None
 
 
@@ -751,7 +753,7 @@ class CopilotResponse(BaseModel):
     match_score:     Optional[dict] = None
 
 
-@router.post("/copilot", response_model=CopilotResponse)
+@router.post("/copilot", response_model=CopilotResponse, dependencies=[Depends(llm_rate_limit)])
 async def copilot_edit(req: CopilotRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Apply a targeted, plain-English editing instruction to an existing cv_data.
@@ -982,7 +984,7 @@ async def copilot_edit(req: CopilotRequest, user: CurrentUser = Depends(get_curr
 
 class ReviseRequest(BaseModel):
     job_id:        str
-    revision_text: str
+    revision_text: str = Field(..., max_length=10_000)
     cv_data:       dict
 
 
@@ -993,7 +995,7 @@ class ReviseResponse(BaseModel):
     pdf_b64: Optional[str]      # base64 PDF (if approved)
 
 
-@router.post("/revise", response_model=ReviseResponse)
+@router.post("/revise", response_model=ReviseResponse, dependencies=[Depends(llm_rate_limit)])
 async def revise_resume(req: ReviseRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Submit a revision request for a tailored CV.
@@ -1088,7 +1090,7 @@ class MatchScoreResponse(BaseModel):
     llm_validated:       bool      = False
 
 
-@router.post("/match-score", response_model=MatchScoreResponse)
+@router.post("/match-score", response_model=MatchScoreResponse, dependencies=[Depends(llm_rate_limit)])
 async def match_score(req: MatchScoreRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Compute a 0-100 ATS match score between cv_data and the stored job.

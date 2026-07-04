@@ -36,6 +36,7 @@ from dotenv import load_dotenv
 
 from backend.services import job_store
 from backend.services.user_profile import USER_PROFILE, build_full_text
+from backend.services.llm_validation import harden_system_prompt, sanitize_text
 from backend.services.master_profile_service import get_skill_proficiencies
 from models.job import JobMatch
 
@@ -388,15 +389,17 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False, *, use
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set.")
 
+    # Sanitize untrusted text (profile-derived CV text + scraped JD) before it
+    # is formatted into the prompt.
     user_msg = _USER_TMPL.format(
-        profile             = profile_text,
+        profile             = sanitize_text(profile_text),
         proficiency_block   = proficiency_block,
         company_intel_block = company_intel_block,
         persona_block       = persona_block,
         title               = job.title,
         company             = job.company,
         location            = job.location or "Israel",
-        jd_text             = jd_text[:4000],   # cap to avoid token overflow
+        jd_text             = sanitize_text(jd_text[:4000]),   # cap to avoid token overflow
     )
 
     logger.info(
@@ -409,7 +412,7 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False, *, use
         response = await client.messages.create(
             model      = _MODEL,
             max_tokens = _MAX_TOKENS,
-            system     = _SYSTEM,
+            system     = harden_system_prompt(_SYSTEM),
             messages   = [{"role": "user", "content": user_msg}],
         )
     except anthropic.APIError as exc:
