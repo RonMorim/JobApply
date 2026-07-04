@@ -28,7 +28,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DBSession
 
-from api.deps import CurrentUser, get_current_user
+from backend.api.deps import CurrentUser, get_current_user
 from backend.services.db import ENGINE, ApplicationRow, JobRow, ProfileInterviewRow
 from backend.services.active_user import set_active_user_id
 

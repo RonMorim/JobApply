@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from services.db import ENGINE, JobRow
+from backend.services.db import ENGINE, JobRow
 
 logger = logging.getLogger(__name__)
 

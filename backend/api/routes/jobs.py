@@ -11,7 +11,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from api.deps import CurrentUser, get_current_user
+from backend.api.deps import CurrentUser, get_current_user
 from models.job import DetailedAnalysis, JobMatch, RawJobPosting, ReasonTag
 import backend.services.job_store as job_store
 from backend.services import feed_service

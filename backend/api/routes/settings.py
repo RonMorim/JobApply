@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.api.deps import CurrentUser, get_current_user
 from models.user import AutomationSettings, UserProfile
-from services.db import ENGINE, KVRow
+from backend.services.db import ENGINE, KVRow
 
 router = APIRouter()
 

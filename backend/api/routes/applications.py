@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from api.deps import CurrentUser, get_current_user
+from backend.api.deps import CurrentUser, get_current_user
 from models.application import Application, ApplicationStatus
 from backend.services import app_store, job_store
 from backend.services.db import ENGINE, ApplicationRow, JobRow

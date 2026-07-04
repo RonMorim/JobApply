@@ -27,7 +27,7 @@ from typing import Optional, TypedDict
 import anthropic
 from dotenv import load_dotenv
 
-from services.llm_validation import harden_system_prompt, sanitize_text
+from backend.services.llm_validation import harden_system_prompt, sanitize_text
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 

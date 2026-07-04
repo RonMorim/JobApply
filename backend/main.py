@@ -14,8 +14,11 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
 
 # When uvicorn is launched from the backend/ directory, the project root
 # (one level up) is not automatically on sys.path.  Add it so that the
-# top-level `models/` package (e.g. models.agent) is importable alongside
-# the `api/`, `services/`, and `config` packages that live inside backend/.
+# top-level `models/` package (e.g. models.agent) AND the canonical
+# `backend.*` package path are importable.  ALL intra-backend imports use
+# the `backend.` prefix — the bare `api.*` / `services.*` / `config` forms
+# are forbidden because they load the same file as a second, independent
+# module object (duplicated rate-limit buckets, JWKS caches, DB engines).
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -24,8 +27,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from api.routes import agents, analytics, applications, ariel, auth, chat, crm, history, jobs, outreach, profile, resumes, settings, webhooks
-from config import (
+from backend.api.routes import agents, analytics, applications, ariel, auth, chat, crm, history, jobs, outreach, profile, resumes, settings, webhooks
+from backend.config import (
     AUTO_DISCOVERY,
     CREDIT_CONSERVATION_MODE,
     DEV_MAX_JOBS_PER_BOARD,

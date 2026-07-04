@@ -47,10 +47,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from api.deps import webhook_rate_limit
-from services.db import ENGINE, ApplicationRow, KVRow
-from services.email_parser import parse_recruiter_email
-from services.llm_validation import sanitize_text
+from backend.api.deps import webhook_rate_limit
+from backend.services.db import ENGINE, ApplicationRow, KVRow
+from backend.services.email_parser import parse_recruiter_email
+from backend.services.llm_validation import sanitize_text
 
 router = APIRouter(dependencies=[Depends(webhook_rate_limit)])
 logger = logging.getLogger(__name__)

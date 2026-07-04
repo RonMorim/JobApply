@@ -316,8 +316,8 @@ class TestTrustScoreEndpoint:
     FastAPI TestClient tests exercising the full HTTP stack.
 
     These tests patch:
-      • backend.services.db.ENGINE  →  _TEST_ENGINE (in-memory SQLite)
-      • api.deps.get_current_user   →  returns a synthetic CurrentUser
+      • backend.services.db.ENGINE          →  _TEST_ENGINE (in-memory SQLite)
+      • backend.api.deps.get_current_user   →  returns a synthetic CurrentUser
     """
 
     @pytest.fixture(autouse=True)
@@ -332,7 +332,7 @@ class TestTrustScoreEndpoint:
     def _make_client(self, caller_user_id: str) -> TestClient:
         """Return a TestClient whose auth dependency returns caller_user_id."""
         from backend.main import app
-        from api.deps import CurrentUser, get_current_user
+        from backend.api.deps import CurrentUser, get_current_user
 
         def _override():
             return CurrentUser(user_id=caller_user_id, email="test@example.com")
@@ -343,7 +343,7 @@ class TestTrustScoreEndpoint:
 
     def _teardown_client(self, client: TestClient) -> None:
         from backend.main import app
-        from api.deps import get_current_user
+        from backend.api.deps import get_current_user
         app.dependency_overrides.pop(get_current_user, None)
 
     # ── Test: canonical 2-entity case ────────────────────────────────────────

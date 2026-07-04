@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
-from api.deps import CurrentUser, get_current_user
+from backend.api.deps import CurrentUser, get_current_user
 from backend.services.db import (
     ENGINE,
     EvidenceRecordRow,

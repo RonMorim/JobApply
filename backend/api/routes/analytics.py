@@ -48,9 +48,9 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from api.deps import CurrentUser, get_current_user, standard_rate_limit
-from services.analytics_service import compute_overview
-from services.db import ENGINE, ApplicationRow, JobRow
+from backend.api.deps import CurrentUser, get_current_user, standard_rate_limit
+from backend.services.analytics_service import compute_overview
+from backend.services.db import ENGINE, ApplicationRow, JobRow
 
 # Router-level standard_rate_limit (Phase 4 invariant) — covers /summary and
 # /overview alike, keyed per authenticated user.
