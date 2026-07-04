@@ -27,6 +27,8 @@ from typing import Optional, TypedDict
 import anthropic
 from dotenv import load_dotenv
 
+from services.llm_validation import harden_system_prompt, sanitize_text
+
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 
 logger = logging.getLogger(__name__)
@@ -115,16 +117,19 @@ async def parse_recruiter_email(subject: str, body: str) -> ParsedEmail:
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
+    # Defense in depth: the webhook route sanitizes before calling us, but any
+    # future caller must get the same treatment — untrusted email text goes
+    # through sanitize_text() before it is formatted into the prompt.
     user_msg = (
-        f"Subject: {subject.strip()}\n\n"
-        f"Body:\n{body.strip()[:3000]}"   # cap at 3 000 chars — more than enough
+        f"Subject: {sanitize_text(subject.strip())}\n\n"
+        f"Body:\n{sanitize_text(body.strip())[:3000]}"   # cap at 3 000 chars — more than enough
     )
 
     try:
         response = await client.messages.create(
             model      = _MODEL,
             max_tokens = _MAX_TOKENS,
-            system     = _SYSTEM_PROMPT,
+            system     = harden_system_prompt(_SYSTEM_PROMPT),
             messages   = [{"role": "user", "content": user_msg}],
         )
     except Exception as exc:

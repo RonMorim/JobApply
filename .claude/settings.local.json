@@ -89,7 +89,9 @@
       "Bash(git push *)",
       "Bash(venv/bin/python -c \"import sys; sys.path.insert\\(0,'backend'\\); import main; print\\('app imports cleanly ✓'\\)\")",
       "Bash(venv/bin/python -m py_compile backend/main.py backend/api/deps.py backend/services/llm_validation.py backend/services/outreach_service.py backend/services/cv_tailor_service.py backend/agents/ariel_tools.py backend/api/routes/chat.py backend/api/routes/outreach.py backend/api/routes/resumes.py backend/api/routes/jobs.py)",
-      "Bash(echo \"tsc EXIT=$?\")"
+      "Bash(echo \"tsc EXIT=$?\")",
+      "Bash(git mv *)",
+      "Bash(venv/bin/python -m py_compile backend/api/routes/chat.py backend/api/routes/webhooks.py backend/api/deps.py backend/main.py backend/services/email_parser.py)"
     ]
   }
 }

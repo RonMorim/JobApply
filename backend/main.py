@@ -24,7 +24,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from api.routes import agents, analytics, applications, ariel, auth, chat, crm, emails, history, jobs, outreach, profile, resumes, settings
+from api.routes import agents, analytics, applications, ariel, auth, chat, crm, history, jobs, outreach, profile, resumes, settings, webhooks
 from config import (
     AUTO_DISCOVERY,
     CREDIT_CONSERVATION_MODE,
@@ -378,7 +378,7 @@ app.include_router(settings.router,     prefix="/api/settings",     tags=["setti
 app.include_router(profile.router,      prefix="/api/profile",      tags=["profile"])
 app.include_router(outreach.router,     prefix="/api/outreach",     tags=["outreach"])
 app.include_router(analytics.router,    prefix="/api/analytics",    tags=["analytics"])
-app.include_router(emails.router,       prefix="/api/webhooks",     tags=["webhooks"])
+app.include_router(webhooks.router,     prefix="/api/webhooks",     tags=["webhooks"])
 app.include_router(crm.router,          prefix="/api/crm",          tags=["crm"])
 
 

@@ -455,10 +455,20 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
         }),
       })
 
+      if (res.status === 429) {
+        // Rate limited — show a polite "busy" notice instead of a raw error.
+        setMessages(prev => [...prev, {
+          role:    'assistant',
+          content: "I'm helping a lot of visitors right now — please give me a moment and try again shortly. 🙏",
+          ts:      Date.now(),
+        }])
+        return
+      }
+
       if (!res.ok || !res.body) {
-        // Non-streaming error response
-        const errData = await res.json().catch(() => ({})) as { error?: string }
-        throw new Error(errData.error ?? `HTTP ${res.status}`)
+        // Non-streaming error response (FastAPI uses `detail`, Next uses `error`)
+        const errData = await res.json().catch(() => ({})) as { error?: string; detail?: string }
+        throw new Error(errData.error ?? errData.detail ?? `HTTP ${res.status}`)
       }
 
       const reader     = res.body.getReader()

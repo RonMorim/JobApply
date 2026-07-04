@@ -349,7 +349,17 @@ def _rate_identity(request: Request) -> str:
                 pass
             return f"token:{token[:24]}"
     client = request.client
-    return f"ip:{client.host if client else 'unknown'}"
+    host   = client.host if client else "unknown"
+    # Trusted-proxy hop: the Next.js server proxies public traffic from
+    # 127.0.0.1, which would collapse every anonymous visitor into one bucket.
+    # Honour X-Forwarded-For ONLY when the direct peer is loopback — a remote
+    # caller can't spoof its way into a fresh bucket because their XFF header
+    # is ignored unless they already own the local proxy.
+    if host in ("127.0.0.1", "::1", "localhost"):
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if forwarded:
+            return f"ip:{forwarded}"
+    return f"ip:{host}"
 
 
 class RateLimiter:
@@ -395,5 +405,7 @@ class RateLimiter:
 # Shared limiter instances — import and attach as route/router dependencies.
 #   llm_rate_limit      → strict budget for expensive LLM-generation endpoints
 #   standard_rate_limit → generous budget for ordinary reads/writes
+#   webhook_rate_limit  → strict budget for unauthenticated inbound webhooks
 llm_rate_limit      = RateLimiter(max_requests=10, window_seconds=60, scope="llm")
 standard_rate_limit = RateLimiter(max_requests=60, window_seconds=60, scope="std")
+webhook_rate_limit  = RateLimiter(max_requests=30, window_seconds=60, scope="webhook")

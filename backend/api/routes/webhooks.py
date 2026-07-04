@@ -5,9 +5,23 @@ application pipeline automatically.
 POST /api/webhooks/inbound-email
   Body: { "sender": str, "subject": str, "body_text": str }
 
+Security (Phase 5)
+------------------
+• Rate limited per caller IP via webhook_rate_limit (api/deps.py) — blunts
+  email-bombing / replay floods.
+• Strict Pydantic max_length caps on every field (body_text ≤ 20 000 chars)
+  so a hostile payload can't exhaust memory or the LLM context window.
+• Shared-secret verification: when EMAIL_WEBHOOK_SECRET is set in the
+  environment, the X-Webhook-Secret header must match (constant-time
+  comparison) or the request is rejected with 401. When unset, a loud
+  warning is logged so local dev keeps working — set the secret in production.
+• sanitize_text() is applied to sender/subject/body BEFORE any regex or LLM
+  processing, neutralizing control-character / invisible-text prompt
+  injection hidden in the email body.
+
 Flow
 ----
-0. [NEW] Check for Gmail forwarding verification email FIRST.
+0. Check for Gmail forwarding verification email FIRST.
    If sender is forwarding-noreply@google.com or subject contains
    "Gmail Forwarding Confirmation", extract the 9-digit confirmation
    code and persist it in the kv_store table, then return early.
@@ -22,20 +36,55 @@ Flow
 """
 from __future__ import annotations
 
+import hmac
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from api.deps import webhook_rate_limit
 from services.db import ENGINE, ApplicationRow, KVRow
 from services.email_parser import parse_recruiter_email
+from services.llm_validation import sanitize_text
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(webhook_rate_limit)])
 logger = logging.getLogger(__name__)
+
+# ── Shared-secret verification ────────────────────────────────────────────────
+# The email provider (forwarding worker / inbound-parse service) is configured
+# to send this token in the X-Webhook-Secret header on every delivery.
+
+_WEBHOOK_SECRET = os.getenv("EMAIL_WEBHOOK_SECRET", "")
+
+if not _WEBHOOK_SECRET:
+    logger.warning(
+        "[email-webhook] EMAIL_WEBHOOK_SECRET is not set — the inbound email "
+        "webhook will accept UNAUTHENTICATED requests. Set it in backend/.env "
+        "and configure the email provider to send the X-Webhook-Secret header."
+    )
+
+
+def _verify_webhook_secret(x_webhook_secret: str = Header(default="")) -> None:
+    """
+    FastAPI dependency: constant-time check of the shared webhook secret.
+
+    Enforced whenever EMAIL_WEBHOOK_SECRET is configured; otherwise the
+    request is allowed through with a warning so local dev keeps working.
+    """
+    if not _WEBHOOK_SECRET:
+        logger.warning(
+            "[email-webhook] accepting request WITHOUT secret verification "
+            "(EMAIL_WEBHOOK_SECRET not configured)"
+        )
+        return
+    if not hmac.compare_digest(x_webhook_secret or "", _WEBHOOK_SECRET):
+        logger.warning("[email-webhook] rejected request — bad or missing X-Webhook-Secret")
+        raise HTTPException(status_code=401, detail="Invalid webhook secret.")
 
 # ── Gmail verification intercept ──────────────────────────────────────────────
 # Google sends a forwarding confirmation email whose subject is always
@@ -100,9 +149,12 @@ _UPDATABLE_STATUSES: frozenset[str] = frozenset({
 # ── Pydantic models ────────────────────────────────────────────────────────────
 
 class InboundEmailPayload(BaseModel):
-    sender:    str
-    subject:   str
-    body_text: str
+    # Strict caps (Phase 4 invariant): an email address tops out at 320 chars
+    # per RFC 5321; subject and body ceilings prevent email-bombing payloads
+    # from exhausting memory or the LLM context window.
+    sender:    str = Field(..., max_length=320)
+    subject:   str = Field(..., max_length=1_000)
+    body_text: str = Field(..., max_length=20_000)
 
 
 class EmailWebhookResponse(BaseModel):
@@ -155,21 +207,35 @@ def _now_iso() -> str:
 
 # ── Webhook endpoint ───────────────────────────────────────────────────────────
 
-@router.post("/inbound-email", response_model=EmailWebhookResponse)
+@router.post(
+    "/inbound-email",
+    response_model=EmailWebhookResponse,
+    dependencies=[Depends(_verify_webhook_secret)],
+)
 async def inbound_email_webhook(payload: InboundEmailPayload) -> EmailWebhookResponse:
     """
     Receive a recruiter email, classify it with AI, and update the
     application pipeline if a matching application is found.
+
+    Protected by webhook_rate_limit (router-level) and the X-Webhook-Secret
+    shared-secret check (route-level). All fields are sanitized before any
+    regex or LLM processing.
     """
+    # Neutralize control-character / invisible-text injection in every field
+    # BEFORE anything (regex intercept or LLM parser) reads them.
+    sender    = sanitize_text(payload.sender)
+    subject   = sanitize_text(payload.subject)
+    body_text = sanitize_text(payload.body_text)
+
     logger.info(
         "[email-webhook] received  sender=%r  subject=%r",
-        payload.sender, payload.subject[:80],
+        sender, subject[:80],
     )
 
     # ── Step 0: Gmail forwarding verification intercept ───────────────────────
     # Must run BEFORE the AI parser — verification emails contain no job data.
-    if _is_gmail_verification(payload.sender, payload.subject):
-        code = _extract_gmail_code(payload.body_text)
+    if _is_gmail_verification(sender, subject):
+        code = _extract_gmail_code(body_text)
         if code:
             _store_gmail_code(code)
             return EmailWebhookResponse(
@@ -198,10 +264,10 @@ async def inbound_email_webhook(payload: InboundEmailPayload) -> EmailWebhookRes
                 action         = "skipped",
             )
 
-    # ── Step 1: AI classification ─────────────────────────────────────────────
+    # ── Step 1: AI classification (sanitized inputs only) ────────────────────
     parsed = await parse_recruiter_email(
-        subject=payload.subject,
-        body=payload.body_text,
+        subject=subject,
+        body=body_text,
     )
 
     company_name  = parsed["company_name"]
