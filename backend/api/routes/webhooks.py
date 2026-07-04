@@ -43,7 +43,7 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -205,6 +205,24 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
+async def _draft_reply_task(user_id: str, job_id: str, email_text: str) -> None:
+    """
+    Background task (Phase 6): have the agent draft a follow-up reply to the
+    recruiter email that just advanced this application.
+
+    Lazy import — orchestrator pulls heavy deps (playwright, langgraph) that
+    must not load at webhook module import time. Errors are logged, never
+    raised: reply drafting is best-effort and must not affect webhook delivery.
+    """
+    try:
+        from backend.services.orchestrator import draft_recruiter_reply
+        await draft_recruiter_reply(user_id, job_id, email_text)
+    except Exception:
+        logger.exception(
+            "[email-webhook] reply drafting failed user=%s job=%s", user_id, job_id
+        )
+
+
 # ── Webhook endpoint ───────────────────────────────────────────────────────────
 
 @router.post(
@@ -212,7 +230,10 @@ def _now_iso() -> str:
     response_model=EmailWebhookResponse,
     dependencies=[Depends(_verify_webhook_secret)],
 )
-async def inbound_email_webhook(payload: InboundEmailPayload) -> EmailWebhookResponse:
+async def inbound_email_webhook(
+    payload:    InboundEmailPayload,
+    background: BackgroundTasks,
+) -> EmailWebhookResponse:
     """
     Receive a recruiter email, classify it with AI, and update the
     application pipeline if a matching application is found.
@@ -313,12 +334,19 @@ async def inbound_email_webhook(payload: InboundEmailPayload) -> EmailWebhookRes
         row.status       = db_status
         row.last_update  = _now_iso()
         application_id   = row.application_id
+        owner_user_id    = row.user_id
+        job_id           = row.job_id
         session.commit()
 
     logger.info(
         "[email-webhook] updated application_id=%r  company=%r  %r → %r",
         application_id, company_name, previous_status, db_status,
     )
+
+    # ── Step 4 (Phase 6): agent drafts a follow-up reply in the background ────
+    # Uses the SANITIZED body and the application's own user_id/job_id, so the
+    # draft is tenant-isolated to the application owner.
+    background.add_task(_draft_reply_task, owner_user_id, job_id, body_text)
 
     return EmailWebhookResponse(
         received        = True,

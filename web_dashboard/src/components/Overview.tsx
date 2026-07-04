@@ -6,7 +6,10 @@ import type { ApiFeedJob } from '@/lib/apiTypes'
 import { Skeleton } from './ui/Skeleton'
 import { SparkIcon, UserBadgeIcon, FileIcon, SlidersIcon, ArrowIcon } from './icons'
 import { TrustDashboard } from './TrustDashboard'
-import { fetchScraperStatus, type ScraperStatus } from '@/lib/api'
+import {
+  fetchAnalyticsOverview, fetchScraperStatus, RateLimitError,
+  type AnalyticsOverview, type ScraperStatus,
+} from '@/lib/api'
 
 // ── LinkedIn Scraper Status Banners ──────────────────────────────────────────
 //
@@ -138,6 +141,36 @@ function KPIRow({ jobsScannedToday, highMatches, actionsTaken, loading }: {
   )
 }
 
+
+// ── Analytics error banner ────────────────────────────────────────────────────
+// Shown when GET /api/analytics/overview fails; the KPI strip falls back to
+// locally derived numbers so the dashboard stays useful.
+
+function AnalyticsErrorBanner({ rateLimited, onRetry }: {
+  rateLimited: boolean
+  onRetry:     () => void
+}) {
+  return (
+    <div
+      className="rounded-xl px-4 py-3 flex items-center gap-3"
+      style={{ background: 'oklch(0.97 0.03 85)', border: '1px solid oklch(0.90 0.06 85)' }}
+      role="alert"
+    >
+      <span className="text-[15px] shrink-0" aria-hidden="true">⚠️</span>
+      <p className="flex-1 text-[12px] text-slate-600 leading-relaxed">
+        {rateLimited
+          ? 'Live analytics are briefly rate-limited — showing locally computed stats. Please try again in a minute.'
+          : 'Could not load live analytics — showing locally computed stats instead.'}
+      </p>
+      <button
+        onClick={onRetry}
+        className="shrink-0 text-[12px] font-semibold text-slate-600 hover:text-slate-900 underline underline-offset-2 transition-colors"
+      >
+        Retry
+      </button>
+    </div>
+  )
+}
 
 // ── Quick actions ─────────────────────────────────────────────────────────────
 // Plain bordered list — no card backgrounds, no shadows.
@@ -330,9 +363,42 @@ export function Overview({
   userId, jobsScannedToday, feedJobs, jobsLoading, savedIds, displayName,
   onSave, onReviewCV, onGo,
 }: OverviewProps) {
-  const highMatches  = feedJobs.filter(j => j.match_score > 85.0).length
-  const actionsTaken = feedJobs.filter(j => j.why_ron || j.has_tailored_cv).length
-  const previewJobs  = feedJobs.slice(0, 4)
+  // Locally derived fallbacks — used only when /api/analytics/overview fails.
+  const localHighMatches  = feedJobs.filter(j => j.match_score > 85.0).length
+  const localActionsTaken = feedJobs.filter(j => j.why_ron || j.has_tailored_cv).length
+  const previewJobs       = feedJobs.slice(0, 4)
+
+  // ── Server-side analytics (Phase 6) ─────────────────────────────────────────
+  // fetchAnalyticsOverview() awaits ensureFreshToken() before attaching auth
+  // headers, so the mount-time empty-token race cannot 401 this request.
+  const [overview,        setOverview]        = useState<AnalyticsOverview | null>(null)
+  const [overviewLoading, setOverviewLoading] = useState(true)
+  const [overviewError,   setOverviewError]   = useState<'rate_limited' | 'failed' | null>(null)
+
+  const loadOverview = useCallback(() => {
+    let cancelled = false
+    setOverviewLoading(true)
+    fetchAnalyticsOverview()
+      .then(d => {
+        if (cancelled) return
+        setOverview(d)
+        setOverviewError(null)
+      })
+      .catch(err => {
+        if (cancelled) return
+        setOverviewError(err instanceof RateLimitError ? 'rate_limited' : 'failed')
+      })
+      .finally(() => { if (!cancelled) setOverviewLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => loadOverview(), [loadOverview])
+
+  // Prefer server-computed KPIs; fall back to feed-derived numbers on error.
+  const kpiJobsScanned  = overview?.jobs_scanned_today ?? jobsScannedToday
+  const kpiHighMatches  = overview?.high_matches       ?? localHighMatches
+  const kpiActionsTaken = overview?.actions_taken      ?? localActionsTaken
+  const kpiLoading      = overviewLoading || (overview === null && jobsLoading)
 
   const handleMatchClick    = useCallback(()              => onGo('feed'),         [onGo])
   const handleMatchJobClick = useCallback((jobId: string) => onGo('feed', jobId),  [onGo])
@@ -379,13 +445,19 @@ export function Overview({
         </p>
       </div>
 
-      {/* ── KPI strip ───────────────────────────────────────────────────── */}
-      <section>
+      {/* ── KPI strip — server analytics with local fallback ─────────────── */}
+      <section className="space-y-4">
+        {overviewError && !overviewLoading && (
+          <AnalyticsErrorBanner
+            rateLimited={overviewError === 'rate_limited'}
+            onRetry={loadOverview}
+          />
+        )}
         <KPIRow
-          jobsScannedToday={jobsScannedToday}
-          highMatches={highMatches}
-          actionsTaken={actionsTaken}
-          loading={jobsLoading}
+          jobsScannedToday={kpiJobsScanned}
+          highMatches={kpiHighMatches}
+          actionsTaken={kpiActionsTaken}
+          loading={kpiLoading}
         />
       </section>
 

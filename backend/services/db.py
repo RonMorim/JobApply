@@ -156,6 +156,28 @@ class ApplicationRow(Base):
     reason         = Column(Text,   nullable=True)
 
 
+class RecruiterReplyDraftRow(Base):
+    """
+    Phase 6 — AI-drafted reply to an inbound recruiter email.
+
+    One row per drafted reply, linked to the owning user and the job whose
+    application the recruiter email referred to. Drafts are never sent
+    automatically — the user reviews them in the dashboard first.
+
+    Table is created by Base.metadata.create_all() in init_db() on startup.
+    """
+    __tablename__ = "recruiter_reply_drafts"
+
+    draft_id      = Column(String, primary_key=True)
+    user_id       = Column(String, nullable=False, index=True)
+    job_id        = Column(String, nullable=False, index=True)
+    # Sanitized excerpt of the inbound email the draft responds to (audit trail)
+    email_excerpt = Column(Text,   nullable=False, default="")
+    draft_text    = Column(Text,   nullable=False, default="")
+    status        = Column(String, nullable=False, default="draft")  # draft | sent | discarded
+    created_at    = Column(String, nullable=False, default="")
+
+
 def _migrate() -> None:
     """Add columns introduced after the initial schema without dropping data."""
 

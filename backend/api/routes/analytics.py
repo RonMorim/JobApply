@@ -48,10 +48,13 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from api.deps import CurrentUser, get_current_user
+from api.deps import CurrentUser, get_current_user, standard_rate_limit
+from services.analytics_service import compute_overview
 from services.db import ENGINE, ApplicationRow, JobRow
 
-router = APIRouter()
+# Router-level standard_rate_limit (Phase 4 invariant) — covers /summary and
+# /overview alike, keyed per authenticated user.
+router = APIRouter(dependencies=[Depends(standard_rate_limit)])
 logger = logging.getLogger(__name__)
 
 # ── Stage taxonomy ─────────────────────────────────────────────────────────────
@@ -105,6 +108,18 @@ def _extract_skill_keywords(tailored_cv: Any) -> list[str]:
 def _canonical_company(raw_name: str | None) -> str:
     """Normalise a company name for grouping purposes."""
     return (raw_name or "Unknown").strip()
+
+
+@router.get("/overview")
+async def analytics_overview(user: CurrentUser = Depends(get_current_user)) -> dict:
+    """
+    Dashboard KPI counters: Total Jobs Scanned, High Matches (score > 85),
+    and Actions Taken (outreach generated / CVs tailored).
+
+    Auth-protected; rate-limited at the router level; every underlying query
+    is scoped to the verified user.user_id (see services/analytics_service.py).
+    """
+    return compute_overview(user.user_id)
 
 
 @router.get("/summary")

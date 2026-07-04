@@ -549,6 +549,40 @@ export async function fetchAnalyticsSummary(): Promise<AnalyticsSummary> {
   return get<AnalyticsSummary>('/api/analytics/summary')
 }
 
+// ── Analytics overview (Phase 6 dashboard KPIs) ───────────────────────────────
+
+export interface AnalyticsOverview {
+  total_jobs_scanned: number
+  jobs_scanned_today: number
+  high_matches:       number
+  actions_taken:      number
+}
+
+/** Thrown on HTTP 429 so callers can render a "busy" state instead of an error. */
+export class RateLimitError extends Error {
+  constructor() {
+    super('Rate limit exceeded')
+    this.name = 'RateLimitError'
+  }
+}
+
+/**
+ * GET /api/analytics/overview — direct fetch (not the get<> wrapper) so a 429
+ * can be surfaced as RateLimitError without tripping the global auth-error
+ * sign-out. ensureFreshToken() runs first to avoid the mount-time empty-token
+ * race (see _ensureFreshToken docs above).
+ */
+export async function fetchAnalyticsOverview(): Promise<AnalyticsOverview> {
+  await ensureFreshToken()
+  const res = await fetch(`${BASE}/api/analytics/overview`, {
+    headers: getAuthHeaders(),
+    cache:   'no-store',
+  })
+  if (res.status === 429) throw new RateLimitError()
+  if (!res.ok) throw new Error(`analytics/overview HTTP ${res.status}`)
+  return res.json() as Promise<AnalyticsOverview>
+}
+
 // ── ATS keyword extraction ────────────────────────────────────────────────────
 
 export async function fetchAtsKeywords(jobId: string): Promise<AtsKeywordsResponse> {
