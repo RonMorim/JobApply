@@ -11,6 +11,7 @@ import { TOKENS }           from '@/lib/tokens'
 import {
   importLinkedInProfile,
   saveRolePreferences,
+  uploadCvFiles,
   type RoleSeniorityItem,
   type SeniorityLevel,
 } from '@/lib/api'
@@ -291,6 +292,12 @@ function OnboardingContent() {
   const [liBusy,    setLiBusy]    = useState(false)
   const [liError,   setLiError]   = useState('')
 
+  // CV upload state (in-place — no intermediate screen)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [cvBusy,      setCvBusy]      = useState(false)
+  const [cvFileCount, setCvFileCount] = useState(0)
+  const [cvError,     setCvError]     = useState('')
+
   const allLeveled = selected.length > 0 && selected.every(r => r.seniority !== null)
 
   const handleSavePreferences = async () => {
@@ -309,19 +316,40 @@ function OnboardingContent() {
     }
   }
 
-  // Shared completion path: CV upload finishes on /profile-builder; the
-  // LinkedIn stub finishes here. Both mark the profile complete, arm Ariel's
-  // welcome, and hard-redirect to the Overview dashboard.
+  // Shared completion path for CV upload and the LinkedIn stub:
+  //   1. Sync local state FIRST — OnboardingContext (greeting data incl. the
+  //      user's role/seniority picks) and Supabase user metadata — so the
+  //      dashboard renders in the profile_completed state with no flash.
+  //   2. Arm Ariel's one-shot welcome.
+  //   3. SOFT-navigate with router.push (no window.location.assign — the hard
+  //      reload caused ChunkLoadError and dropped all local React state).
   const completeOnboarding = async () => {
     const meta        = user?.user_metadata as Record<string, unknown> | null
     const displayName = resolveDisplayName(user?.email, meta)
     setOnboarding({
       fullName:    displayName,
       careerStage: typeof meta?.career_stage === 'string' ? meta.career_stage : '',
+      roles: selected
+        .filter((r): r is PendingRole & { seniority: SeniorityLevel } => r.seniority !== null)
+        .map(r => ({ role: r.role, seniority: r.seniority })),
     })
     try { await updateUserMeta({ profile_completed: true }) } catch { /* backfilled by sync-user later */ }
     armArielWelcome()
-    window.location.assign('/?tab=overview')   // hard redirect to Overview
+    router.push('/?tab=overview')   // soft transition to Overview
+  }
+
+  const handleCvFiles = async (files: File[]) => {
+    if (!files.length || cvBusy) return
+    setCvBusy(true)
+    setCvFileCount(files.length)
+    setCvError('')
+    try {
+      await uploadCvFiles(files)   // all files go up together under the `files` key
+      await completeOnboarding()
+    } catch (err) {
+      setCvError(err instanceof Error ? err.message : 'Upload failed. Please try again.')
+      setCvBusy(false)
+    }
   }
 
   const handleLinkedInImport = async () => {
@@ -450,19 +478,50 @@ function OnboardingContent() {
           profile and we&apos;ll build your Master Profile in seconds.
         </p>
 
-        {/* Upload CV — hands off to the real upload flow */}
+        {/* Upload CV — opens the OS file picker directly (no extra screen) */}
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".pdf,.docx"
+          multiple
+          className="hidden"
+          onChange={e => {
+            const files = Array.from(e.target.files ?? [])
+            e.target.value = ''
+            void handleCvFiles(files)
+          }}
+        />
         <button
-          onClick={() => router.push('/profile-builder')}
-          className="w-full flex items-center gap-4 rounded-2xl border-2 border-dashed border-slate-200 p-5 hover:border-teal-400 hover:bg-teal-50 transition text-left group"
+          onClick={() => fileRef.current?.click()}
+          disabled={cvBusy || liBusy}
+          className="w-full flex items-center gap-4 rounded-2xl border-2 border-dashed border-slate-200 p-5 hover:border-teal-400 hover:bg-teal-50 transition text-left group disabled:opacity-60 disabled:pointer-events-none"
         >
           <div className="w-11 h-11 rounded-xl bg-slate-100 group-hover:bg-teal-100 flex items-center justify-center text-slate-500 group-hover:text-teal-600 flex-shrink-0 transition">
-            <UploadIcon s={20} />
+            {cvBusy ? <SpinnerIcon s={20} /> : <UploadIcon s={20} />}
           </div>
           <div>
-            <p className="text-[14px] font-semibold text-slate-800">Upload existing CV</p>
-            <p className="text-[12px] text-slate-400 mt-0.5">PDF, DOCX — max 10 MB</p>
+            {cvBusy ? (
+              <>
+                <p className="text-[14px] font-semibold text-slate-800">
+                  Uploading {cvFileCount} file{cvFileCount !== 1 ? 's' : ''}…
+                </p>
+                <p className="text-[12px] text-slate-400 mt-0.5">
+                  Our AI is analyzing your experience, skills, and education
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-[14px] font-semibold text-slate-800">Upload existing CV</p>
+                <p className="text-[12px] text-slate-400 mt-0.5">
+                  PDF, DOCX — you can select several files at once
+                </p>
+              </>
+            )}
           </div>
         </button>
+        {cvError && (
+          <p className="text-[12px] text-red-600 mt-2" role="alert">{cvError}</p>
+        )}
 
         {/* Divider */}
         <div className="flex items-center gap-3 my-5">
@@ -523,10 +582,11 @@ function OnboardingContent() {
           </div>
         )}
 
-        {/* Skip */}
+        {/* Skip — straight to the dashboard (profile stays incomplete) */}
         <button
-          onClick={() => router.push('/profile-builder')}
-          className="w-full mt-6 text-[13px] text-slate-400 hover:text-slate-600 transition"
+          onClick={() => router.push('/?tab=overview')}
+          disabled={cvBusy || liBusy}
+          className="w-full mt-6 text-[13px] text-slate-400 hover:text-slate-600 transition disabled:opacity-40"
         >
           Skip for now — I&apos;ll add my details later
         </button>

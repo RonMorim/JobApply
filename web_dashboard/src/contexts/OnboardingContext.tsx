@@ -24,6 +24,10 @@ import {
 export interface OnboardingData {
   fullName:    string
   careerStage: string
+  /** Target roles + per-role seniority picked during onboarding (optional —
+   *  older sessionStorage payloads won't have it). Ariel's welcome message
+   *  uses this to greet the user with their actual selections. */
+  roles?: { role: string; seniority: string }[]
 }
 
 interface OnboardingCtxValue {

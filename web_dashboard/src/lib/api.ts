@@ -436,6 +436,12 @@ export async function saveRolePreferences(prefs: RolePreferences): Promise<void>
   await post<RolePreferences, { status: string }>('/api/profile/preferences', prefs)
 }
 
+/** Fetch the saved role/seniority preferences (empty arrays when unset). */
+export async function fetchRolePreferences(): Promise<RolePreferences> {
+  const data = await get<{ roles: RoleSeniorityItem[] }>('/api/profile/preferences')
+  return { roles: data.roles ?? [] }
+}
+
 export interface LinkedInImportResponse {
   status:   string
   imported: boolean

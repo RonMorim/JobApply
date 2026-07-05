@@ -22,6 +22,17 @@ const STAGE_LABELS: Record<string, string> = {
   management: 'Management',
 }
 
+// Per-role seniority levels from the onboarding preferences step.
+const SENIORITY_LABELS: Record<string, string> = {
+  junior:    'Junior',
+  entry:     'Entry-Level',
+  mid:       'Mid-Level',
+  senior:    'Senior',
+  lead:      'Lead',
+  director:  'Director',
+  executive: 'Executive',
+}
+
 const LINE_HEIGHT_PX    = 20   // matches leading-5 / text-[13px] in the widget
 const MAX_LINES         = 4
 const MAX_TEXTAREA_H    = LINE_HEIGHT_PX * MAX_LINES + 32  // 4 lines + py-4 (16px top + 16px bottom)
@@ -735,15 +746,36 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
   }, [])
 
   // ── Greeting ───────────────────────────────────────────────────────────────
+  // Every variable is interpolated only when it actually has a value — an
+  // empty careerStage or missing roles must never render as "****".
   useEffect(() => {
     if (greetRef.current || !onboardingData) return
     greetRef.current = true
     const first = onboardingData.fullName.split(' ')[0]
-    const stage = STAGE_LABELS[onboardingData.careerStage] ?? onboardingData.careerStage
+
+    // Prefer the live role/seniority preferences captured during onboarding.
+    const roles = (onboardingData.roles ?? []).filter(r => r.role)
+    let context = ''
+    if (roles.length > 0) {
+      const parts = roles.slice(0, 3).map(r => {
+        const level = SENIORITY_LABELS[r.seniority] ?? ''
+        return level ? `**${level} ${r.role}**` : `**${r.role}**`
+      })
+      const list = parts.length > 1
+        ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+        : parts[0]
+      context = ` I see you're targeting ${list} roles — great, that gives me a clear direction.`
+    } else {
+      const stage = onboardingData.careerStage
+        ? (STAGE_LABELS[onboardingData.careerStage] ?? onboardingData.careerStage)
+        : ''
+      if (stage) context = ` I see you're at the **${stage}** stage.`
+    }
+
     setMessages([{
       id:      makeId(),
       role:    'assistant',
-      content: `Hi ${first}! Great to have you here. I see you're at the **${stage}** stage — let's build your Master Profile. What would you like to tackle first?`,
+      content: `Hi ${first}! Great to have you here.${context} Let's refine your Master Profile together — what would you like to tackle first?`,
     }])
     clearOnboarding()
   // eslint-disable-next-line react-hooks/exhaustive-deps

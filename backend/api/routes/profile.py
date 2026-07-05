@@ -251,6 +251,18 @@ class RolePreferencesPayload(BaseModel):
     roles: List[RoleSeniorityItem] = Field(default_factory=list, max_length=10)
 
 
+@router.get("/preferences")
+async def get_role_preferences(user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Return the calling user's saved role/seniority preferences."""
+    from backend.services.user_profile_store import load as user_load
+
+    prefs = (user_load(user.user_id).get("role_preferences") or {})
+    return {
+        "roles":         prefs.get("roles", []),
+        "target_titles": prefs.get("target_titles", []),
+    }
+
+
 @router.post("/preferences")
 async def save_role_preferences(
     body: RolePreferencesPayload,

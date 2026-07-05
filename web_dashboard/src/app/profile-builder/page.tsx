@@ -6,7 +6,7 @@ import { OnboardingHeader } from '@/components/OnboardingHeader'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOnboarding } from '@/contexts/OnboardingContext'
 import { resolveDisplayName } from '@/lib/nameUtils'
-import { uploadCvFiles } from '@/lib/api'
+import { fetchRolePreferences, uploadCvFiles } from '@/lib/api'
 import { armArielWelcome } from '@/lib/onboardingFlags'
 import { TOKENS } from '@/lib/tokens'
 
@@ -161,23 +161,28 @@ function ProfileBuilderContent() {
       setState('done')
 
       // ── Onboarding completion handoff ────────────────────────────────────
-      // 1. Mark the profile complete (unlocks Ariel globally).
-      // 2. Seed the greeting data Ariel personalises her welcome with.
-      // 3. Arm the one-shot auto-open flag, then HARD redirect to Overview —
-      //    a full reload so every dashboard hook fetches fresh profile data.
-      const meta = user?.user_metadata as Record<string, unknown> | null
+      // 1. Seed the greeting data Ariel personalises her welcome with —
+      //    including the saved role/seniority preferences (live fetch).
+      // 2. Mark the profile complete (unlocks Ariel globally) BEFORE routing
+      //    so the dashboard renders in the completed state with no flash.
+      // 3. Arm the one-shot auto-open flag, then SOFT-navigate with
+      //    router.push — no window.location.assign (the hard reload caused
+      //    ChunkLoadError and wiped local React state).
+      const meta  = user?.user_metadata as Record<string, unknown> | null
+      const prefs = await fetchRolePreferences().catch(() => ({ roles: [] }))
       setOnboarding({
         fullName:    resolveDisplayName(user?.email, meta),
         careerStage: typeof meta?.career_stage === 'string' ? meta.career_stage : '',
+        roles:       prefs.roles,
       })
       try { await updateUserMeta({ profile_completed: true }) } catch { /* backfilled by sync-user */ }
       armArielWelcome()
-      setTimeout(() => window.location.assign('/?tab=overview'), 1400)
+      setTimeout(() => router.push('/?tab=overview'), 1400)
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Upload failed. Please try again.')
       setState('error')
     }
-  }, [user, updateUserMeta, setOnboarding])
+  }, [user, updateUserMeta, setOnboarding, router])
 
   return (
     <div className="flex flex-col items-center justify-center flex-1 px-4 py-12">
