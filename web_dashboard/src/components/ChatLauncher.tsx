@@ -7,6 +7,16 @@ import { TOKENS }  from '@/lib/tokens'
 
 const ONBOARDING_ROUTES = ['/onboarding', '/profile-builder']
 
+// Strict check against BOTH the React pathname and the live browser URL —
+// during soft-routing transitions they can disagree for a frame, which let
+// the launcher flash mid-onboarding. Hidden if either says onboarding.
+function isOnOnboardingRoute(reactPathname: string | null): boolean {
+  const browserPathname = typeof window !== 'undefined' ? window.location.pathname : ''
+  return ONBOARDING_ROUTES.some(r =>
+    (reactPathname ?? '').startsWith(r) || browserPathname.startsWith(r)
+  )
+}
+
 function ChatIcon() {
   return (
     <svg width={18} height={18} viewBox="0 0 24 24" fill="none"
@@ -26,7 +36,7 @@ export function ChatLauncher() {
   // Ariel only exists for completed profiles, and never during onboarding.
   const profileCompleted =
     (user?.user_metadata as Record<string, unknown> | undefined)?.profile_completed === true
-  const onOnboardingRoute = ONBOARDING_ROUTES.some(r => pathname?.startsWith(r))
+  const onOnboardingRoute = isOnOnboardingRoute(pathname)
 
   // Only show for authenticated, onboarded users; hide if any chat panel is open
   if (!user || !profileCompleted || onOnboardingRoute || isOpen || isEliyaOpen) return null

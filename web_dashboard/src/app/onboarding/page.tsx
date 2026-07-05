@@ -9,7 +9,6 @@ import { useOnboarding }    from '@/contexts/OnboardingContext'
 import { resolveDisplayName } from '@/lib/nameUtils'
 import { TOKENS }           from '@/lib/tokens'
 import {
-  importLinkedInProfile,
   saveRolePreferences,
   uploadCvFiles,
   type RoleSeniorityItem,
@@ -32,15 +31,6 @@ function UploadIcon({ s = 20 }: { s?: number }) {
     <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" />
       <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
-    </svg>
-  )
-}
-
-function LinkedInIcon({ s = 20 }: { s?: number }) {
-  return (
-    <svg width={s} height={s} viewBox="0 0 24 24" fill="currentColor">
-      <path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z" />
-      <rect x="2" y="9" width="4" height="12" /><circle cx="4" cy="4" r="2" />
     </svg>
   )
 }
@@ -286,12 +276,6 @@ function OnboardingContent() {
   const [saving,    setSaving]    = useState(false)
   const [saveError, setSaveError] = useState('')
 
-  // LinkedIn import state
-  const [liOpen,    setLiOpen]    = useState(false)
-  const [liUrl,     setLiUrl]     = useState('')
-  const [liBusy,    setLiBusy]    = useState(false)
-  const [liError,   setLiError]   = useState('')
-
   // CV upload state (in-place — no intermediate screen)
   const fileRef = useRef<HTMLInputElement>(null)
   const [cvBusy,      setCvBusy]      = useState(false)
@@ -316,7 +300,7 @@ function OnboardingContent() {
     }
   }
 
-  // Shared completion path for CV upload and the LinkedIn stub:
+  // Completion path for the CV upload:
   //   1. Sync local state FIRST — OnboardingContext (greeting data incl. the
   //      user's role/seniority picks) and Supabase user metadata — so the
   //      dashboard renders in the profile_completed state with no flash.
@@ -349,19 +333,6 @@ function OnboardingContent() {
     } catch (err) {
       setCvError(err instanceof Error ? err.message : 'Upload failed. Please try again.')
       setCvBusy(false)
-    }
-  }
-
-  const handleLinkedInImport = async () => {
-    if (!liUrl.trim() || liBusy) return
-    setLiBusy(true)
-    setLiError('')
-    try {
-      await importLinkedInProfile(liUrl.trim())
-      await completeOnboarding()
-    } catch (err) {
-      setLiError(err instanceof Error ? err.message : 'Import failed. Please check the URL and try again.')
-      setLiBusy(false)
     }
   }
 
@@ -474,8 +445,8 @@ function OnboardingContent() {
       <div className="max-w-md mx-auto bg-white rounded-3xl border border-slate-100 shadow-sm p-8">
         <h2 className="text-[20px] font-bold text-slate-900 mb-1">Import your existing profile</h2>
         <p className="text-[13.5px] text-slate-500 mb-7 leading-relaxed">
-          Skip the blank slate — upload your current CV or point us at your LinkedIn
-          profile and we&apos;ll build your Master Profile in seconds.
+          Skip the blank slate — upload your current CV and we&apos;ll build your
+          Master Profile in seconds.
         </p>
 
         {/* Upload CV — opens the OS file picker directly (no extra screen) */}
@@ -493,7 +464,7 @@ function OnboardingContent() {
         />
         <button
           onClick={() => fileRef.current?.click()}
-          disabled={cvBusy || liBusy}
+          disabled={cvBusy}
           className="w-full flex items-center gap-4 rounded-2xl border-2 border-dashed border-slate-200 p-5 hover:border-teal-400 hover:bg-teal-50 transition text-left group disabled:opacity-60 disabled:pointer-events-none"
         >
           <div className="w-11 h-11 rounded-xl bg-slate-100 group-hover:bg-teal-100 flex items-center justify-center text-slate-500 group-hover:text-teal-600 flex-shrink-0 transition">
@@ -523,69 +494,10 @@ function OnboardingContent() {
           <p className="text-[12px] text-red-600 mt-2" role="alert">{cvError}</p>
         )}
 
-        {/* Divider */}
-        <div className="flex items-center gap-3 my-5">
-          <div className="flex-1 h-px bg-slate-100" />
-          <span className="text-[12px] text-slate-400 font-medium">or</span>
-          <div className="flex-1 h-px bg-slate-100" />
-        </div>
-
-        {/* LinkedIn import — URL input wired to the stub endpoint */}
-        {!liOpen ? (
-          <button
-            onClick={() => setLiOpen(true)}
-            className="w-full flex items-center gap-4 rounded-2xl border-2 border-dashed border-slate-200 p-5 hover:border-blue-400 hover:bg-blue-50 transition text-left group"
-          >
-            <div className="w-11 h-11 rounded-xl bg-slate-100 group-hover:bg-blue-100 flex items-center justify-center text-slate-500 group-hover:text-blue-600 flex-shrink-0 transition">
-              <LinkedInIcon s={20} />
-            </div>
-            <div>
-              <p className="text-[14px] font-semibold text-slate-800">Import from LinkedIn</p>
-              <p className="text-[12px] text-slate-400 mt-0.5">Paste your public profile URL</p>
-            </div>
-          </button>
-        ) : (
-          <div className="rounded-2xl border-2 border-blue-200 bg-blue-50/40 p-5">
-            <label htmlFor="li-url" className="flex items-center gap-2 text-[13px] font-semibold text-slate-800 mb-2.5">
-              <span className="text-blue-600"><LinkedInIcon s={16} /></span>
-              LinkedIn profile URL
-            </label>
-            <input
-              id="li-url"
-              value={liUrl}
-              onChange={e => setLiUrl(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') void handleLinkedInImport() }}
-              placeholder="https://www.linkedin.com/in/your-name"
-              maxLength={300}
-              disabled={liBusy}
-              className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-[13.5px] text-slate-800 placeholder:text-slate-300 outline-none focus:border-blue-400 transition disabled:opacity-60"
-            />
-            {liError && (
-              <p className="text-[12px] text-red-600 mt-2" role="alert">{liError}</p>
-            )}
-            <div className="flex items-center gap-2.5 mt-3.5">
-              <button
-                onClick={() => void handleLinkedInImport()}
-                disabled={liBusy || !liUrl.trim()}
-                className="flex-1 h-10 rounded-xl text-[13px] font-semibold text-white bg-blue-600 hover:bg-blue-700 transition disabled:opacity-40 flex items-center justify-center gap-2"
-              >
-                {liBusy ? (<><SpinnerIcon s={14} /> Importing…</>) : 'Import profile'}
-              </button>
-              <button
-                onClick={() => { setLiOpen(false); setLiError('') }}
-                disabled={liBusy}
-                className="text-[13px] text-slate-400 hover:text-slate-600 px-3 transition disabled:opacity-40"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Skip — straight to the dashboard (profile stays incomplete) */}
         <button
           onClick={() => router.push('/?tab=overview')}
-          disabled={cvBusy || liBusy}
+          disabled={cvBusy}
           className="w-full mt-6 text-[13px] text-slate-400 hover:text-slate-600 transition disabled:opacity-40"
         >
           Skip for now — I&apos;ll add my details later

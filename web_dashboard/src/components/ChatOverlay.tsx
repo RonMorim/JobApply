@@ -12,6 +12,20 @@ import { consumeArielWelcome } from '@/lib/onboardingFlags'
 // Routes that belong to the onboarding flow — Ariel must never render there.
 const ONBOARDING_ROUTES = ['/onboarding', '/profile-builder']
 
+/**
+ * Strict onboarding-route check: consults BOTH the React pathname (usePathname)
+ * and the live browser URL. During soft-routing transitions the two can be
+ * momentarily out of sync — usePathname updates on React's schedule, while
+ * window.location changes immediately — which let Ariel flash for a frame.
+ * She is hidden if EITHER source says we're on an onboarding route.
+ */
+function isOnOnboardingRoute(reactPathname: string | null): boolean {
+  const browserPathname = typeof window !== 'undefined' ? window.location.pathname : ''
+  return ONBOARDING_ROUTES.some(r =>
+    (reactPathname ?? '').startsWith(r) || browserPathname.startsWith(r)
+  )
+}
+
 // ── Public-chat attachment support ────────────────────────────────────────────
 
 interface FileAttachment {
@@ -791,7 +805,7 @@ export function ChatOverlay() {
   // onboarding routes — she is introduced AFTER onboarding, not during it.
   const profileCompleted =
     (user?.user_metadata as Record<string, unknown> | undefined)?.profile_completed === true
-  const onOnboardingRoute = ONBOARDING_ROUTES.some(r => pathname?.startsWith(r))
+  const onOnboardingRoute = isOnOnboardingRoute(pathname)
   const arielAvailable    = Boolean(user) && profileCompleted && !onOnboardingRoute
 
   useEffect(() => { setMounted(true) }, [])

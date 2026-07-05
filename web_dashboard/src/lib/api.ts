@@ -90,7 +90,12 @@ export function setAuthErrorHandler(handler: () => void): void {
 
 /** Call on every non-ok response; fires the sign-out callback for auth errors. */
 function _handleHttpError(res: Response, path: string): never {
-  if (res.status === 401 || res.status === 503) {
+  // Only 401 signals a possibly-dead session. 503 means the BACKEND is
+  // unavailable/misconfigured (e.g. LLM key missing) — treating it as an auth
+  // failure hard-evicted logged-in users the moment any degraded endpoint was
+  // hit (notably right after onboarding, when Ariel auto-opens and the chat
+  // endpoints are called for the first time).
+  if (res.status === 401) {
     _onAuthError?.()
   }
   throw new Error(`${res.status} ${res.statusText} — ${path}`)
