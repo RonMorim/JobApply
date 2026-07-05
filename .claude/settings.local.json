@@ -102,7 +102,16 @@
       "Bash(backend/.venv/bin/python -m pytest backend/tests/test_profile_trust.py::TestComputeProfileTrustScore::test_score_clamped_to_100 -q)",
       "Bash(venv/bin/python -m py_compile backend/api/routes/profile.py backend/api/routes/auth.py backend/api/deps.py backend/services/db.py)",
       "Bash(venv/bin/python -m py_compile backend/api/routes/profile.py)",
-      "Bash(venv/bin/python -m py_compile backend/api/routes/profile.py backend/api/routes/auth.py)"
+      "Bash(venv/bin/python -m py_compile backend/api/routes/profile.py backend/api/routes/auth.py)",
+      "Bash(git fetch *)",
+      "Bash(git rev-list *)",
+      "Bash(git restore *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(gh auth *)",
+      "Bash(git config *)",
+      "Read(//Users/ronmorim/.ssh/**)",
+      "Bash(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com)"
     ]
   }
 }
