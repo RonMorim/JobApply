@@ -22,11 +22,11 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
-from backend.api.deps import CurrentUser, get_current_user
+from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, standard_rate_limit
 from backend.services.db import (
     ENGINE,
     EvidenceRecordRow,
@@ -49,7 +49,9 @@ from backend.services.confidence_matrix_service import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# Phase 4 invariant: every route carries at least the standard per-user budget.
+# LLM-backed routes (cv-upload) additionally attach llm_rate_limit per-route.
+router = APIRouter(dependencies=[Depends(standard_rate_limit)])
 
 
 def _parse_ev_dt(value) -> datetime:
@@ -228,6 +230,130 @@ async def trigger_research(req: ResearchRequest, user: CurrentUser = Depends(get
         raise HTTPException(status_code=502, detail=f"Research failed: {exc}")
 
 
+# ── POST /api/profile/preferences ─────────────────────────────────────────────
+# Onboarding: target roles, each with its own seniority level, captured before
+# CV upload. Stored in both the per-user profile JSON (role_preferences — read
+# by the matching pipeline) and the master_profiles row, so future job scoring
+# can use them without a file read.
+
+_SENIORITY_LEVELS: frozenset = frozenset({
+    "junior", "entry", "mid", "senior", "lead", "director", "executive",
+})
+
+
+class RoleSeniorityItem(BaseModel):
+    role:      str = Field(..., max_length=80)
+    seniority: str = Field(..., max_length=40)
+
+
+class RolePreferencesPayload(BaseModel):
+    # Per-role seniority (Phase 8): [{role: "Account Manager", seniority: "mid"}, …]
+    roles: List[RoleSeniorityItem] = Field(default_factory=list, max_length=10)
+
+
+@router.post("/preferences")
+async def save_role_preferences(
+    body: RolePreferencesPayload,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """Persist onboarding role/seniority preferences for the calling user only."""
+    from backend.services.llm_validation import sanitize_text
+    from backend.services.user_profile_store import load as user_load, save as user_save
+
+    roles: list[dict] = []
+    for item in body.roles:
+        role      = sanitize_text(item.role.strip())[:80]
+        seniority = sanitize_text(item.seniority.strip().lower())[:40]
+        if not role:
+            continue
+        if seniority not in _SENIORITY_LEVELS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"seniority for {role!r} must be one of {sorted(_SENIORITY_LEVELS)}",
+            )
+        roles.append({"role": role, "seniority": seniority})
+    roles = roles[:10]
+
+    target_titles = [r["role"] for r in roles]
+
+    # Per-user profile JSON — the store the matching pipeline reads.
+    profile = user_load(user.user_id)
+    prefs = profile.setdefault("role_preferences", {})
+    prefs["target_titles"] = target_titles   # legacy consumers: flat title list
+    prefs["roles"]         = roles           # per-role seniority pairs
+    user_save(user.user_id, profile)
+
+    # Mirror into master_profiles for DB-side consumers.
+    _now = datetime.now(timezone.utc).isoformat()
+    with Session(ENGINE) as _sess:
+        row = _sess.get(MasterProfileRow, user.user_id)
+        if row:
+            mp = dict(row.master_profile or {})
+            mp["role_preferences"] = {"target_titles": target_titles, "roles": roles}
+            row.master_profile = mp
+            row.updated_at     = _now
+        else:
+            _sess.add(MasterProfileRow(
+                user_id           = user.user_id,
+                onboarding_status = "incomplete",
+                master_profile    = {"role_preferences": {"target_titles": target_titles, "roles": roles}},
+                created_at        = _now,
+                updated_at        = _now,
+            ))
+        _sess.commit()
+
+    logger.info("[profile/preferences] user=%s roles=%d", user.user_id, len(roles))
+    return {"status": "ok", "roles": roles}
+
+
+# ── POST /api/profile/linkedin-import ─────────────────────────────────────────
+# Phase 8 stub: accepts a LinkedIn profile URL and returns a mock success after
+# a short delay. Real scraping is intentionally NOT implemented (LinkedIn's
+# anti-bot protections); this endpoint exists so the onboarding UI flow is
+# complete end-to-end and the URL is stored for the future integration.
+
+class LinkedInImportPayload(BaseModel):
+    linkedin_url: str = Field(..., max_length=300)
+
+
+@router.post("/linkedin-import")
+async def linkedin_import(
+    body: LinkedInImportPayload,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Mock LinkedIn import (stub). Validates the URL shape, stores it on the
+    user's profile for the future real integration, sleeps ~2 s to simulate
+    processing, and returns a mock success. No scraping is performed.
+    """
+    import asyncio
+    import re as _re
+
+    from backend.services.llm_validation import sanitize_text
+    from backend.services.user_profile_store import load as user_load, save as user_save
+
+    url = sanitize_text(body.linkedin_url.strip())[:300]
+    if not _re.match(r"^https?://(www\.)?linkedin\.com/in/[A-Za-z0-9_%\-\.]+/?$", url):
+        raise HTTPException(
+            status_code=422,
+            detail="Please provide a valid LinkedIn profile URL (https://www.linkedin.com/in/your-name).",
+        )
+
+    # Persist the URL now so the future real importer can pick it up.
+    profile = user_load(user.user_id)
+    profile.setdefault("personal", {})["linkedin_url"] = url
+    user_save(user.user_id, profile)
+
+    await asyncio.sleep(2)   # simulate processing; real import replaces this
+
+    logger.info("[profile/linkedin-import] user=%s url=%s (stub)", user.user_id, url)
+    return {
+        "status":   "ok",
+        "imported": False,   # stub — no data was actually scraped
+        "message":  "LinkedIn profile saved. Full import is coming soon — meanwhile your CV powers the profile.",
+    }
+
+
 # ── POST /api/profile/cv-upload ──────────────────────────────────────────────
 
 _CV_MAX_BYTES = 10 * 1024 * 1024   # 10 MB per file
@@ -285,7 +411,7 @@ def _cv_claims_to_parsed_entities(cv_claims: dict) -> list[dict]:
     return entities
 
 
-@router.post("/cv-upload")
+@router.post("/cv-upload", dependencies=[Depends(llm_rate_limit)])
 async def upload_cv_files(
     files:     List[UploadFile]  = File(..., description="One or more CV files (PDF or DOCX)"),
     entity_id: Optional[str]     = Form(None, description=(
@@ -379,7 +505,11 @@ async def upload_cv_files(
                 entity_name = row[1]
 
                 ev_id = str(__import__("uuid").uuid4())
-                from datetime import datetime, timezone
+                # NOTE: never re-import datetime locally here — a function-local
+                # `from datetime import datetime` makes `datetime` a local for
+                # the WHOLE function, so Mode A (which skips this branch) would
+                # crash with UnboundLocalError at its own datetime.now() call.
+                # The module-level import (top of file) is the one to use.
                 now   = datetime.now(timezone.utc).isoformat()
                 from backend.services.confidence_math import BASE_WEIGHTS
                 conn.execute(

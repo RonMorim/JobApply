@@ -5,53 +5,55 @@ import AuthGuard   from '@/components/AuthGuard'
 
 // ── Trending job seed data ─────────────────────────────────────────────────────
 
+// Deliberately diverse placeholder mix — this page is shown to visitors and
+// incomplete profiles across every field, not just product management.
 const TRENDING_JOBS = [
   {
     id: '1',
-    title: 'Senior Product Manager',
-    company: 'Meta',
+    title: 'Account Manager',
+    company: 'Monday.com',
     location: 'Tel Aviv, IL',
-    tags: ['B2C', 'Growth', 'Data-driven'],
+    tags: ['SaaS', 'Client-facing', 'B2B'],
     postedAgo: '2h ago',
   },
   {
     id: '2',
-    title: 'Product Manager — Payments',
-    company: 'Stripe',
-    location: 'Remote',
-    tags: ['Fintech', 'API', 'B2B'],
-    postedAgo: '5h ago',
+    title: 'Full Stack Developer',
+    company: 'Wix',
+    location: 'Tel Aviv, IL',
+    tags: ['React', 'Node.js', 'Platform'],
+    postedAgo: '4h ago',
   },
   {
     id: '3',
-    title: 'Group Product Manager',
-    company: 'Wix',
-    location: 'Tel Aviv, IL',
-    tags: ['Platform', 'Leadership'],
-    postedAgo: '8h ago',
+    title: 'Marketing Director',
+    company: 'Fiverr',
+    location: 'Hybrid — Tel Aviv',
+    tags: ['Brand', 'Growth', 'Leadership'],
+    postedAgo: '7h ago',
   },
   {
     id: '4',
-    title: 'Product Manager — Mobile',
-    company: 'Monday.com',
-    location: 'Tel Aviv, IL',
-    tags: ['Mobile', 'SaaS', 'B2B'],
+    title: 'Data Analyst',
+    company: 'Lightricks',
+    location: 'Jerusalem, IL',
+    tags: ['SQL', 'Dashboards', 'Product Analytics'],
     postedAgo: '1d ago',
   },
   {
     id: '5',
-    title: 'Technical Product Manager',
-    company: 'Cloudinary',
-    location: 'Petah Tikva, IL',
-    tags: ['Infrastructure', 'APIs'],
+    title: 'Customer Success Manager',
+    company: 'Gong',
+    location: 'Remote',
+    tags: ['Enterprise', 'Onboarding', 'Renewals'],
     postedAgo: '1d ago',
   },
   {
     id: '6',
-    title: 'Principal Product Manager',
-    company: 'Check Point',
-    location: 'Tel Aviv, IL',
-    tags: ['Cybersecurity', 'Enterprise'],
+    title: 'Product Manager',
+    company: 'Stripe',
+    location: 'Remote',
+    tags: ['Fintech', 'API', 'B2B'],
     postedAgo: '2d ago',
   },
 ]
@@ -72,18 +74,17 @@ function CompanyAvatar({ name }: { name: string }) {
   )
 }
 
-function ScorePending() {
+function MatchScoreTeaser() {
+  // Inviting placeholder — replaces the old "Match score pending" +
+  // "Complete your profile to unlock" pair that read like an error state.
   return (
-    <div
-      className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium bg-slate-400/10 text-ja-muted border border-slate-400/20"
-    >
+    <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-ja-primary bg-ja-primarySubtle rounded-full px-2.5 py-1">
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
       </svg>
-      Match score pending
-    </div>
+      Sign in to see your match score
+    </span>
   )
 }
 
@@ -116,9 +117,8 @@ function JobCard({ job }: { job: typeof TRENDING_JOBS[0] }) {
         ))}
       </div>
 
-      <div className="flex items-center justify-between pt-1 border-t border-slate-50">
-        <ScorePending />
-        <span className="text-[11px] text-slate-400 italic">Complete your profile to unlock</span>
+      <div className="flex items-center pt-1 border-t border-slate-50">
+        <MatchScoreTeaser />
       </div>
     </div>
   )
@@ -129,15 +129,11 @@ function JobCard({ job }: { job: typeof TRENDING_JOBS[0] }) {
 function DiscoverContent() {
   return (
     <div className="min-h-screen bg-slate-50">
+      {/* Single primary CTA policy: the "Complete profile" banner below is the
+          one and only profile CTA on this page — no duplicate header button. */}
       <header className="bg-white border-b border-slate-100 sticky top-0 z-20">
-        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
+        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center">
           <span className="text-base font-extrabold tracking-tight text-slate-900">JobApply</span>
-          <Link
-            href="/onboarding"
-            className="text-sm font-semibold text-white px-4 py-2 rounded-lg bg-ja-primary hover:bg-ja-primaryHover transition-colors"
-          >
-            Build your profile
-          </Link>
         </div>
       </header>
 

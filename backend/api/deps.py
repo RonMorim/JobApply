@@ -25,9 +25,14 @@ Setup
   backend/.env should contain at least one of:
     SUPABASE_URL=https://<ref>.supabase.co   ← enables RS256/JWKS
     SUPABASE_JWT_SECRET=<raw-secret>         ← HS256 fallback only
-"""
-from __future__ import annotations
 
+NOTE — no `from __future__ import annotations` in this module, on purpose.
+With postponed annotations, FastAPI (on Python 3.9) cannot resolve the
+`request: Request` annotation on RateLimiter.__call__ (a callable-instance
+dependency) and silently degrades it to a REQUIRED QUERY PARAMETER named
+`request`, making every rate-limited endpoint return 422 for all callers.
+All annotations below are runtime-valid on 3.9 without the future import.
+"""
 import logging
 import os
 import threading

@@ -1,11 +1,16 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { usePathname } from 'next/navigation'
 import { useChat }   from '@/contexts/ChatContext'
 import type { ChatMessage } from '@/contexts/ChatContext'
 import { useAuth }   from '@/contexts/AuthContext'
 import { TOKENS }    from '@/lib/tokens'
 import { ArielChat } from '@/components/ArielChat'
+import { consumeArielWelcome } from '@/lib/onboardingFlags'
+
+// Routes that belong to the onboarding flow — Ariel must never render there.
+const ONBOARDING_ROUTES = ['/onboarding', '/profile-builder']
 
 // ── Public-chat attachment support ────────────────────────────────────────────
 
@@ -777,17 +782,34 @@ function OverlayShell({
 // Opening one closes the other (enforced in ChatContext).
 
 export function ChatOverlay() {
-  const { isOpen, closeChat, isEliyaOpen, closeEliya } = useChat()
+  const { isOpen, closeChat, isEliyaOpen, closeEliya, openChat } = useChat()
   const { user, loading } = useAuth()
+  const pathname = usePathname()
   const [mounted, setMounted] = useState(false)
 
+  // Ariel is only available once the profile is complete, and never on
+  // onboarding routes — she is introduced AFTER onboarding, not during it.
+  const profileCompleted =
+    (user?.user_metadata as Record<string, unknown> | undefined)?.profile_completed === true
+  const onOnboardingRoute = ONBOARDING_ROUTES.some(r => pathname?.startsWith(r))
+  const arielAvailable    = Boolean(user) && profileCompleted && !onOnboardingRoute
+
   useEffect(() => { setMounted(true) }, [])
+
+  // One-shot auto-open after onboarding completes: the hard redirect to
+  // /?tab=overview arms the flag; consume it here and open Ariel, whose
+  // greeting (seeded via OnboardingContext) welcomes the user by name.
+  useEffect(() => {
+    if (!mounted || !arielAvailable) return
+    if (consumeArielWelcome()) openChat()
+  }, [mounted, arielAvailable, openChat])
+
   if (!mounted || loading) return null
 
   return (
     <>
-      {/* Ariel panel — teal Career Agent, authenticated only */}
-      {user && (
+      {/* Ariel panel — teal Career Agent, completed-profile users only */}
+      {arielAvailable && (
         <OverlayShell
           isOpen={isOpen}
           onBackdropClick={closeChat}

@@ -418,6 +418,38 @@ export async function uploadVerificationDocument(
   return res.json()
 }
 
+// ── Onboarding role/seniority preferences ─────────────────────────────────────
+
+export type SeniorityLevel = 'junior' | 'entry' | 'mid' | 'senior' | 'lead' | 'director' | 'executive'
+
+export interface RoleSeniorityItem {
+  role:      string
+  seniority: SeniorityLevel
+}
+
+export interface RolePreferences {
+  roles: RoleSeniorityItem[]
+}
+
+/** Persist onboarding target roles, each with its own seniority (used by job matching). */
+export async function saveRolePreferences(prefs: RolePreferences): Promise<void> {
+  await post<RolePreferences, { status: string }>('/api/profile/preferences', prefs)
+}
+
+export interface LinkedInImportResponse {
+  status:   string
+  imported: boolean
+  message:  string
+}
+
+/** Stub LinkedIn import — stores the URL server-side; no scraping yet. */
+export async function importLinkedInProfile(linkedinUrl: string): Promise<LinkedInImportResponse> {
+  return post<{ linkedin_url: string }, LinkedInImportResponse>(
+    '/api/profile/linkedin-import',
+    { linkedin_url: linkedinUrl },
+  )
+}
+
 // ── CV upload & aggregation ───────────────────────────────────────────────────
 
 export interface CvClaimsResult {

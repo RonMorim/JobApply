@@ -222,6 +222,15 @@ def _migrate() -> None:
                     "ALTER TABLE master_profiles ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"
                 ))
                 conn.commit()
+            if "email" not in existing_mp:
+                conn.execute(text(
+                    "ALTER TABLE master_profiles ADD COLUMN email TEXT"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_master_profiles_email "
+                    "ON master_profiles (email)"
+                ))
+                conn.commit()
 
     # ── master_profiles — create if not yet present (safe on existing DBs) ──────
     with ENGINE.connect() as conn:
@@ -319,6 +328,11 @@ class MasterProfileRow(Base):
     __tablename__ = "master_profiles"
 
     user_id            = Column(String, primary_key=True)
+    # Verified email from the Supabase JWT — lower-cased. Used by
+    # POST /api/auth/sync-user to link accounts across auth providers
+    # (email login vs Google OAuth) when Supabase issues a different `sub`
+    # for the same person.
+    email              = Column(String, nullable=True, index=True)
     onboarding_status  = Column(String, nullable=False, default="incomplete")
     master_profile     = Column(JSON,   nullable=False, default=dict)
     # Admin-dashboard foundation (Phase 2) — flipped manually in the DB for
@@ -346,7 +360,11 @@ class ProfileEntityRow(Base):
     # Set to 1 by ingest_negative_flag when score < MANUAL_REVIEW_THRESHOLD.
     # Cleared to 0 whenever a positive evidence ingest pushes score back above threshold.
     # Stored as INTEGER (0/1) to avoid SQLite CHECK constraint issues with a new string value.
-    manual_review_required = Column(Integer, nullable=False, default=0)
+    # server_default matters: ProfileUpdateService writes with raw SQL INSERTs
+    # that omit this column, so a fresh create_all() DB needs an SQL-level
+    # DEFAULT (Python-side `default=` is invisible to raw SQL) — otherwise
+    # every CV ingest fails with a NOT NULL IntegrityError.
+    manual_review_required = Column(Integer, nullable=False, default=0, server_default="0")
     # Hierarchical skill tier — set during evidence ingest by ProfileUpdateService.
     # Core_Mastery:       direct hands-on proficiency, no AI assistance.
     # System_Orchestration: understands architecture; uses AI for boilerplate.
@@ -356,9 +374,9 @@ class ProfileEntityRow(Base):
     # architecture_confidence: score from portfolio / STAR / CV evidence.
     # syntax_confidence:       score from manual_assessment evidence only.
     # verification_level:      VERIFIED_MANUAL | ORCHESTRATION_ONLY | UNVERIFIED
-    architecture_confidence = Column(Float,  nullable=False, default=0.0)
-    syntax_confidence       = Column(Float,  nullable=False, default=0.0)
-    verification_level      = Column(String, nullable=False, default="UNVERIFIED")
+    architecture_confidence = Column(Float,  nullable=False, default=0.0, server_default="0.0")
+    syntax_confidence       = Column(Float,  nullable=False, default=0.0, server_default="0.0")
+    verification_level      = Column(String, nullable=False, default="UNVERIFIED", server_default="UNVERIFIED")
     last_evidence_at       = Column(String,  nullable=True)
     created_at             = Column(String,  nullable=False)
     updated_at             = Column(String,  nullable=False)
@@ -381,7 +399,9 @@ class EvidenceRecordRow(Base):
     extra_metadata  = Column(Text,    nullable=True)   # JSON blob — 'metadata' is reserved by SQLAlchemy
     # True when the candidate used AI to generate boilerplate but understood
     # the architecture.  Triggers AI_AUGMENTATION_PENALTY (×0.6) in scoring.
-    is_ai_assisted  = Column(Integer, nullable=False, default=0)
+    # server_default for the same reason as profile_entities: evidence rows are
+    # written via raw SQL INSERTs that omit this column.
+    is_ai_assisted  = Column(Integer, nullable=False, default=0, server_default="0")
 
 
 class ShadowScoreRow(Base):

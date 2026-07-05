@@ -1,8 +1,11 @@
 'use client'
 
+import { usePathname } from 'next/navigation'
 import { useChat } from '@/contexts/ChatContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { TOKENS }  from '@/lib/tokens'
+
+const ONBOARDING_ROUTES = ['/onboarding', '/profile-builder']
 
 function ChatIcon() {
   return (
@@ -18,9 +21,15 @@ function ChatIcon() {
 export function ChatLauncher() {
   const { isOpen, isEliyaOpen, jobContext, openChat } = useChat()
   const { user } = useAuth()
+  const pathname = usePathname()
 
-  // Only show for authenticated users; hide if any chat panel is open
-  if (!user || isOpen || isEliyaOpen) return null
+  // Ariel only exists for completed profiles, and never during onboarding.
+  const profileCompleted =
+    (user?.user_metadata as Record<string, unknown> | undefined)?.profile_completed === true
+  const onOnboardingRoute = ONBOARDING_ROUTES.some(r => pathname?.startsWith(r))
+
+  // Only show for authenticated, onboarded users; hide if any chat panel is open
+  if (!user || !profileCompleted || onOnboardingRoute || isOpen || isEliyaOpen) return null
 
   const hasContext = Boolean(jobContext)
 

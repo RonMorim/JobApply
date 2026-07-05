@@ -60,7 +60,7 @@ import { TOKENS }               from '@/lib/tokens'
 type MigrationPhase = 'idle' | 'in_flight' | 'error' | 'done'
 
 function MigrationGate({ children }: { children: React.ReactNode }) {
-  const { user, session } = useAuth()
+  const { user, session, updateUserMeta } = useAuth()
   const [phase,    setPhase]    = useState<MigrationPhase>('idle')
   const [errMsg,   setErrMsg]   = useState<string>('')
   const firedRef = useRef(false)   // guards against React StrictMode double-invoke
@@ -79,17 +79,57 @@ function MigrationGate({ children }: { children: React.ReactNode }) {
 
     // ── Fast path: flag already set in this browser ───────────────────────────
     if (localStorage.getItem(storageKey)) {
+      // Non-blocking backfill for pre-Phase-8 accounts: if user metadata lacks
+      // profile_completed but the backend says the profile has real data, set
+      // the flag so Ariel stays available for existing users.
+      const metaFlag = (user.user_metadata as Record<string, unknown> | null)?.profile_completed
+      if (metaFlag !== true) {
+        fetch('/api/auth/sync-user', {
+          method:  'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+        })
+          .then(r => (r.ok ? r.json() : null))
+          .then((sync: { profile_completed?: boolean } | null) => {
+            if (sync?.profile_completed) {
+              void updateUserMeta({ profile_completed: true }).catch(() => { /* retried next visit */ })
+            }
+          })
+          .catch(() => { /* non-fatal */ })
+      }
       setPhase('done')
       return
     }
 
-    // ── Slow path: fire the migration ─────────────────────────────────────────
+    // ── Slow path: sync identity, then fire the migration ─────────────────────
     const fire = () => {
       firedRef.current = true
       setPhase('in_flight')
       setErrMsg('')
 
-      fetch('/api/auth/migrate-legacy-data', {
+      // Provider-agnostic identity sync FIRST (account linking by verified
+      // email): if this login minted a new Supabase user for an email that
+      // already owns data (e.g. Google OAuth after email signup), the backend
+      // re-links all rows to this user_id before anything else reads them.
+      fetch('/api/auth/sync-user', {
+        method:  'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+      })
+        .then(r => (r.ok ? r.json() : null))
+        .then((sync: { status?: string; linked_from?: string; profile_completed?: boolean } | null) => {
+          if (sync?.status === 'linked') {
+            console.info('[sync-user] account linked from', sync.linked_from)
+          }
+          // Backfill for accounts created before the profile_completed flag:
+          // the backend reports whether the master profile already has real
+          // data — mirror that into Supabase user metadata so Ariel unlocks.
+          const metaFlag = (user.user_metadata as Record<string, unknown> | null)?.profile_completed
+          if (sync?.profile_completed && metaFlag !== true) {
+            void updateUserMeta({ profile_completed: true }).catch(() => { /* retried next login */ })
+          }
+        })
+        .catch(() => { /* non-fatal — migration below still runs */ })
+        .then(() =>
+          fetch('/api/auth/migrate-legacy-data', {
         method:  'POST',
         headers: {
           'Content-Type':  'application/json',
@@ -149,7 +189,7 @@ function MigrationGate({ children }: { children: React.ReactNode }) {
           console.error('[MigrationGate] Migration failed — dashboard blocked:', err.message)
           setErrMsg(err.message)
           setPhase('error')
-        })
+        }))
     }
 
     runMigration.current = fire

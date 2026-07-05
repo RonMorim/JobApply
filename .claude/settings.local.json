@@ -99,7 +99,10 @@
       "Bash(venv/bin/python -m py_compile backend/main.py backend/tests/conftest.py backend/tests/test_profile_trust.py backend/api/routes/analytics.py backend/api/routes/profile.py backend/api/routes/auth.py backend/api/routes/crm.py backend/api/routes/ariel.py backend/api/routes/agents.py backend/api/routes/webhooks.py backend/api/routes/applications.py backend/api/routes/jobs.py backend/api/routes/settings.py backend/services/email_parser.py backend/services/analytics_service.py)",
       "Bash(venv/bin/python -m pytest backend/tests -q)",
       "Bash(backend/.venv/bin/python -m pytest backend/tests -q)",
-      "Bash(backend/.venv/bin/python -m pytest backend/tests/test_profile_trust.py::TestComputeProfileTrustScore::test_score_clamped_to_100 -q)"
+      "Bash(backend/.venv/bin/python -m pytest backend/tests/test_profile_trust.py::TestComputeProfileTrustScore::test_score_clamped_to_100 -q)",
+      "Bash(venv/bin/python -m py_compile backend/api/routes/profile.py backend/api/routes/auth.py backend/api/deps.py backend/services/db.py)",
+      "Bash(venv/bin/python -m py_compile backend/api/routes/profile.py)",
+      "Bash(venv/bin/python -m py_compile backend/api/routes/profile.py backend/api/routes/auth.py)"
     ]
   }
 }
