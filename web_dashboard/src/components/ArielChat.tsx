@@ -1383,17 +1383,35 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
             className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition text-[15px] leading-none"
           >↺</button>
           {onClose && (
-            <button
-              onClick={onClose}
-              title="Close"
-              className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
-            >
-              <svg width={13} height={13} viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
+            <>
+              {/* Minimize — hides the panel; the conversation stays intact and
+                  can be reopened from the floating "Ask Ariel" launcher. */}
+              <button
+                onClick={onClose}
+                title="Minimize"
+                aria-label="Minimize Ariel"
+                className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+              >
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                  <line x1="5" y1="19" x2="19" y2="19" />
+                </svg>
+              </button>
+              {/* Close — also hides the panel (state preserved); reopen anytime
+                  via the launcher. */}
+              <button
+                onClick={onClose}
+                title="Close"
+                aria-label="Close Ariel"
+                className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+              >
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </>
           )}
         </div>
       </div>

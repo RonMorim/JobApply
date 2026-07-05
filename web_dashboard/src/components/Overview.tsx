@@ -159,8 +159,8 @@ function AnalyticsErrorBanner({ rateLimited, onRetry }: {
       <span className="text-[15px] shrink-0" aria-hidden="true">⚠️</span>
       <p className="flex-1 text-[12px] text-slate-600 leading-relaxed">
         {rateLimited
-          ? 'Live analytics are briefly rate-limited — showing locally computed stats. Please try again in a minute.'
-          : 'Could not load live analytics — showing locally computed stats instead.'}
+          ? 'Live analytics are briefly rate-limited. Please try again in a minute.'
+          : 'Could not load live analytics right now.'}
       </p>
       <button
         onClick={onRetry}
@@ -363,10 +363,7 @@ export function Overview({
   userId, jobsScannedToday, feedJobs, jobsLoading, savedIds, displayName,
   onSave, onReviewCV, onGo,
 }: OverviewProps) {
-  // Locally derived fallbacks — used only when /api/analytics/overview fails.
-  const localHighMatches  = feedJobs.filter(j => j.match_score > 85.0).length
-  const localActionsTaken = feedJobs.filter(j => j.why_ron || j.has_tailored_cv).length
-  const previewJobs       = feedJobs.slice(0, 4)
+  const previewJobs = feedJobs.slice(0, 4)
 
   // ── Server-side analytics (Phase 6) ─────────────────────────────────────────
   // fetchAnalyticsOverview() awaits ensureFreshToken() before attaching auth
@@ -394,11 +391,15 @@ export function Overview({
 
   useEffect(() => loadOverview(), [loadOverview])
 
-  // Prefer server-computed KPIs; fall back to feed-derived numbers on error.
-  const kpiJobsScanned  = overview?.jobs_scanned_today ?? jobsScannedToday
-  const kpiHighMatches  = overview?.high_matches       ?? localHighMatches
-  const kpiActionsTaken = overview?.actions_taken      ?? localActionsTaken
-  const kpiLoading      = overviewLoading || (overview === null && jobsLoading)
+  // KPIs come EXCLUSIVELY from the analytics API (real per-user DB counts).
+  // No client-derived or mock fallbacks: when the API has no data (or fails),
+  // the honest answer is 0 — the previous feed-derived fallback counted
+  // agent-generated analyses as "actions taken" and showed numbers for
+  // actions the user never performed.
+  const kpiJobsScanned  = overview?.jobs_scanned_today ?? 0
+  const kpiHighMatches  = overview?.high_matches       ?? 0
+  const kpiActionsTaken = overview?.actions_taken      ?? 0
+  const kpiLoading      = overviewLoading
 
   const handleMatchClick    = useCallback(()              => onGo('feed'),         [onGo])
   const handleMatchJobClick = useCallback((jobId: string) => onGo('feed', jobId),  [onGo])
@@ -478,7 +479,7 @@ export function Overview({
         <section>
           <QuickActions
             newCount={jobsScannedToday}
-            savedCount={savedIds.length || 3}
+            savedCount={savedIds.length}
             onGo={onGo}
           />
         </section>

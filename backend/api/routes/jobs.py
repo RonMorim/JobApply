@@ -569,8 +569,17 @@ RULES:
   • Keep every bullet under 220 characters.
   • NEVER invent facts, metrics, or experience not already present in the text.
   • Do not add or remove bullet points unless the instruction explicitly says to.
+  • NEVER use the em-dash character ('—') in any text you write. Use standard \
+punctuation only (commas, periods, or a plain hyphen '-').
   • Output ONLY a raw JSON object — no markdown fences, no commentary.
   • Schema: {"sections": [...same structure as input...], "reply": "one sentence confirming what you changed"}
+
+AGGRESSIVE DELETION ENFORCEMENT (highest priority):
+If the user explicitly asks to remove, delete, or drop a section (e.g. "delete the \
+military service section", "remove the Wix experience"), you MUST completely remove \
+that section object from the "sections" array in your output. Do NOT leave it empty, \
+do NOT summarize it, do NOT merely shorten its bullets. Remove the key and its \
+contents entirely from the JSON structure, and confirm the removal in "reply".
 """
 
 
@@ -584,6 +593,8 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
     """
     import os, json as _json, re as _re, anthropic
 
+    from backend.services.llm_validation import harden_system_prompt, sanitize_text
+
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY is not set.")
@@ -594,7 +605,7 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
     )
     user_msg = (
         f"SECTIONS:\n{sections_json}\n\n"
-        f"INSTRUCTION: {body.instruction}"
+        f"INSTRUCTION: {sanitize_text(body.instruction)}"
     )
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
@@ -602,7 +613,7 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
         response = await client.messages.create(
             model      = "claude-haiku-4-5",
             max_tokens = 2000,
-            system     = _COPILOT_SYSTEM,
+            system     = harden_system_prompt(_COPILOT_SYSTEM),
             messages   = [{"role": "user", "content": user_msg}],
         )
     except anthropic.APIError as exc:

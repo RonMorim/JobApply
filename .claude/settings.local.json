@@ -111,7 +111,9 @@
       "Bash(gh auth *)",
       "Bash(git config *)",
       "Read(//Users/ronmorim/.ssh/**)",
-      "Bash(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com)"
+      "Bash(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com)",
+      "Bash(awk -F: '{print $1}')",
+      "Bash(venv/bin/python -m py_compile backend/api/routes/jobs.py backend/agents/copilot.py backend/services/llm_validation.py)"
     ]
   }
 }
