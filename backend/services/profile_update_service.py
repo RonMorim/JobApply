@@ -90,7 +90,12 @@ def _parse_dt(value) -> datetime:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value
-    dt = datetime.fromisoformat(str(value))
+    s = str(value)
+    if s.endswith("Z"):
+        # Python < 3.11's datetime.fromisoformat() rejects the 'Z' UTC
+        # suffix; seeded/legacy rows use it, so normalize before parsing.
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
