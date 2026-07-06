@@ -126,7 +126,8 @@
       "Bash(venv/bin/python3 -m backend.scripts.sync_trust_scores)",
       "Bash(venv/bin/python3 -c ' *)",
       "Bash(venv/bin/python3 -m py_compile backend/api/routes/chat.py)",
-      "Bash(grep -E \"\\\\.py$\")"
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(.venv/bin/python -c ' *)"
     ]
   }
 }

@@ -968,11 +968,15 @@ async def copilot_edit(req: CopilotRequest, user: CurrentUser = Depends(get_curr
     except Exception as exc:
         logger.warning("[resumes/copilot] Skills pruning step failed (non-fatal): %s", exc)
 
-    try:
-        save_tailored_cv(req.job_id, user.user_id, cv_data, match_score_dict)
-    except Exception as exc:
-        logger.warning("[resumes/copilot] Cache save failed (non-fatal): %s", exc)
-
+    # ── Draft mode ─────────────────────────────────────────────────────────────
+    # Copilot edits are session-scoped by design: they must NOT be written to
+    # the persistent cache here. The frontend holds this response's cv_data as
+    # a local draft; it only becomes durable if the user explicitly calls
+    # POST /save-cv ("Save Changes to Base Profile"). If the modal is closed
+    # without saving, the next /cached/{job_id} read returns the last
+    # explicitly-persisted state (from /tailor or a prior /save-cv), not this
+    # edit — this is what makes Copilot edits temporary/undoable across
+    # sessions instead of silently permanent.
     return CopilotResponse(
         status          = "success",
         changes_summary = result.get("changes_summary"),
@@ -980,6 +984,34 @@ async def copilot_edit(req: CopilotRequest, user: CurrentUser = Depends(get_curr
         pdf_b64         = base64.b64encode(pdf_bytes).decode(),
         match_score     = match_score_dict,
     )
+
+
+# ── Explicit draft save ───────────────────────────────────────────────────────
+
+class SaveCvRequest(BaseModel):
+    job_id:      str
+    cv_data:     dict
+    match_score: Optional[dict] = None
+
+
+@router.post("/save-cv")
+async def save_cv(req: SaveCvRequest, user: CurrentUser = Depends(get_current_user)):
+    """
+    Explicitly persist the caller-supplied cv_data (+ match_score) as the
+    saved base state for this job — the "Save Changes to Base Profile" action.
+
+    This is the ONLY way Copilot/LiveEditor edits become durable. /tailor
+    still auto-persists its own freshly-generated output (that's the base
+    profile CV, not a draft edit); /copilot no longer does.
+    """
+    all_jobs = job_store.get_all(user.user_id)
+    job      = next((j for j in all_jobs if j.job_id == req.job_id), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
+
+    save_tailored_cv(req.job_id, user.user_id, req.cv_data, req.match_score)
+    logger.info("[resumes/save-cv] Explicitly saved draft CV for job %s", req.job_id)
+    return {"status": "ok"}
 
 
 # ── Gatekeeper revision ───────────────────────────────────────────────────────

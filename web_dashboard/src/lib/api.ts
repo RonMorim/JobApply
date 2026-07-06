@@ -239,6 +239,22 @@ export async function fetchCachedCV(jobId: string): Promise<TailorOkResponse | n
   return res.json() as Promise<TailorOkResponse>
 }
 
+/**
+ * Explicitly persist the given cv_data (+ match_score) as the saved base
+ * state for this job. This is the ONLY way Copilot/LiveEditor draft edits
+ * become durable — until this is called, edits live only in local React
+ * state and are discarded if the modal is closed/reopened.
+ */
+export async function saveCv(
+  jobId: string,
+  cvData: Record<string, unknown>,
+  matchScore: Record<string, unknown> | null,
+): Promise<void> {
+  await post('/api/resumes/save-cv', {
+    job_id: jobId, cv_data: cvData, match_score: matchScore,
+  })
+}
+
 export async function fetchMatchScore(
   jobId: string,
   cvData: Record<string, unknown>,
