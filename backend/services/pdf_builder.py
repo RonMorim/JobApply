@@ -232,12 +232,11 @@ def _build_skills(skills_data: dict) -> str:
 
 def _build_languages(languages: list[dict]) -> str:
     """
-    Render each language as "Name — Level".  The separator is written directly
-    into the HTML text (not a CSS ::before) so it survives PDF rendering and
-    isn't at the mercy of per-template pseudo-element rules — some templates
-    had the rule, some didn't, so the level silently read as unformatted or
-    visually detached from its language. A language with no level renders
-    alone, with no dangling separator.
+    Render each language's name and level as two separate spans — no literal
+    separator between them.  Some templates lay lang-name/lang-level side by
+    side with a gap, others split them to opposite ends of the row
+    (justify-content: space-between); a hardcoded "— " prefix only reads
+    correctly in the first layout, so it's left to each template's own CSS.
     """
     if not languages:
         return ""
@@ -247,7 +246,7 @@ def _build_languages(languages: list[dict]) -> str:
         level = _t(lang.get("level",    ""), 35)
         if not name:
             continue
-        level_html = f'<span class="lang-level"> — {level}</span>' if level else ""
+        level_html = f'<span class="lang-level">{level}</span>' if level else ""
         rows.append(
             f'<div class="lang-row">'
             f'  <span class="lang-name">{name}</span>'
