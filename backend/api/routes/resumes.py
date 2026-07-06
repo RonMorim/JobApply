@@ -801,11 +801,13 @@ async def copilot_edit(req: CopilotRequest, user: CurrentUser = Depends(get_curr
     cv_data = result["cv_data"]
 
     # Re-inject canonical static sections (education, military, skills) from
-    # USER_PROFILE after every Copilot edit.  This guarantees the military
-    # block is never silently dropped when the LLM omits it, and ensures the
-    # canonical profile dates/unit/role are always present regardless of what
-    # the model returned.
-    cv_data = _inject_static_sections(cv_data)
+    # USER_PROFILE after every Copilot edit.  This guarantees these sections
+    # are never silently dropped when the LLM merely forgets to include them,
+    # and ensures the canonical profile dates/unit/role are always present in
+    # that case. respect_deletions=True means an explicit null/[] the
+    # CopilotAgent wrote for one of these keys (an intentional user deletion)
+    # is honored instead of being overwritten from the Master Profile.
+    cv_data = _inject_static_sections(cv_data, respect_deletions=True)
 
     try:
         pdf_bytes = await build_pdf(cv_data, template_id="t2_modern")

@@ -174,12 +174,25 @@ AGGRESSIVE DELETION ENFORCEMENT — HIGHEST PRIORITY
 ══════════════════════════════════════════
 If the user explicitly asks to remove, delete, or drop a section (e.g.
 "delete the military service section", "remove education", "drop the
-volunteering part"), you MUST completely remove that block from the JSON
-structure. Do NOT leave it empty, do NOT summarize it, do NOT shorten it
-instead. Remove the key and its contents entirely (for array members such
-as an experience entry, remove the element from the array; for top-level
-sections such as "military", delete the key itself or set it to the schema's
-explicit empty value if the key is required).
+volunteering part"), you MUST completely remove that block's content. Do NOT
+leave it empty, do NOT summarize it, do NOT shorten it instead.
+
+  • For array members such as an experience entry: remove the element from
+    the array entirely.
+  • For the top-level static sections "military", "education", and "skills"
+    (the ones canonically sourced from the Master Profile): DO NOT simply
+    omit the key from your JSON output. Omitting a key is indistinguishable
+    from you forgetting to include it, and the backend will silently restore
+    it from the Master Profile, undoing the deletion. Instead you MUST
+    include the exact key in cv_data and set its value explicitly to `null`
+    (object-type sections, e.g. "military") or an empty array `[]` /
+    `{"categories": []}` (list/object-type sections, e.g. "education",
+    "skills"). An explicit null/[] is the only signal the backend treats as
+    an intentional deletion — anything else is treated as an accidental
+    omission and gets re-injected.
+  • For other top-level sections (e.g. "languages", "volunteering") that are
+    not re-injected from the Master Profile, omitting the key or clearing it
+    to an empty value both work — there is no re-injection to guard against.
 
 This rule OVERRIDES the "warning" triggers above whenever the user names the
 target section explicitly and unambiguously. An explicit, named deletion

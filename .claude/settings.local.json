@@ -113,7 +113,9 @@
       "Read(//Users/ronmorim/.ssh/**)",
       "Bash(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com)",
       "Bash(awk -F: '{print $1}')",
-      "Bash(venv/bin/python -m py_compile backend/api/routes/jobs.py backend/agents/copilot.py backend/services/llm_validation.py)"
+      "Bash(venv/bin/python -m py_compile backend/api/routes/jobs.py backend/agents/copilot.py backend/services/llm_validation.py)",
+      "Bash(pip show *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('backend/agents/tailor.py'\\).read\\(\\)\\); ast.parse\\(open\\('backend/agents/copilot.py'\\).read\\(\\)\\); ast.parse\\(open\\('backend/api/routes/resumes.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
