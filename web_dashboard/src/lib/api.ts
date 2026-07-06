@@ -88,8 +88,15 @@ export function setAuthErrorHandler(handler: () => void): void {
   _onAuthError = handler
 }
 
-/** Call on every non-ok response; fires the sign-out callback for auth errors. */
-function _handleHttpError(res: Response, path: string): never {
+/**
+ * Call on every non-ok response; fires the sign-out callback for auth errors.
+ *
+ * Reads the JSON body's `detail` field when present — FastAPI's HTTPException
+ * puts the actual failure reason there (e.g. "Scrape Failed: page returned no
+ * job description text"), which is far more useful to surface to the user
+ * than a bare "422 Unprocessable Entity".
+ */
+async function _handleHttpError(res: Response, path: string): Promise<never> {
   // Only 401 signals a possibly-dead session. 503 means the BACKEND is
   // unavailable/misconfigured (e.g. LLM key missing) — treating it as an auth
   // failure hard-evicted logged-in users the moment any degraded endpoint was
@@ -98,7 +105,14 @@ function _handleHttpError(res: Response, path: string): never {
   if (res.status === 401) {
     _onAuthError?.()
   }
-  throw new Error(`${res.status} ${res.statusText} — ${path}`)
+  let detail: string | undefined
+  try {
+    const body = await res.json()
+    detail = typeof body?.detail === 'string' ? body.detail : undefined
+  } catch {
+    // Non-JSON or empty body — fall back to status text below.
+  }
+  throw new Error(detail || `${res.status} ${res.statusText} — ${path}`)
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -107,7 +121,7 @@ async function get<T>(path: string): Promise<T> {
     cache:   'no-store',
     headers: _authHeaders(),
   })
-  if (!res.ok) _handleHttpError(res, path)
+  if (!res.ok) await _handleHttpError(res, path)
   return res.json() as Promise<T>
 }
 
@@ -118,7 +132,7 @@ async function postEmpty<TRes>(path: string): Promise<TRes> {
     method:  'POST',
     headers: _authHeaders(),
   })
-  if (!res.ok) _handleHttpError(res, path)
+  if (!res.ok) await _handleHttpError(res, path)
   return res.json() as Promise<TRes>
 }
 
@@ -136,7 +150,7 @@ async function post<TBody, TRes>(path: string, body: TBody, timeoutMs?: number):
       body:    JSON.stringify(body),
       signal:  controller?.signal,
     })
-    if (!res.ok) _handleHttpError(res, path)
+    if (!res.ok) await _handleHttpError(res, path)
     return res.json() as Promise<TRes>
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
@@ -155,7 +169,7 @@ async function patch<TBody, TRes>(path: string, body: TBody): Promise<TRes> {
     headers: { 'Content-Type': 'application/json', ..._authHeaders() },
     body:    JSON.stringify(body),
   })
-  if (!res.ok) _handleHttpError(res, path)
+  if (!res.ok) await _handleHttpError(res, path)
   return res.json() as Promise<TRes>
 }
 
@@ -419,7 +433,7 @@ export async function uploadVerificationDocument(
     headers: _authHeaders(),
     body:    fd,
   })
-  if (!res.ok) _handleHttpError(res, `/api/profile/interview/${sessionId}/upload`)
+  if (!res.ok) await _handleHttpError(res, `/api/profile/interview/${sessionId}/upload`)
   return res.json()
 }
 
@@ -501,7 +515,7 @@ export async function uploadCvFiles(files: File[]): Promise<CvUploadResponse> {
     }
     throw err
   }
-  if (!res.ok) _handleHttpError(res, '/api/profile/cv-upload')
+  if (!res.ok) await _handleHttpError(res, "/api/profile/cv-upload")
   return res.json()
 }
 

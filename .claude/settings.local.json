@@ -117,7 +117,9 @@
       "Bash(pip show *)",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('backend/agents/tailor.py'\\).read\\(\\)\\); ast.parse\\(open\\('backend/agents/copilot.py'\\).read\\(\\)\\); ast.parse\\(open\\('backend/api/routes/resumes.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -m py_compile backend/services/pdf_builder.py)",
-      "Bash(python3 -m py_compile /Users/ronmorim/Projects/JobApply_Venture/backend/api/routes/profile.py)"
+      "Bash(python3 -m py_compile /Users/ronmorim/Projects/JobApply_Venture/backend/api/routes/profile.py)",
+      "Bash(xargs -I{} echo {})",
+      "Bash(pip3 show *)"
     ]
   }
 }

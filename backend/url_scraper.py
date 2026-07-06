@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from backend.scrapers.ats_api_scraper import try_greenhouse_api, try_lever_api
+
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -122,6 +124,20 @@ def scrape_job_post(url: str) -> ScrapedJob:
     Raises requests.HTTPError / requests.Timeout on network failure
     so callers can catch and surface a meaningful 502.
     """
+    # ── ATS structured APIs ───────────────────────────────────────────────────
+    # Greenhouse and Lever expose public JSON APIs mirroring their hosted
+    # pages — prefer these over generic HTML scraping when the URL matches.
+    # Any failure (unrecognized path, network error, thin content) falls
+    # through to the generic scraper below.
+    for api_fn in (try_greenhouse_api, try_lever_api):
+        api_result = api_fn(url)
+        if api_result is not None:
+            return ScrapedJob(
+                title=api_result["title"],
+                company=api_result["company"],
+                raw_text=api_result["raw_text"],
+            )
+
     response = requests.get(url, headers={"User-Agent": _UA}, timeout=10)
     response.raise_for_status()
 
