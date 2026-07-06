@@ -59,7 +59,7 @@ function LinkedInPausedBanner() {
       <span className="text-[18px] shrink-0 mt-0.5" aria-hidden="true">⏸</span>
       <div className="flex-1 min-w-0">
         <p className="text-[13px] font-bold text-slate-800 mb-0.5">
-          LinkedIn Scraper — Maintenance Pause
+          LinkedIn Scraper Maintenance Pause
         </p>
         <p className="text-[12px] text-slate-600 leading-relaxed">
           The enrichment loop is paused while a fresh cookie is being configured.
@@ -243,39 +243,29 @@ function QuickActions({ newCount, savedCount, onGo }: {
   ]
 
   return (
-    <div>
+    <div className="flex flex-col h-full">
       <div className="flex items-baseline justify-between mb-4">
         <h2 className="text-[13px] font-semibold uppercase tracking-[0.12em] text-slate-400">
           Quick actions
         </h2>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {/* flex-1 lets the 2×2 grid absorb the column's remaining height; the
+          sm:grid-rows-2 template splits that height into two equal fr rows so
+          the cards stretch to meet the 4-row Top Matches stack at the bottom. */}
+      <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 sm:grid-rows-2 gap-3">
         {items.map(it => {
           const { Icon } = it
           return (
             <button
               key={it.id}
               onClick={() => onGo(it.tab)}
-              className="group relative overflow-hidden text-left rounded-2xl bg-white border border-slate-100 p-4 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-slate-200"
-              style={{ boxShadow: TOKENS.shadow.card }}
+              className="group text-left rounded-2xl bg-white border border-slate-100 p-5 transition-all duration-200 ease-out hover:border-slate-200 hover:-translate-y-px shadow-[0_1px_3px_rgba(15,23,42,0.06),0_1px_2px_rgba(15,23,42,0.04)] hover:shadow-[0_4px_12px_rgba(15,23,42,0.07),0_2px_4px_rgba(15,23,42,0.04)]"
             >
-              {/* Accent hairline down the left edge — grows on hover */}
-              <span
-                aria-hidden
-                className="absolute left-0 top-4 bottom-4 w-[3px] rounded-full opacity-60 transition-all duration-300 group-hover:top-2 group-hover:bottom-2 group-hover:opacity-100"
-                style={{ background: it.accent }}
-              />
-              {/* Soft accent glow, bottom-right */}
-              <span
-                aria-hidden
-                className="pointer-events-none absolute -bottom-8 -right-8 h-20 w-20 rounded-full blur-2xl opacity-0 transition-opacity duration-300 group-hover:opacity-[0.12]"
-                style={{ background: it.accent }}
-              />
-              <div className="relative flex items-start gap-3">
+              <div className="flex items-start gap-3.5">
                 <span
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl shrink-0 transition-transform duration-300 group-hover:scale-105"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl shrink-0"
                   style={{
-                    background: `color-mix(in oklab, ${it.accent} 12%, white)`,
+                    background: `color-mix(in oklab, ${it.accent} 10%, white)`,
                     color: it.accent,
                   }}
                 >
@@ -286,14 +276,11 @@ function QuickActions({ newCount, savedCount, onGo }: {
                     <span className="block text-[13.5px] font-semibold text-slate-800 leading-snug">
                       {it.label}
                     </span>
-                    <span
-                      className="text-slate-300 -translate-x-1 opacity-0 transition-all duration-300 group-hover:translate-x-0 group-hover:opacity-100"
-                      style={{ color: it.accent }}
-                    >
+                    <span className="text-slate-300 -translate-x-1 opacity-0 transition-all duration-200 group-hover:translate-x-0 group-hover:opacity-100 group-hover:text-slate-400">
                       <ArrowIcon s={12} />
                     </span>
                   </span>
-                  <span className="block text-[12px] text-slate-400 mt-1 leading-snug">{it.sub}</span>
+                  <span className="block text-[12px] text-slate-400 mt-1.5 leading-snug">{it.sub}</span>
                 </span>
               </div>
             </button>
@@ -318,17 +305,11 @@ function ScorePip({ score }: { score: number }) {
                   TOKENS.color.danger
 
   return (
-    <div
-      className="flex flex-col items-center justify-center shrink-0 rounded-xl h-11 w-11 transition-transform duration-300 group-hover:scale-105"
-      style={{
-        background: `color-mix(in oklab, ${color} 12%, white)`,
-        border: `1px solid color-mix(in oklab, ${color} 24%, white)`,
-      }}
-    >
+    <div className="flex flex-col items-center justify-center shrink-0 rounded-xl h-11 w-11 bg-white border border-slate-100">
       <span className="text-[14px] font-bold tabular-nums leading-none" style={{ color }}>
         {score.toFixed(0)}
       </span>
-      <span className="text-[8px] font-bold uppercase tracking-wide mt-0.5" style={{ color }}>
+      <span className="text-[8px] font-semibold uppercase tracking-wide mt-0.5 text-slate-400">
         ATS
       </span>
     </div>
@@ -339,8 +320,7 @@ function TopMatchRow({ job, onClick }: { job: ApiFeedJob; onClick: () => void })
   return (
     <button
       onClick={onClick}
-      className="group relative w-full text-left flex items-center gap-3.5 rounded-2xl bg-white border border-slate-100 px-3.5 py-3 mb-2.5 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-slate-200"
-      style={{ boxShadow: TOKENS.shadow.card }}
+      className="group w-full text-left flex items-center gap-3.5 rounded-2xl bg-white border border-slate-100 px-4 py-3.5 mb-2.5 transition-all duration-200 ease-out hover:border-slate-200 hover:-translate-y-px shadow-[0_1px_3px_rgba(15,23,42,0.06),0_1px_2px_rgba(15,23,42,0.04)] hover:shadow-[0_4px_12px_rgba(15,23,42,0.07),0_2px_4px_rgba(15,23,42,0.04)]"
     >
       <ScorePip score={job.match_score} />
 
@@ -355,26 +335,15 @@ function TopMatchRow({ job, onClick }: { job: ApiFeedJob; onClick: () => void })
           )}
           {job.location}
         </p>
-        {/* Reason chips — compact tinted pills instead of loose inline text */}
+        {/* Reasons as understated editorial text — no pills, no tinted fills */}
         {job.reasons.length > 0 && (
-          <div className="flex items-center gap-1.5 mt-1.5 overflow-hidden">
-            {job.reasons.slice(0, 2).map((r, i) => (
-              <span
-                key={i}
-                className="inline-flex items-center h-[19px] px-2 rounded-md text-[10.5px] font-medium whitespace-nowrap shrink-0"
-                style={{ background: TOKENS.color.primarySoft, color: TOKENS.color.primaryHover }}
-              >
-                {r.label}
-              </span>
-            ))}
-          </div>
+          <p className="text-[11px] text-slate-400 mt-1.5 truncate">
+            {job.reasons.slice(0, 2).map(r => r.label).join('  ·  ')}
+          </p>
         )}
       </div>
 
-      <span
-        className="shrink-0 text-slate-300 transition-all duration-300 group-hover:translate-x-0.5"
-        style={{ color: undefined }}
-      >
+      <span className="shrink-0 text-slate-300 transition-all duration-200 group-hover:translate-x-0.5 group-hover:text-slate-400">
         <ArrowIcon s={14} />
       </span>
     </button>
@@ -386,7 +355,7 @@ function TopMatchRow({ job, onClick }: { job: ApiFeedJob; onClick: () => void })
 function TopMatchSkeleton({ opacity }: { opacity: number }) {
   return (
     <div
-      className="flex items-center gap-3.5 rounded-2xl bg-white border border-slate-100 px-3.5 py-3 mb-2.5"
+      className="flex items-center gap-3.5 rounded-2xl bg-white border border-slate-100 px-4 py-3.5 mb-2.5"
       style={{ opacity, boxShadow: TOKENS.shadow.card }}
     >
       <Skeleton className="h-11 w-11 rounded-xl shrink-0" />
@@ -614,14 +583,7 @@ export function Overview({
             {getGreetingName(displayName ?? '') && (
               <>
                 ,{' '}
-                <span
-                  style={{
-                    background: `linear-gradient(90deg, ${TOKENS.color.primary}, ${TOKENS.color.success})`,
-                    WebkitBackgroundClip: 'text',
-                    backgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                  }}
-                >
+                <span style={{ color: TOKENS.color.primary }}>
                   {getGreetingName(displayName ?? '')}
                 </span>
               </>
@@ -677,11 +639,12 @@ export function Overview({
         <TrustDashboard userId={userId} onScoreChange={setConfidenceScore} profileVersion={profileVersion} />
       </section>
 
-      {/* ── Quick actions + Top matches — side by side on wide screens ─── */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.1fr] gap-12">
+      {/* ── Quick actions + Top matches, side by side on wide screens ─── */}
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.1fr] gap-12 items-stretch">
 
-        {/* Quick actions */}
-        <section>
+        {/* Quick actions — h-full so its inner flex column can stretch to
+            match the Top Matches list height in the adjacent grid cell. */}
+        <section className="h-full">
           <QuickActions
             newCount={jobsScannedToday}
             savedCount={savedIds.length}
@@ -719,7 +682,7 @@ export function Overview({
             ))
           ) : (
             <p className="py-8 text-[13px] text-slate-400">
-              No matches yet — agents are scanning.
+              No matches yet. Your agents are scanning now.
             </p>
           )}
         </section>

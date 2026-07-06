@@ -26,18 +26,22 @@ export function Footer() {
           <span>{COMING_SOON_MSG}</span>
         </div>
       )}
-      <footer className="max-w-content mx-auto px-6 py-6 flex items-center justify-between text-[11.5px] text-slate-400 border-t border-slate-100 mt-10">
-        <div className="inline-flex items-center gap-2">
-          <span>v1.3.0</span>
-          <span className="text-slate-300">·</span>
-          <span className="inline-flex items-center gap-1.5">
-            <StatusDot tone="success" pulse size={5} /> All systems operational
-          </span>
-        </div>
-        <div className="inline-flex items-center gap-4">
-          <a href="#" onClick={showComingSoon} className="hover:text-slate-700">Help</a>
-          <a href="#" onClick={showComingSoon} className="hover:text-slate-700">Privacy</a>
-          <a href="#" onClick={showComingSoon} className="hover:text-slate-700">Contact</a>
+      {/* Full-bleed divider; inner container aligns to the same content
+          boundary as <main> (max-w-content mx-auto w-full px-6). */}
+      <footer className="border-t border-slate-100 mt-10">
+        <div className="max-w-content mx-auto w-full px-6 py-6 flex items-center justify-between text-[11.5px] text-slate-400">
+          <div className="inline-flex items-center gap-2">
+            <span>v1.3.0</span>
+            <span className="text-slate-300">·</span>
+            <span className="inline-flex items-center gap-1.5">
+              <StatusDot tone="success" pulse size={5} /> All systems operational
+            </span>
+          </div>
+          <div className="inline-flex items-center gap-4">
+            <a href="#" onClick={showComingSoon} className="hover:text-slate-700">Help</a>
+            <a href="#" onClick={showComingSoon} className="hover:text-slate-700">Privacy</a>
+            <a href="#" onClick={showComingSoon} className="hover:text-slate-700">Contact</a>
+          </div>
         </div>
       </footer>
     </>

@@ -92,10 +92,10 @@ function AgentCard({ agent }: { agent: ApiAgentStatus }) {
         {agent.state === 'active' && !agent.current_task && (
           <span className="text-slate-500">Running…</span>
         )}
-        {agent.state === 'idle'   && <span className="text-slate-400">Idle — waiting for next pipeline run.</span>}
+        {agent.state === 'idle'   && <span className="text-slate-400">Idle. Waiting for the next pipeline run.</span>}
         {agent.state === 'queued' && (
           <span className="text-slate-600">
-            {agent.queue_msg || 'Queued — starting shortly…'}
+            {agent.queue_msg || 'Queued. Starting shortly…'}
           </span>
         )}
         {agent.state === 'error'  && <span className="text-rose-600">{agent.error_msg}</span>}
@@ -158,8 +158,8 @@ function ErrorBanner({ message, onRetry }: { message: string; onRetry: () => voi
   return (
     <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 flex items-center justify-between gap-4">
       <p className="text-[13px] text-rose-700">
-        <span className="font-medium">Agent status unavailable</span>
-        <span className="text-rose-500"> — {message}</span>
+        <span className="font-medium">Agent status unavailable.</span>
+        <span className="text-rose-500"> {message}</span>
       </p>
       <button
         onClick={onRetry}
@@ -201,7 +201,7 @@ function AnalyzeTrigger({
       // Blocking call — returns the complete JobMatch when done, or throws on failure.
       const res = await startAnalysis(url.trim())
       setStatus('success')
-      setMessage(`"${res.title}" added — ATS score ${res.match_score.toFixed(1)}`)
+      setMessage(`"${res.title}" added. ATS score ${res.match_score.toFixed(1)}.`)
       setAnalyzedJob(res)
       setUrl('')
       onJobAnalyzed?.(res)
@@ -247,7 +247,7 @@ function AnalyzeTrigger({
           type="url"
           value={url}
           onChange={e => setUrl(e.target.value)}
-          placeholder="Paste a job URL — e.g. https://jobs.lever.co/company/job-id"
+          placeholder="Paste a job URL, e.g. https://jobs.lever.co/company/job-id"
           className="flex-1 h-9 bg-transparent text-[13px] text-slate-900 placeholder:text-slate-400 focus:outline-none min-w-0"
           disabled={loading}
         />
@@ -405,50 +405,51 @@ export function AgentStatusCenter({ agents, loading, error, onRetry, onJobAnalyz
 
   return (
     <section>
-      {/* ── Live Pipeline command-center banner — dark teal, active glow ── */}
+      {/* ── Live Pipeline banner — premium dark-teal SaaS surface ── */}
       <div
-        className="rounded-2xl p-6 mb-5 relative overflow-hidden"
+        className="relative overflow-hidden rounded-2xl border border-white/10 p-6 mb-5"
         style={{
-          background: 'linear-gradient(135deg, #06201E 0%, #0A302C 55%, #0C3B36 100%)',
-          border: '1px solid rgba(13,148,136,0.35)',
-          boxShadow: '0 10px 30px rgba(6,32,30,0.35), inset 0 1px 0 rgba(45,212,191,0.10)',
+          background: 'linear-gradient(135deg, #08201E 0%, #0C302B 55%, #0F3B35 100%)',
+          boxShadow: '0 12px 32px rgba(8,32,30,0.30), inset 0 1px 0 rgba(255,255,255,0.06)',
         }}
       >
-        {/* Teal glow, top-right */}
+        {/* Rich teal glow, top-right */}
         <div
-          className="absolute -right-16 -top-16 h-52 w-52 rounded-full blur-3xl pointer-events-none"
-          style={{ background: 'radial-gradient(circle, rgba(13,148,136,0.55) 0%, transparent 70%)' }}
+          aria-hidden
+          className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full blur-3xl"
+          style={{ background: 'radial-gradient(circle, rgba(13,148,136,0.45) 0%, transparent 70%)' }}
         />
-        {/* Faint teal grid sheen along the bottom edge */}
+        {/* Soft emerald counter-glow, bottom-left */}
         <div
-          className="absolute inset-x-0 bottom-0 h-px pointer-events-none"
-          style={{ background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.5), transparent)' }}
+          aria-hidden
+          className="pointer-events-none absolute -left-24 -bottom-24 h-56 w-56 rounded-full blur-3xl"
+          style={{ background: 'radial-gradient(circle, rgba(5,150,105,0.22) 0%, transparent 70%)' }}
         />
         <div className="relative">
-          <div className="flex items-center gap-2.5 mb-2.5">
-            {/* Pulsing live indicator */}
+          <div className="flex items-center gap-2 mb-2.5">
+            {/* Pulsing live dot */}
             <span className="relative inline-flex h-2 w-2 shrink-0">
               <span
-                className="absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping"
+                className="absolute inline-flex h-full w-full rounded-full opacity-70 animate-ping"
                 style={{ background: '#2DD4BF' }}
               />
               <span
                 className="relative inline-flex h-2 w-2 rounded-full"
-                style={{ background: '#5EEAD4', boxShadow: '0 0 8px #2DD4BF' }}
+                style={{ background: '#2DD4BF' }}
               />
             </span>
             <span
-              className="text-[11px] uppercase tracking-[0.18em] font-semibold"
-              style={{ color: '#5EEAD4' }}
+              className="text-[11px] uppercase tracking-[0.16em] font-semibold"
+              style={{ color: '#99F6E4' }}
             >
               Live Pipeline Status
             </span>
           </div>
-          <h3 className="text-[19px] font-semibold text-white tracking-tight leading-snug">
+          <h3 className="text-[18px] font-semibold text-white tracking-tight leading-snug">
             Job Apply is searching while you focus on what matters.
           </h3>
-          <p className="text-[13.5px] mt-2 max-w-[60ch] leading-relaxed" style={{ color: 'rgba(209,250,246,0.72)' }}>
-            Four agents scan, analyze, rank, and apply to roles that fit your profile — quietly, in the background.
+          <p className="text-[13px] mt-1.5 max-w-[60ch] leading-relaxed" style={{ color: 'rgba(204,251,241,0.75)' }}>
+            Four agents work quietly in the background. They scan, analyze, rank, and apply to roles that fit your profile.
           </p>
         </div>
       </div>
@@ -532,7 +533,7 @@ export function AgentStatusCenter({ agents, loading, error, onRetry, onJobAnalyz
             </svg>
             <p className="text-[13px] text-rose-800">
               <span className="font-semibold">Pipeline stopped.</span>
-              <span className="text-rose-600"> One or more agents hit an error — check the cards below for details.</span>
+              <span className="text-rose-600"> One or more agents hit an error. Check the cards below for details.</span>
             </p>
           </div>
           <button
