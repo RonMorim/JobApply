@@ -2300,10 +2300,14 @@ interface TrustDashboardProps {
   userId:         string
   showAuthWall?:  boolean   // pass true when the LinkedIn feed is auth_wall status
   className?:     string
+  /** Fired with the backend's overall_trust_score every time fetchData resolves —
+   *  lets a parent (e.g. Overview's System Confidence Score card) mirror the
+   *  same number without firing a second /trust-score request of its own. */
+  onScoreChange?: (score: number) => void
 }
 
 export function TrustDashboard({
-  userId, showAuthWall = false, className = '',
+  userId, showAuthWall = false, className = '', onScoreChange,
 }: TrustDashboardProps) {
   const [data,      setData]      = useState<TrustScoreResponse | null>(null)
   const [radarData, setRadarData] = useState<ConfidenceRadarDatum[]>([])
@@ -2322,6 +2326,11 @@ export function TrustDashboard({
   const [manualTarget,  setManualTarget]  = useState<TrustProfileEntity | null>(null)
   const [manualSession, setManualSession] = useState<{session_id: string; first_prompt: string} | null>(null)
   const [manualLoading, setManualLoading] = useState(false)
+
+  // Ref so fetchData's identity (and its [userId] dep array) doesn't have to
+  // change every time the parent passes a fresh onScoreChange closure.
+  const onScoreChangeRef = useRef(onScoreChange)
+  useEffect(() => { onScoreChangeRef.current = onScoreChange }, [onScoreChange])
 
   // ── Fetch ────────────────────────────────────────────────────────────────
 
@@ -2343,6 +2352,7 @@ export function TrustDashboard({
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = (await res.json()) as TrustScoreResponse
       setData(json)
+      onScoreChangeRef.current?.(json.overall_trust_score ?? 0)
 
       // Fetch four-category radar data independently (non-fatal if it fails)
       try {

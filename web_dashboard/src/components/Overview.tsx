@@ -6,6 +6,7 @@ import type { ApiFeedJob } from '@/lib/apiTypes'
 import { Skeleton } from './ui/Skeleton'
 import { SparkIcon, UserBadgeIcon, FileIcon, SlidersIcon, ArrowIcon } from './icons'
 import { TrustDashboard } from './TrustDashboard'
+import { useChat } from '@/contexts/ChatContext'
 import {
   fetchAnalyticsOverview, fetchScraperStatus, RateLimitError,
   type AnalyticsOverview, type ScraperStatus,
@@ -333,6 +334,94 @@ function TopMatchSkeleton({ opacity }: { opacity: number }) {
   )
 }
 
+// ── System Confidence Score — gamified Ariel engagement hook ────────────────
+// Score is the backend's overall_trust_score (ProfileUpdateService.compute_
+// profile_trust_score), mirrored down from <TrustDashboard onScoreChange>
+// so this card doesn't fire its own duplicate /trust-score request.
+
+function confidenceTier(pct: number): { label: string; color: string } {
+  if (pct >= 80) return { label: 'Strong',      color: TOKENS.color.success }
+  if (pct >= 60) return { label: 'Good',        color: TOKENS.color.primary }
+  if (pct >= 40) return { label: 'Building',    color: TOKENS.color.warn    }
+  return              { label: 'Just started', color: TOKENS.color.danger  }
+}
+
+function ConfidenceGauge({ pct, color }: { pct: number | null; color: string }) {
+  const SIZE = 76
+  const RADIUS = 30
+  const CIRCUMFERENCE = 2 * Math.PI * RADIUS
+  const dash = pct !== null ? (Math.min(100, Math.max(0, pct)) / 100) * CIRCUMFERENCE : 0
+
+  return (
+    <div className="relative shrink-0" style={{ width: SIZE, height: SIZE }}>
+      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
+        <circle cx={SIZE / 2} cy={SIZE / 2} r={RADIUS} fill="none" stroke={TOKENS.color.lineSoft} strokeWidth={7} />
+        {pct !== null && (
+          <circle
+            cx={SIZE / 2} cy={SIZE / 2} r={RADIUS} fill="none"
+            stroke={color} strokeWidth={7} strokeLinecap="round"
+            strokeDasharray={`${dash} ${CIRCUMFERENCE}`}
+            transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
+            style={{ transition: 'stroke-dasharray 700ms cubic-bezier(0.22,1,0.36,1)' }}
+          />
+        )}
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        {pct === null ? (
+          <Skeleton className="h-5 w-8 rounded" />
+        ) : (
+          <span className="text-[18px] font-bold tabular-nums text-slate-900">{pct}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ConfidenceScoreCard({ score, onImprove }: {
+  score:     number | null
+  onImprove: () => void
+}) {
+  const pct  = score !== null ? Math.round(Math.min(100, Math.max(0, score))) : null
+  const tier = pct !== null ? confidenceTier(pct) : null
+
+  return (
+    <section
+      className="rounded-2xl border border-slate-100 px-5 py-5 flex items-center gap-5"
+      style={{ boxShadow: TOKENS.shadow.card }}
+    >
+      <ConfidenceGauge pct={pct} color={tier?.color ?? TOKENS.color.primary} />
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
+          <h2 className="text-[13.5px] font-bold text-slate-900 tracking-tight">
+            System Confidence Score
+          </h2>
+          {tier && (
+            <span
+              className="inline-flex items-center h-[18px] px-2 rounded-md text-[10.5px] font-semibold"
+              style={{ background: `color-mix(in oklab, ${tier.color} 12%, white)`, color: tier.color }}
+            >
+              {tier.label}
+            </span>
+          )}
+        </div>
+        <p className="text-[12px] text-slate-500 leading-relaxed mb-3">
+          A higher confidence score means more accurate job matches and better CV tailoring.
+          Share more experiences to improve your score.
+        </p>
+        <button
+          onClick={onImprove}
+          className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-[12.5px] font-semibold transition active:scale-[0.97] hover:opacity-90"
+          style={{ background: TOKENS.color.primary, color: '#fff' }}
+        >
+          <SparkIcon s={12} />
+          Improve Score with Ariel
+        </button>
+      </div>
+    </section>
+  )
+}
+
 // ── Greeting helpers ───────────────────────────────────────────────────────────
 
 function _timeGreeting(): string {
@@ -364,6 +453,19 @@ export function Overview({
   onSave, onReviewCV, onGo,
 }: OverviewProps) {
   const previewJobs = feedJobs.slice(0, 4)
+
+  // ── System Confidence Score (Phase 14) ──────────────────────────────────────
+  // Mirrored from TrustDashboard's own /trust-score fetch via onScoreChange —
+  // see the comment above ConfidenceScoreCard for why we don't fetch it twice.
+  const { openChat } = useChat()
+  const [confidenceScore, setConfidenceScore] = useState<number | null>(null)
+
+  const handleImproveScore = useCallback(() => {
+    openChat({
+      topic: 'I want to improve my System Confidence Score by sharing more details '
+        + 'about my experience so my job matches and CV tailoring get more accurate.',
+    })
+  }, [openChat])
 
   // ── Server-side analytics (Phase 6) ─────────────────────────────────────────
   // fetchAnalyticsOverview() awaits ensureFreshToken() before attaching auth
@@ -446,6 +548,9 @@ export function Overview({
         </p>
       </div>
 
+      {/* ── System Confidence Score — gamified Ariel engagement CTA ──────── */}
+      <ConfidenceScoreCard score={confidenceScore} onImprove={handleImproveScore} />
+
       {/* ── KPI strip — server analytics with local fallback ─────────────── */}
       <section className="space-y-4">
         {overviewError && !overviewLoading && (
@@ -467,7 +572,7 @@ export function Overview({
 
       {/* ── Confidence Matrix (TrustDashboard) ──────────────────────────── */}
       {/* Remounts on every tab-switch to Overview, so fetchData fires fresh. */}
-      <TrustDashboard userId={userId} />
+      <TrustDashboard userId={userId} onScoreChange={setConfidenceScore} />
 
       {/* ── Divider ─────────────────────────────────────────────────────── */}
       <hr className="border-slate-100" />

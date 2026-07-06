@@ -366,6 +366,8 @@ export interface TrustScoreResponse {
     domain:     number
     experience: number
   }
+  /** Weighted composite 0-100 from ProfileUpdateService.compute_profile_trust_score. */
+  overall_trust_score: number
   fetched_at: string
 }
 
