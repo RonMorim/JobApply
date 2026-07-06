@@ -39,7 +39,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from backend.services.db import MasterProfileRow
+from backend.services.db import ENGINE, MasterProfileRow
+from backend.services.profile_update_service import ProfileUpdateService
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,28 @@ logger = logging.getLogger(__name__)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _sync_self_assertion(user_id: str, entity_type: str, name: str, raw_content: str = "") -> None:
+    """
+    Mirror a master_profile edit into the Confidence Matrix as low-weight,
+    unverified evidence — so the System Confidence Score reflects facts the
+    user states directly in chat (via update_experience/update_skills)
+    instead of only ones that arrived through a CV upload.
+
+    Best-effort: master_profile is the authoritative store for the edit
+    itself (already committed by the caller), so a failure here is logged
+    and swallowed rather than surfacing an error back to the model — a
+    Confidence Matrix hiccup should never make a successful profile edit
+    look like it failed.
+    """
+    try:
+        ProfileUpdateService(ENGINE).ingest_self_assertion(user_id, entity_type, name, raw_content)
+    except Exception as exc:
+        logger.error(
+            "[ariel_tools] _sync_self_assertion failed user=%s entity_type=%s name=%r: %s",
+            user_id, entity_type, name, exc,
+        )
 
 
 def _empty_master_profile() -> dict:
@@ -406,6 +429,11 @@ def _handle_update_experience(
         row.updated_at        = _now_iso()
         session.commit()
 
+        _sync_self_assertion(
+            user_id, "experience", f"{role} at {company}",
+            " ".join(bullets),
+        )
+
         logger.info(
             "[ariel_tools] update_experience user=%s %s '%s' @ '%s'",
             user_id, action, role, company,
@@ -468,6 +496,13 @@ def _handle_update_skills(
         row.updated_at     = _now_iso()
         session.commit()
 
+        for skill in added:
+            _sync_self_assertion(user_id, "skill", skill)
+        # Removed skills aren't synced as negative evidence here — removal
+        # usually means "not relevant to this profile," not "this claim was
+        # false." A genuine contradiction is handled by ingest_negative_flag
+        # via the STAR-probe path, not by this best-effort CRUD tool.
+
         logger.info(
             "[ariel_tools] update_skills user=%s +%d -%d (skipped %d)",
             user_id, len(added), len(removed), len(skipped),
@@ -494,6 +529,10 @@ def _handle_update_career_goals(
 
     Only fields present in tool_input are updated; missing keys leave the
     existing values untouched (partial update semantics).
+
+    Not synced to the Confidence Matrix (see _sync_self_assertion): target
+    roles/locations/work-environment are stated intent, not evidence of a
+    skill/trait/domain/experience the entity taxonomy scores capability on.
     """
     target_roles        = tool_input.get("target_roles")
     preferred_locations = tool_input.get("preferred_locations")

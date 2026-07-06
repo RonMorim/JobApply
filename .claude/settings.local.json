@@ -119,7 +119,9 @@
       "Bash(python3 -m py_compile backend/services/pdf_builder.py)",
       "Bash(python3 -m py_compile /Users/ronmorim/Projects/JobApply_Venture/backend/api/routes/profile.py)",
       "Bash(xargs -I{} echo {})",
-      "Bash(pip3 show *)"
+      "Bash(pip3 show *)",
+      "Bash(python3 -m py_compile backend/agents/ariel_tools.py backend/services/profile_update_service.py)",
+      "Bash(python3 -m py_compile backend/agents/ariel_tools.py backend/services/profile_update_service.py backend/api/routes/chat.py backend/api/routes/profile.py)"
     ]
   }
 }
