@@ -774,13 +774,24 @@ const _MAX_HEIGHT = 800
 // bottom-0 right-0`), so growing width/height while that anchor stays fixed
 // naturally expands the panel toward the top-left — no separate
 // repositioning of the container is needed, only the size state changes.
+//
+// Visual placement: the panel corner itself is clipped by `rounded-2xl`
+// (16px radius), so a grip drawn flush at (0,0) would render inside that
+// clipped-away sliver and be invisible — hence the 6px inset (`top-1.5
+// left-1.5`), which keeps the whole chip inside the visible rounded area.
+// The 6px inset also keeps it clear of both header layouts' avatar, which
+// starts at least 12px from each edge in every panel that uses this shell.
 function TopLeftResizeHandle({
   size,
   setSize,
+  variant = 'onLight',
 }: {
-  size:    { width: number; height: number }
-  setSize: React.Dispatch<React.SetStateAction<{ width: number; height: number }>>
+  size:     { width: number; height: number }
+  setSize:  React.Dispatch<React.SetStateAction<{ width: number; height: number }>>
+  variant?: 'onLight' | 'onDark'
 }) {
+  const [hover, setHover]     = useState(false)
+  const [dragging, setDragging] = useState(false)
   const dragRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null)
 
   const onPointerMove = useCallback((e: PointerEvent) => {
@@ -797,6 +808,7 @@ function TopLeftResizeHandle({
 
   const onPointerUp = useCallback((e: PointerEvent) => {
     dragRef.current = null
+    setDragging(false)
     window.removeEventListener('pointermove', onPointerMove)
     window.removeEventListener('pointerup', onPointerUp)
     ;(e.target as Element | null)?.releasePointerCapture?.(e.pointerId)
@@ -804,6 +816,7 @@ function TopLeftResizeHandle({
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
+    setDragging(true)
     dragRef.current = { startX: e.clientX, startY: e.clientY, startW: size.width, startH: size.height }
     window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('pointerup', onPointerUp)
@@ -816,17 +829,30 @@ function TopLeftResizeHandle({
     }
   }, [onPointerMove, onPointerUp])
 
+  const isDark   = variant === 'onDark'
+  const active   = hover || dragging
+  const iconColor = isDark ? 'rgba(255,255,255,0.92)' : 'rgba(51,65,85,0.85)'   // slate-700-ish
+  const chipBg    = active
+    ? (isDark ? 'rgba(255,255,255,0.22)' : 'rgba(15,23,42,0.10)')
+    : (isDark ? 'rgba(255,255,255,0.10)' : 'rgba(15,23,42,0.05)')
+
   return (
     <div
       onPointerDown={onPointerDown}
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
       title="Drag to resize"
-      className="absolute top-0 left-0 z-10 w-4 h-4 cursor-nwse-resize touch-none"
-      style={{ background: 'transparent' }}
+      aria-label="Resize chat window"
+      role="separator"
+      className="absolute top-1.5 left-1.5 z-20 w-[18px] h-[18px] rounded-full flex items-center justify-center touch-none transition-colors duration-150"
+      style={{ background: chipBg, cursor: 'nwse-resize' }}
     >
-      <svg width={14} height={14} viewBox="0 0 14 14" className="absolute top-0.5 left-0.5 pointer-events-none opacity-40">
-        <circle cx="3" cy="3" r="1.3" fill="currentColor" />
-        <circle cx="8" cy="3" r="1.3" fill="currentColor" />
-        <circle cx="3" cy="8" r="1.3" fill="currentColor" />
+      {/* Diagonal grip — two parallel strokes on the NW↔SE axis, matching the
+          nwse-resize cursor direction (identical convention used for both
+          top-left and bottom-right resize corners). */}
+      <svg width={9} height={9} viewBox="0 0 9 9" className="pointer-events-none">
+        <line x1="1.5" y1="7.5" x2="7.5" y2="1.5" stroke={iconColor} strokeWidth="1.3" strokeLinecap="round" />
+        <line x1="1.5" y1="4"   x2="4"   y2="1.5" stroke={iconColor} strokeWidth="1.3" strokeLinecap="round" />
       </svg>
     </div>
   )
@@ -838,6 +864,7 @@ function OverlayShell({
   offsetRight = '1.5rem',
   ariaLabel,
   shadowColor = 'rgba(15,23,42,0.20)',
+  handleVariant = 'onLight',
   children,
 }: {
   isOpen:          boolean
@@ -845,6 +872,7 @@ function OverlayShell({
   offsetRight?:    string
   ariaLabel:       string
   shadowColor?:    string
+  handleVariant?:  'onLight' | 'onDark'
   children:        React.ReactNode
 }) {
   const isDesktop  = _useIsDesktop()
@@ -877,7 +905,7 @@ function OverlayShell({
           right:         offsetRight,
         }}
       >
-        {isDesktop && <TopLeftResizeHandle size={size} setSize={setSize} />}
+        {isDesktop && <TopLeftResizeHandle size={size} setSize={setSize} variant={handleVariant} />}
         {children}
       </div>
     </>
@@ -926,6 +954,7 @@ export function ChatOverlay() {
           onBackdropClick={closeChat}
           ariaLabel="Ask Ariel — Career Agent"
           shadowColor="rgba(13,148,136,0.18)"
+          handleVariant="onLight"
         >
           <ArielChat onClose={closeChat} />
         </OverlayShell>
@@ -935,6 +964,7 @@ export function ChatOverlay() {
       <OverlayShell
         isOpen={isEliyaOpen}
         onBackdropClick={closeEliya}
+        handleVariant="onDark"
         ariaLabel="Ask Eliya — Support & Onboarding"
         shadowColor="rgba(79,70,229,0.18)"
       >
