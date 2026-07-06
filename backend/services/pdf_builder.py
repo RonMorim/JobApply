@@ -90,6 +90,33 @@ def _t(text: str, limit: int) -> str:
     return _e(str(text or "")[:limit])
 
 
+_YEAR_RE    = re.compile(r"(?:19|20)\d{2}")
+_PRESENT_RE = re.compile(r"present|current|ongoing|\bnow\b", re.IGNORECASE)
+
+
+def _format_year_range(raw: str) -> str:
+    """Reduce any date-range string to strict 'YYYY - YYYY' (or 'YYYY').
+
+    Source data is inconsistent ("Late 2024 - Early 2025", "2025 - Feb 2026",
+    "2023–2026", "03/2019 - 08/2022"). Rather than parsing every textual
+    variant, this extracts 4-digit years only and discards everything else
+    (months, days, "Late"/"Early", dashes of any kind). An open-ended range
+    ("... - Present") keeps the literal "Present" as the end marker instead
+    of inventing an end year.
+    """
+    text = str(raw or "")
+    years = _YEAR_RE.findall(text)
+    is_open_ended = bool(_PRESENT_RE.search(text))
+
+    if not years:
+        return "Present" if is_open_ended else ""
+
+    start = years[0]
+    end   = "Present" if is_open_ended else (years[-1] if len(years) > 1 else start)
+
+    return start if start == end else f"{start} - {end}"
+
+
 def _contact_line(value: str) -> str:
     """Return a full <span class="contact-line"> element, or empty string if blank.
 
@@ -116,7 +143,7 @@ def _build_experience(entries: list[dict]) -> str:
     for exp in entries[:5]:
         role    = _t(exp.get("role",    ""), 45)
         company = _t(exp.get("company", ""), 35)
-        dates   = _t(exp.get("dates",   ""), 22)
+        dates   = _t(_format_year_range(exp.get("dates", "")), 22)
         bullets_html = "".join(
             f"<li>{_e(str(b or ''))}</li>"
             for b in (exp.get("bullets") or [])[:6]
@@ -141,7 +168,7 @@ def _build_education(entries: list[dict]) -> str:
     for edu in entries[:3]:
         degree      = _t(edu.get("degree",      ""), 60)
         institution = _t(edu.get("institution", ""), 35)
-        dates       = _t(edu.get("dates",       ""), 20)
+        dates       = _t(_format_year_range(edu.get("dates", "")), 20)
         honors      = _t(edu.get("honors",      ""), 60)
         coursework  = _t(edu.get("coursework",  ""), 80)
 
@@ -222,7 +249,7 @@ def _build_military(mil: dict | None) -> str:
         return ""
     role  = _t(mil.get("role",  ""), 45)
     unit  = _t(mil.get("unit",  ""), 60)   # raised from 40 — canonical unit string is 41 chars
-    dates = _t(mil.get("dates", ""), 20)
+    dates = _t(_format_year_range(mil.get("dates", "")), 20)
     return (
         f'<div class="side-sec">'
         f'  <span class="sec-title">Military Service</span>'

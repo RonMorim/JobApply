@@ -273,19 +273,28 @@ html, body {
 </div>
 
 <script>
-/* Dynamic font-scaling: shrink html font-size in 0.25pt steps until the
-   page content fits within A4 height (297mm ≈ body.clientHeight).
-   Minimum font size is 9pt to keep text legally readable.             */
+/* Shrink-to-fit: scale the flowing body content down as a whole so it fits
+   within the single A4 page instead of being silently clipped by
+   `.body { overflow: hidden }`. A uniform transform works regardless of
+   which absolute unit (pt/px) each rule below uses — unlike changing the
+   root font-size, which does not cascade into descendants that declare an
+   absolute pt size (i.e. almost everything here), and therefore never
+   actually shrank anything.
+   `.body`'s own clientHeight already equals the space the flex layout
+   assigned it (page height minus the fixed header) — no manual page/header
+   math needed. scrollHeight is unaffected by overflow: hidden, so it still
+   reports the true, un-clipped content height. */
 (function () {
-  var MIN_PT  = 9;
-  var html    = document.documentElement;
-  var page    = document.querySelector('.body');
-  if (!page) return;
-  var base    = parseFloat(getComputedStyle(html).fontSize) || 9;
-  var current = base;
-  while (page.scrollHeight > page.clientHeight && current > MIN_PT) {
-    current = Math.max(MIN_PT, current - 0.25);
-    html.style.fontSize = current + 'pt';
+  var MIN_SCALE = 0.72;
+  var body = document.querySelector('.body');
+  if (!body) return;
+  var available = body.clientHeight;
+  var needed    = body.scrollHeight;
+  if (available > 0 && needed > available) {
+    var scale = Math.max(MIN_SCALE, available / needed);
+    body.style.transformOrigin = 'top left';
+    body.style.transform       = 'scale(' + scale + ')';
+    body.style.width           = (100 / scale) + '%';
   }
 })();
 </script>
