@@ -223,10 +223,12 @@ html, body {
 .lang-name { font-size: 9pt; font-weight: 700; color: var(--charcoal); }
 .lang-level { font-size: 8.5pt; color: var(--muted); font-style: italic; }
 
-/* ── Military ── */
-.mil-role { display: inline; font-size: 9pt; font-weight: 700; color: var(--charcoal); }
-.mil-unit { display: inline; font-size: 8.5pt; font-style: italic; color: var(--muted); }
-.mil-unit::before { content: " — "; }
+/* ── Military ──
+   Mirrors .entry-role/.entry-company exactly (block, stacked) so this
+   section matches the rest of the template's design language instead of
+   reading as a copy-pasted single-line fragment from a different template. */
+.mil-role { display: block; font-size: 9.5pt; font-weight: 700; color: var(--charcoal); }
+.mil-unit { display: block; font-size: 8.5pt; font-style: italic; color: var(--muted); margin-top: 0.5px; }
 
 /* ── Volunteering ── */
 .vol-text { font-size: 8.5pt; color: var(--body); line-height: 1.50; font-style: italic; }

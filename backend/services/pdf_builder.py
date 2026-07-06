@@ -38,15 +38,19 @@ TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "cv_templ
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates" / "cv"
 
 _TEMPLATE_MAP: dict[str, Path] = {
-    "t1_classic":   _TEMPLATES_DIR / "t1_classic.html",
-    "t2_modern":    _TEMPLATES_DIR / "t2_modern.html",
-    "t3_executive": _TEMPLATES_DIR / "t3_executive.html",
+    "t1_classic":    _TEMPLATES_DIR / "t1_classic.html",
+    "t2_modern":     _TEMPLATES_DIR / "t2_modern.html",
+    "t3_executive":  _TEMPLATES_DIR / "t3_executive.html",
+    "t4_minimalist": _TEMPLATES_DIR / "t4_minimalist.html",
+    "t5_techmodern": _TEMPLATES_DIR / "t5_techmodern.html",
 }
 
 TEMPLATE_REGISTRY: list[dict] = [
-    {"id": "t1_classic",   "name": "Classic",   "description": "Traditional serif, black & white"},
-    {"id": "t2_modern",    "name": "Modern",     "description": "Clean sans-serif, blue accent"},
-    {"id": "t3_executive", "name": "Executive",  "description": "Bold headers, Georgia serif, charcoal"},
+    {"id": "t1_classic",    "name": "Classic",             "description": "Traditional serif, black & white"},
+    {"id": "t2_modern",     "name": "Modern",               "description": "Clean sans-serif, blue accent"},
+    {"id": "t3_executive",  "name": "Executive",            "description": "Bold headers, Georgia serif, charcoal"},
+    {"id": "t4_minimalist", "name": "Executive Minimalist", "description": "Ultra-clean single column, no color blocks"},
+    {"id": "t5_techmodern", "name": "Modern Tech",           "description": "Two-column layout, dark sidebar, teal accent"},
 ]
 
 
@@ -250,13 +254,16 @@ def _build_military(mil: dict | None) -> str:
     role  = _t(mil.get("role",  ""), 45)
     unit  = _t(mil.get("unit",  ""), 60)   # raised from 40 — canonical unit string is 41 chars
     dates = _t(_format_year_range(mil.get("dates", "")), 20)
+    # unit is optional — omit the span entirely so ::before separators (used by
+    # some templates) don't leave a dangling "—" when there's no unit text.
+    unit_html = f'<span class="mil-unit">{unit}</span>' if unit else ""
     return (
         f'<div class="side-sec">'
         f'  <span class="sec-title">Military Service</span>'
         f'  <div class="entry-hdr">'
         f'    <div class="entry-meta">'
         f'      <span class="mil-role">{role}</span>'
-        f'      <span class="mil-unit">{unit}</span>'
+        f'      {unit_html}'
         f'    </div>'
         f'    <span class="entry-dates">{dates}</span>'
         f'  </div>'

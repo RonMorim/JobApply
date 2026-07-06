@@ -379,25 +379,6 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
     return () => clearInterval(id)
   }, [isLoading])
 
-  // ── Simulated high-confidence tailored score ──────────────────────────────
-  // The tailored score is always displayed as significantly better than the
-  // baseline to prove the CV improvement. Sub-dimensions are calibrated to
-  // reflect a 90%+ optimized document.
-  const simulatedMatchScore: typeof matchScore = matchScore ? (() => {
-    const targetTotal = Math.round((job.score + (100 - job.score) * 0.8) * 10) / 10
-    const kwOverlap   = 36
-    const senMatch    = Math.min(25, Math.round(targetTotal * 0.22))
-    const skillsAlign = Math.min(35, Math.max(0, Math.round(targetTotal - kwOverlap - senMatch)))
-    return {
-      ...matchScore,
-      total:               targetTotal,
-      keyword_overlap:     kwOverlap,
-      skills_alignment:    skillsAlign,
-      seniority_alignment: senMatch,
-      llm_validated:       true,
-    }
-  })() : null
-
   // ── Fetch templates on mount ──────────────────────────────────────────────
   useEffect(() => {
     fetchTemplates().then(setTemplates).catch(() => {})
@@ -712,10 +693,10 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
           <JobInfoCard job={job} />
 
           {/* B2C — match score + template selector (preview phase only) */}
-          {phase === 'preview' && simulatedMatchScore && (
+          {phase === 'preview' && matchScore && (
             <>
               <MatchScorePanel
-                score={simulatedMatchScore}
+                score={matchScore}
                 isLoading={isLoading || isScoreLoading}
                 baselineScore={job.score}
               />
