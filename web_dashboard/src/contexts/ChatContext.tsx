@@ -41,6 +41,16 @@ interface ChatState {
   isEliyaOpen:   boolean
   openEliya:     () => void
   closeEliya:    () => void
+  // ── Cross-component profile-change signal ──────────────────────────────────
+  // Any chat surface that may have changed the user's Master Profile (CV
+  // ingestion, a profile-editing tool call) bumps this counter. Components
+  // that display profile-derived data (e.g. the System Confidence Score on
+  // the Overview dashboard) can depend on it in a useEffect/useCallback to
+  // know when to re-fetch, without prop-drilling across the render tree —
+  // ChatOverlay/ArielChat and Overview/TrustDashboard are siblings mounted
+  // in different parts of the tree, not parent/child.
+  profileVersion:        number
+  triggerProfileRefresh: () => void
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -55,6 +65,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [jobContext,   setJobContext]    = useState<ChatJobContext | null>(null)
   const [messages,     setMessages]     = useState<ChatMessage[]>([])
   const [thinking,     setThinking]     = useState(false)
+  const [profileVersion, setProfileVersion] = useState(0)
+
+  const triggerProfileRefresh = useCallback(() => {
+    setProfileVersion(v => v + 1)
+  }, [])
 
   const greetedRef = useRef(false)
   const abortRef   = useRef<AbortController>(new AbortController())
@@ -254,6 +269,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       isOpen, jobContext, messages, thinking,
       openChat, closeChat, sendMessage, clearMessages,
       isEliyaOpen, openEliya, closeEliya,
+      profileVersion, triggerProfileRefresh,
     }}>
       {children}
     </Ctx.Provider>

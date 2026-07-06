@@ -457,7 +457,7 @@ export function Overview({
   // ── System Confidence Score (Phase 14) ──────────────────────────────────────
   // Mirrored from TrustDashboard's own /trust-score fetch via onScoreChange —
   // see the comment above ConfidenceScoreCard for why we don't fetch it twice.
-  const { openChat } = useChat()
+  const { openChat, profileVersion } = useChat()
   const [confidenceScore, setConfidenceScore] = useState<number | null>(null)
 
   const handleImproveScore = useCallback(() => {
@@ -572,7 +572,7 @@ export function Overview({
 
       {/* ── Confidence Matrix (TrustDashboard) ──────────────────────────── */}
       {/* Remounts on every tab-switch to Overview, so fetchData fires fresh. */}
-      <TrustDashboard userId={userId} onScoreChange={setConfidenceScore} />
+      <TrustDashboard userId={userId} onScoreChange={setConfidenceScore} profileVersion={profileVersion} />
 
       {/* ── Divider ─────────────────────────────────────────────────────── */}
       <hr className="border-slate-100" />

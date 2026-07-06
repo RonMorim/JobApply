@@ -9,6 +9,7 @@ import remarkGfm    from 'remark-gfm'
 import { TOKENS }         from '@/lib/tokens'
 import { ensureFreshToken, getAuthHeaders } from '@/lib/api'
 import { useOnboarding }  from '@/contexts/OnboardingContext'
+import { useChat }        from '@/contexts/ChatContext'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -683,6 +684,7 @@ async function consumeStream(
 
 export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
   const { data: onboardingData, clear: clearOnboarding } = useOnboarding()
+  const { triggerProfileRefresh } = useChat()
 
   // ── Phase 1+2 state ────────────────────────────────────────────────────────
   const [messages,           setMessages]           = useState<ChatMessage[]>([])
@@ -1027,8 +1029,9 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
       // Refocus happens in the wasDisabledRef effect once the textarea's
       // `disabled` attribute actually clears in the DOM (see above).
       setStreaming(false)
+      triggerProfileRefresh()
     }
-  }, [messages, streaming, forceBottom])
+  }, [messages, streaming, forceBottom, triggerProfileRefresh])
 
   // ── Send ───────────────────────────────────────────────────────────────────
   const sendMessage = useCallback(async (override?: string) => {
@@ -1086,8 +1089,21 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
       // Refocus happens in the wasDisabledRef effect once the textarea's
       // `disabled` attribute actually clears in the DOM (see above).
       setStreaming(false)
+
+      // Signal that the Master Profile may have changed so any mounted
+      // Confidence Score display can re-fetch (see ChatContext.profileVersion).
+      // Tool-call profile edits (update_experience/update_skills/etc.) commit
+      // synchronously on the server before this response finishes streaming,
+      // so the immediate trigger already covers those. CV-attachment
+      // ingestion instead runs as a fire-and-forget background task that
+      // completes *after* the response returns, so also schedule a delayed
+      // second trigger to catch it.
+      triggerProfileRefresh()
+      if (capturedAttachments.length) {
+        setTimeout(triggerProfileRefresh, 5000)
+      }
     }
-  }, [input, messages, streaming, replyingTo, attachments, forceBottom])
+  }, [input, messages, streaming, replyingTo, attachments, forceBottom, triggerProfileRefresh])
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
@@ -1401,9 +1417,12 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
           {onClose && (
             <>
               {/* Minimize — hides the panel; the conversation stays intact and
-                  can be reopened from the floating "Ask Ariel" launcher. */}
+                  can be reopened from the floating "Ask Ariel" launcher.
+                  Also a natural moment to re-check the Confidence Score in
+                  case a background CV-ingestion task finished since the last
+                  per-message trigger. */}
               <button
-                onClick={onClose}
+                onClick={() => { triggerProfileRefresh(); onClose() }}
                 title="Minimize"
                 aria-label="Minimize Ariel"
                 className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
@@ -1416,7 +1435,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
               {/* Close — also hides the panel (state preserved); reopen anytime
                   via the launcher. */}
               <button
-                onClick={onClose}
+                onClick={() => { triggerProfileRefresh(); onClose() }}
                 title="Close"
                 aria-label="Close Ariel"
                 className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"

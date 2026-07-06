@@ -2304,10 +2304,17 @@ interface TrustDashboardProps {
    *  lets a parent (e.g. Overview's System Confidence Score card) mirror the
    *  same number without firing a second /trust-score request of its own. */
   onScoreChange?: (score: number) => void
+  /** Bump this (e.g. ChatContext's profileVersion) to force a silent re-fetch —
+   *  used when Ariel updates the Master Profile mid-session so the score
+   *  reflects it without the user reloading the page. Only the initial
+   *  mount-time fetch shows the loading skeleton; refetches triggered by a
+   *  version bump update in place so the UI never flashes back to a
+   *  skeleton mid-session. */
+  profileVersion?: number
 }
 
 export function TrustDashboard({
-  userId, showAuthWall = false, className = '', onScoreChange,
+  userId, showAuthWall = false, className = '', onScoreChange, profileVersion,
 }: TrustDashboardProps) {
   const [data,      setData]      = useState<TrustScoreResponse | null>(null)
   const [radarData, setRadarData] = useState<ConfidenceRadarDatum[]>([])
@@ -2332,10 +2339,15 @@ export function TrustDashboard({
   const onScoreChangeRef = useRef(onScoreChange)
   useEffect(() => { onScoreChangeRef.current = onScoreChange }, [onScoreChange])
 
+  // Guards the loading skeleton so only the very first fetch shows it —
+  // subsequent refetches (triggered by profileVersion) update `data` in
+  // place without ever flashing the dashboard back to a skeleton.
+  const hasLoadedOnceRef = useRef(false)
+
   // ── Fetch ────────────────────────────────────────────────────────────────
 
   const fetchData = useCallback(async () => {
-    setLoading(true)
+    if (!hasLoadedOnceRef.current) setLoading(true)
     setError(null)
     try {
       // Ensure the auth token is populated before these mount-time fetches —
@@ -2377,10 +2389,14 @@ export function TrustDashboard({
       setError(err instanceof Error ? err.message : 'Failed to load trust scores')
     } finally {
       setLoading(false)
+      hasLoadedOnceRef.current = true
     }
   }, [userId])
 
-  useEffect(() => { fetchData() }, [fetchData])
+  // Re-fires whenever profileVersion is bumped (Ariel chat updated the
+  // profile) in addition to the initial mount-time fetch — see fetchData's
+  // hasLoadedOnceRef guard for why this doesn't re-show the skeleton.
+  useEffect(() => { fetchData() }, [fetchData, profileVersion])
 
   // ── Start probe ──────────────────────────────────────────────────────────
 
