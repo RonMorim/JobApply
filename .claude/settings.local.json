@@ -124,7 +124,8 @@
       "Bash(python3 -m py_compile backend/agents/ariel_tools.py backend/services/profile_update_service.py backend/api/routes/chat.py backend/api/routes/profile.py)",
       "Bash(python3 -m backend.scripts.sync_trust_scores)",
       "Bash(venv/bin/python3 -m backend.scripts.sync_trust_scores)",
-      "Bash(venv/bin/python3 -c ' *)"
+      "Bash(venv/bin/python3 -c ' *)",
+      "Bash(venv/bin/python3 -m py_compile backend/api/routes/chat.py)"
     ]
   }
 }

@@ -319,13 +319,42 @@ If you catch yourself about to use a masculine form in Hebrew, stop and use
 the correct feminine form instead. There are no exceptions.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ADDRESSING THE USER IN HEBREW — GENDER AGREEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+This is separate from your own identity above and concerns how you speak
+TO the user, not about yourself. When replying in Hebrew, every verb,
+adjective, and pronoun addressed to the user (second person) must agree
+with the user's gender.
+
+1. Infer the user's gender from available signals, in this priority order:
+   a. Explicit statements in the conversation (e.g. "אני גבר" / "אני אישה").
+   b. Grammatical self-references the user makes about themselves
+      (e.g. "עבדתי" is gender-neutral, but "הייתי בטוח" vs "הייתי בטוחה"
+      reveals gender; watch for first-person feminine/masculine verb forms).
+   c. A first name in <MasterProfile> or the conversation that is
+      unambiguously gendered in Hebrew/English convention.
+2. If none of these give a clear signal, DEFAULT to masculine grammatical
+   forms when addressing the user. Do not ask the user their gender
+   just to satisfy grammar — infer, default, and move on.
+3. Re-evaluate if the user later gives a signal that contradicts your
+   earlier default, and switch immediately without commenting on the
+   correction.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CANDIDATE PROFILE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-The user's full Master Profile — past roles, skills, education, career
-goals — is already provided below inside <MasterProfile>. It reflects the
-database state as of the start of this conversation. You have it from
-turn one; never claim you have no context or ask the user to repeat facts
-that already appear in it.
+The user's full Master Profile — contact details, past roles, skills,
+education, career goals — is already provided below inside <MasterProfile>.
+It reflects the database state as of the start of this conversation. You
+have it from turn one, in full, exactly as it appears below.
+
+FORBIDDEN — NO AMNESIA CLAIMS: Never say or imply any version of "I start
+every chat from zero," "I don't remember past conversations," "I have no
+memory of you," or "please remind me who you are." The Master Profile
+below IS your memory of this user — treat it as continuously available
+context, not as something you are seeing for the first time. Never ask
+the user to repeat facts (name, contact info, roles, skills) that already
+appear in <MasterProfile>.
 
 If the user uploads a new CV or updates their profile mid-conversation,
 call the get_full_candidate_profile tool to re-fetch the current state
@@ -495,6 +524,15 @@ def _build_ariel_system(pinned_messages: list[ChatMessage], user_id: str) -> str
     before every answer. The tool remains available for mid-conversation
     re-fetches (e.g. after a CV upload updates the profile).
 
+    Contact details (name/email/phone/linkedin/location) do NOT live in the
+    master_profiles.master_profile JSON that get_profile() reads — they are
+    split across the verified `email` column on MasterProfileRow (Supabase
+    JWT, authoritative) and the per-user personal.* fields in
+    user_profile_store (populated by CV parsing / the profile UI). Both are
+    fetched here and prepended as a dedicated <ContactInfo> block ahead of
+    <MasterProfile> so Ariel never has to ask the user for details the CV
+    parser already extracted.
+
     The static persona + rules follow.
     """
     parts: list[str] = []
@@ -514,6 +552,42 @@ def _build_ariel_system(pinned_messages: list[ChatMessage], user_id: str) -> str
             f"{context_lines}\n"
             "</CoreContext>"
         )
+
+    # ── Contact info: verified email (DB column) + personal.* (file store) ──
+    try:
+        from backend.services.user_profile_store import load as _load_personal_store
+
+        verified_email = ""
+        with Session(ENGINE) as _sess:
+            row = _sess.get(MasterProfileRow, user_id)
+            if row and row.email:
+                verified_email = row.email
+
+        stored_personal = _load_personal_store(user_id).get("personal", {}) or {}
+        onboarding_name = ""
+        try:
+            onboarding = get_profile(user_id)
+            onboarding_name = (onboarding.get("personal") or {}).get("name", "")
+        except Exception:
+            pass
+
+        contact = {
+            "name":     stored_personal.get("full_name", "") or onboarding_name,
+            "email":    verified_email or stored_personal.get("email", ""),
+            "phone":    stored_personal.get("phone", ""),
+            "linkedin": stored_personal.get("linkedin_url", ""),
+            "location": stored_personal.get("location", ""),
+        }
+        contact_json = sanitize_text(json.dumps(contact, ensure_ascii=False, indent=2))
+    except Exception as exc:
+        logger.error("[_build_ariel_system] contact info fetch failed user=%s: %s", user_id, exc)
+        contact_json = "{}"
+
+    parts.append(
+        "<ContactInfo>\n"
+        f"{contact_json}\n"
+        "</ContactInfo>"
+    )
 
     try:
         # Profile text is CV-derived and user-controlled — sanitize before it

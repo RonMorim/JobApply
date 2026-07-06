@@ -763,6 +763,75 @@ function _useIsDesktop(): boolean {
   return isDesktop
 }
 
+// Max dimensions mirrored from the inline style below (`min(720px, ...)` /
+// `min(800px, ...)`) so the drag handler can clamp without reading layout.
+const _MAX_WIDTH  = 720
+const _MAX_HEIGHT = 800
+
+// ── Top-left resize handle ────────────────────────────────────────────────
+//
+// The panel is anchored to the viewport's bottom-right corner (`fixed
+// bottom-0 right-0`), so growing width/height while that anchor stays fixed
+// naturally expands the panel toward the top-left — no separate
+// repositioning of the container is needed, only the size state changes.
+function TopLeftResizeHandle({
+  size,
+  setSize,
+}: {
+  size:    { width: number; height: number }
+  setSize: React.Dispatch<React.SetStateAction<{ width: number; height: number }>>
+}) {
+  const dragRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null)
+
+  const onPointerMove = useCallback((e: PointerEvent) => {
+    const drag = dragRef.current
+    if (!drag) return
+    const deltaX = e.clientX - drag.startX
+    const deltaY = e.clientY - drag.startY
+    // Dragging toward the top-left (negative delta) grows the panel;
+    // dragging back toward the bottom-right shrinks it.
+    const nextWidth  = Math.min(_MAX_WIDTH,  Math.max(_MIN_WIDTH,  drag.startW - deltaX))
+    const nextHeight = Math.min(_MAX_HEIGHT, Math.max(_MIN_HEIGHT, drag.startH - deltaY))
+    setSize({ width: nextWidth, height: nextHeight })
+  }, [setSize])
+
+  const onPointerUp = useCallback((e: PointerEvent) => {
+    dragRef.current = null
+    window.removeEventListener('pointermove', onPointerMove)
+    window.removeEventListener('pointerup', onPointerUp)
+    ;(e.target as Element | null)?.releasePointerCapture?.(e.pointerId)
+  }, [onPointerMove])
+
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    dragRef.current = { startX: e.clientX, startY: e.clientY, startW: size.width, startH: size.height }
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+  }, [size, onPointerMove, onPointerUp])
+
+  useEffect(() => {
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+    }
+  }, [onPointerMove, onPointerUp])
+
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      title="Drag to resize"
+      className="absolute top-0 left-0 z-10 w-4 h-4 cursor-nwse-resize touch-none"
+      style={{ background: 'transparent' }}
+    >
+      <svg width={14} height={14} viewBox="0 0 14 14" className="absolute top-0.5 left-0.5 pointer-events-none opacity-40">
+        <circle cx="3" cy="3" r="1.3" fill="currentColor" />
+        <circle cx="8" cy="3" r="1.3" fill="currentColor" />
+        <circle cx="3" cy="8" r="1.3" fill="currentColor" />
+      </svg>
+    </div>
+  )
+}
+
 function OverlayShell({
   isOpen,
   onBackdropClick,
@@ -778,24 +847,8 @@ function OverlayShell({
   shadowColor?:    string
   children:        React.ReactNode
 }) {
-  const shellRef   = useRef<HTMLDivElement>(null)
   const isDesktop  = _useIsDesktop()
   const [size, setSize] = useState(_DEFAULT_SIZE)
-
-  // Track the panel's live rendered size while the user drags the native
-  // CSS `resize` handle, so the next React re-render (e.g. a streaming
-  // message updating state) reasserts the resized dimensions instead of
-  // snapping back to the last value set in `style`.
-  useEffect(() => {
-    const el = shellRef.current
-    if (!el || !isOpen || !isDesktop) return
-    const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect
-      setSize({ width: Math.round(width), height: Math.round(height) })
-    })
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [isOpen, isDesktop])
 
   return (
     <>
@@ -806,11 +859,10 @@ function OverlayShell({
         />
       )}
       <div
-        ref={shellRef}
         role="dialog"
         aria-label={ariaLabel}
         aria-modal="true"
-        className="fixed bottom-0 right-0 z-50 flex flex-col w-full sm:bottom-6 sm:rounded-2xl overflow-hidden transition-all duration-300 ease-out bg-white resize-none sm:resize"
+        className="fixed bottom-0 right-0 z-50 flex flex-col w-full sm:bottom-6 sm:rounded-2xl overflow-hidden transition-all duration-300 ease-out bg-white"
         style={{
           height:        isOpen ? `${size.height}px` : '0px',
           width:         isDesktop ? `${size.width}px` : undefined,
@@ -825,6 +877,7 @@ function OverlayShell({
           right:         offsetRight,
         }}
       >
+        {isDesktop && <TopLeftResizeHandle size={size} setSize={setSize} />}
         {children}
       </div>
     </>
