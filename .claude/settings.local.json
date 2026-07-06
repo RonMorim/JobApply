@@ -127,7 +127,18 @@
       "Bash(venv/bin/python3 -c ' *)",
       "Bash(venv/bin/python3 -m py_compile backend/api/routes/chat.py)",
       "Bash(grep -E \"\\\\.py$\")",
-      "Bash(.venv/bin/python -c ' *)"
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(sqlite3 backend/jobs.db \"SELECT created_at FROM jobs WHERE created_at IS NOT NULL ORDER BY created_at DESC LIMIT 8;\")",
+      "Bash(sqlite3 backend/jobs.db \"SELECT applied_at FROM jobs WHERE applied_at IS NOT NULL ORDER BY applied_at DESC LIMIT 5;\")",
+      "Bash(sqlite3 backend/jobs.db \"SELECT COUNT\\(*\\), COUNT\\(created_at\\) FROM jobs;\")",
+      "Bash(sqlite3 backend/jobs.db \"SELECT substr\\(created_at,1,10\\) d, COUNT\\(*\\) FROM jobs WHERE created_at IS NOT NULL GROUP BY d ORDER BY d DESC LIMIT 10;\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/services/analytics_service.py'\\).read\\(\\)\\); print\\('AST_OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('backend/services/analytics_service.py'\\).read\\(\\)\\); print\\('AST_OK'\\)\")",
+      "Bash(sqlite3 backend/jobs.db 'SELECT '\\\\''__TRACKED_VAR__'\\\\'' AS today, \\(SELECT COUNT\\(*\\) FROM jobs WHERE substr\\(created_at,1,10\\)='\\\\''__TRACKED_VAR__'\\\\''\\) AS scanned_today, \\(SELECT COUNT\\(*\\) FROM jobs WHERE applied=1 AND substr\\(applied_at,1,10\\)='\\\\''__TRACKED_VAR__'\\\\''\\) AS actions_today;')",
+      "Bash(sqlite3 backend/jobs.db \"SELECT COUNT\\(*\\) FROM jobs WHERE substr\\(created_at,1,10\\)='2026-06-24';\")",
+      "Bash(awk 'NR>=2316 && /return \\\\\\(/ {print NR\": \"$0}' src/components/TrustDashboard.tsx)",
+      "Bash(grep -n \"className={\\\\`\\\\|className={className\\\\|\\\\${className}\" src/components/TrustDashboard.tsx)"
     ]
   }
 }

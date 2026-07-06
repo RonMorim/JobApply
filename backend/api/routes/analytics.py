@@ -113,9 +113,9 @@ def _canonical_company(raw_name: str | None) -> str:
 @router.get("/overview")
 async def analytics_overview(user: CurrentUser = Depends(get_current_user)) -> dict:
     """
-    Dashboard KPI values: Average Match Score (across scored jobs), Top
-    Strengths (highest-confidence skills from the Master Profile knowledge
-    graph), and Tailored CVs generated.
+    Daily Overview KPI values: Jobs Scanned Today, Actions Taken Today
+    (applications submitted since UTC midnight), and Average Match Score
+    (across scored jobs). The two "today" counters reset at 00:00 UTC.
 
     Auth-protected; rate-limited at the router level; every underlying query
     is scoped to the verified user.user_id (see services/analytics_service.py).

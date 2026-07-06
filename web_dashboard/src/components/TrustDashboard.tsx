@@ -330,19 +330,29 @@ function ProgressBar({ score, verificationLevel }: {
 
   return (
     <div className="w-full flex items-center gap-2.5 min-w-0">
-      <div className="flex-1 h-[4px] rounded-full bg-slate-100 overflow-hidden">
+      {/* Prominent numeric score — anchors the row's visual hierarchy */}
+      <span className="shrink-0 w-9 text-right text-[13px] font-bold tabular-nums leading-none" style={{ color: to }}>
+        {pct.toFixed(0)}
+        <span className="text-[9px] font-semibold align-top ml-px">%</span>
+      </span>
+      {/* Track — inset shadow for depth; taller rounded rail with a gradient fill */}
+      <div
+        className="flex-1 h-[7px] rounded-full bg-slate-100 overflow-hidden"
+        style={{ boxShadow: 'inset 0 1px 2px rgba(15,23,42,0.08)' }}
+      >
         <div
           className="h-full rounded-full"
           style={{
             width:      `${pct}%`,
             background: `linear-gradient(90deg, ${from}, ${to})`,
+            boxShadow:  `0 0 8px color-mix(in oklab, ${to} 45%, transparent)`,
             transition: 'width 600ms cubic-bezier(0.22,1,0.36,1)',
           }}
         />
       </div>
-      <div className="flex items-start gap-1 shrink-0 max-w-[120px]">
+      <div className="flex items-center gap-1 shrink-0 max-w-[120px]">
         <span
-          className="w-[6px] h-[6px] rounded-full shrink-0 mt-[3px]"
+          className="w-[6px] h-[6px] rounded-full shrink-0"
           style={{ background: label.dot }}
         />
         <span
@@ -563,14 +573,14 @@ function EntityTrustRow({
 
   return (
     <div
-      className={`rounded-xl border transition-all ${
-        needsFlag ? 'border-amber-200' : 'border-slate-100'
-      }`}
+      className={`group/row rounded-xl border bg-white transition-all duration-200 ease-out ${
+        needsFlag ? 'border-amber-200' : 'border-slate-100 hover:border-slate-200'
+      } ${open ? '' : 'hover:-translate-y-0.5'}`}
       style={{
         boxShadow: open
-          ? '0 2px 8px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.04)'
-          : '0 1px 3px rgba(15,23,42,0.04)',
-        transition: 'box-shadow 200ms ease, border-color 150ms ease',
+          ? '0 2px 8px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)'
+          : '0 1px 3px rgba(15,23,42,0.05)',
+        transition: 'box-shadow 200ms ease, border-color 150ms ease, transform 200ms ease',
       }}
     >
       {/* Amber accent bar for flagged entities */}
@@ -1789,9 +1799,10 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
 
   return (
     <div
-      className="grid items-center gap-x-4 px-5 py-3.5 rounded-xl bg-white border border-slate-100 hover:bg-slate-50/60 transition-colors group"
+      className="grid items-center gap-x-4 px-5 py-3.5 rounded-xl bg-white border border-slate-100 hover:border-slate-200 hover:-translate-y-0.5 transition-all duration-200 ease-out group"
       style={{
         gridTemplateColumns: 'minmax(180px, 2fr) minmax(100px, 1fr) 90px 16px minmax(120px, 1fr) minmax(100px, 1fr)',
+        boxShadow: '0 1px 3px rgba(15,23,42,0.05)',
       }}
     >
       {/* ① Name + type (+ optional rank number) ───────────────────── */}
@@ -1811,12 +1822,20 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
         </div>
       </div>
 
-      {/* ② Progress bar ─────────────────────────────────────────────── */}
+      {/* ② Progress bar — premium rounded rail with gradient fill + glow ─ */}
       <div className="hidden sm:flex items-center w-full">
-        <div className="w-full h-[3px] rounded-full bg-slate-100 overflow-hidden">
+        <div
+          className="w-full h-[7px] rounded-full bg-slate-100 overflow-hidden"
+          style={{ boxShadow: 'inset 0 1px 2px rgba(15,23,42,0.08)' }}
+        >
           <div
             className="h-full rounded-full"
-            style={{ width: `${pct}%`, background: barColor, transition: 'width 500ms cubic-bezier(0.22,1,0.36,1)' }}
+            style={{
+              width:      `${pct}%`,
+              background: `linear-gradient(90deg, color-mix(in oklab, ${barColor} 65%, white), ${barColor})`,
+              boxShadow:  `0 0 8px color-mix(in oklab, ${barColor} 45%, transparent)`,
+              transition: 'width 500ms cubic-bezier(0.22,1,0.36,1)',
+            }}
           />
         </div>
       </div>

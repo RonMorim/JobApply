@@ -4,7 +4,7 @@ import { getGreetingName } from '@/lib/nameUtils'
 import { TOKENS } from '@/lib/tokens'
 import type { ApiFeedJob } from '@/lib/apiTypes'
 import { Skeleton } from './ui/Skeleton'
-import { SparkIcon, UserBadgeIcon, FileIcon, SlidersIcon, ArrowIcon } from './icons'
+import { SparkIcon, UserBadgeIcon, FileIcon, SlidersIcon, ArrowIcon, SearchIcon, BoltIcon } from './icons'
 import { TrustDashboard } from './TrustDashboard'
 import { useChat } from '@/contexts/ChatContext'
 import {
@@ -73,81 +73,101 @@ function LinkedInPausedBanner() {
   )
 }
 
-// ── KPI strip ─────────────────────────────────────────────────────────────────
-// Pure typography — no boxes, no borders. Three stats in a horizontal rule.
+// ── KPI cards ─────────────────────────────────────────────────────────────────
+// Premium metric cards: soft-shadow surface, tinted icon chip, an accent glow
+// that intensifies on hover, and a large accent-coloured number so each metric
+// carries its own visual identity and "pops" off the canvas.
 
-function KPIStat({ label, value, sub, accent }: {
-  label: string; value: string | number; sub: string; accent: string
+type KPIIcon = (props: { s?: number }) => JSX.Element
+
+function KPIStat({ label, value, sub, accent, Icon }: {
+  label: string; value: string | number; sub: string; accent: string; Icon: KPIIcon
 }) {
-  // Free-text values (e.g. a strengths label) get a smaller size than the
-  // big tabular-nums treatment reserved for short numeric/percentage stats.
-  const isFreeText = typeof value === 'string' && value.length > 6
   return (
-    <div className="flex flex-col gap-1 min-w-0">
+    <div
+      className="group relative overflow-hidden rounded-2xl bg-white border border-slate-100 px-5 pt-5 pb-6 transition-all duration-300 ease-out hover:-translate-y-0.5"
+      style={{ boxShadow: TOKENS.shadow.card }}
+    >
+      {/* Soft accent glow, top-right — brightens on hover for a tactile feel */}
       <span
-        className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-slate-400"
+        aria-hidden
+        className="pointer-events-none absolute -top-10 -right-10 h-28 w-28 rounded-full blur-2xl opacity-[0.08] transition-opacity duration-300 group-hover:opacity-[0.16]"
+        style={{ background: accent }}
+      />
+      {/* Icon chip */}
+      <span
+        className="relative inline-flex h-9 w-9 items-center justify-center rounded-xl mb-4 transition-transform duration-300 group-hover:scale-105"
+        style={{ background: `color-mix(in oklab, ${accent} 12%, white)`, color: accent }}
       >
-        {label}
+        <Icon s={17} />
       </span>
+      {/* Big accent-coloured value */}
       <span
-        className={
-          isFreeText
-            ? "text-[18px] font-semibold leading-tight tracking-tight text-slate-900 truncate"
-            : "text-[38px] font-semibold tabular-nums leading-none tracking-tight text-slate-900"
-        }
-        style={isFreeText ? undefined : { fontVariantNumeric: 'tabular-nums' }}
-        title={isFreeText ? value : undefined}
+        className="relative block text-[36px] font-bold leading-none tracking-tight"
+        style={{ color: accent, fontVariantNumeric: 'tabular-nums' }}
       >
         {value}
       </span>
-      <span className="text-[12px] text-slate-400 leading-snug">{sub}</span>
-      {/* Per-stat accent underline — replaces the card border as the only decoration */}
-      <span className="block h-[3px] w-8 rounded-full mt-1" style={{ background: accent }} />
+      {/* Label + sub */}
+      <span className="relative mt-3 block text-[11px] font-semibold uppercase tracking-[0.11em] text-slate-500">
+        {label}
+      </span>
+      <span className="relative mt-1 block text-[12px] text-slate-400 leading-snug">
+        {sub}
+      </span>
     </div>
   )
 }
 
-function KPIRow({ averageMatchScore, topStrengths, tailoredCvCount, loading }: {
+// Daily activity strip: the two "today" counters reset at UTC midnight, with
+// Average Match Score on the right as the stable quality signal. Order is
+// fixed left→right: Jobs Scanned Today · Actions Taken Today · Avg Match Score.
+function KPIRow({ jobsScannedToday, actionsTakenToday, averageMatchScore, loading }: {
+  jobsScannedToday:  number
+  actionsTakenToday: number
   averageMatchScore: number
-  topStrengths:      Array<{ name: string; confidence_score: number }>
-  tailoredCvCount:   number
   loading:           boolean
 }) {
   if (loading) {
     return (
-      <div className="grid grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
         {[0, 1, 2].map(i => (
-          <div key={i} className="flex flex-col gap-2">
-            <Skeleton className="h-2.5 w-24" />
-            <Skeleton className="h-9 w-16" />
-            <Skeleton className="h-2.5 w-32" />
+          <div
+            key={i}
+            className="rounded-2xl bg-white border border-slate-100 px-5 pt-5 pb-6"
+            style={{ boxShadow: TOKENS.shadow.card }}
+          >
+            <Skeleton className="h-9 w-9 rounded-xl mb-4" />
+            <Skeleton className="h-9 w-20" />
+            <Skeleton className="h-2.5 w-24 mt-3" />
+            <Skeleton className="h-2.5 w-32 mt-2" />
           </div>
         ))}
       </div>
     )
   }
-  const topStrengthLabel = topStrengths.length > 0
-    ? topStrengths.slice(0, 2).map(s => s.name).join(', ')
-    : 'Not enough profile data yet'
   return (
-    <div className="grid grid-cols-3 gap-8">
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+      <KPIStat
+        label="Jobs scanned today"
+        value={jobsScannedToday}
+        sub="New roles surfaced since midnight"
+        accent={TOKENS.color.primary}
+        Icon={SearchIcon}
+      />
+      <KPIStat
+        label="Actions taken today"
+        value={actionsTakenToday}
+        sub="Applications you submitted today"
+        accent={TOKENS.color.success}
+        Icon={BoltIcon}
+      />
       <KPIStat
         label="Average match score"
         value={`${averageMatchScore.toFixed(1)}%`}
         sub="ATS fit across your scored jobs"
-        accent={TOKENS.color.primary}
-      />
-      <KPIStat
-        label="Top strengths"
-        value={topStrengthLabel}
-        sub="Highest-confidence skills in your profile"
-        accent={TOKENS.color.success}
-      />
-      <KPIStat
-        label="Tailored CVs"
-        value={tailoredCvCount}
-        sub="CVs generated for specific roles"
-        accent={TOKENS.color.violet}
+        accent={TOKENS.color.primaryHover}
+        Icon={SparkIcon}
       />
     </div>
   )
@@ -185,7 +205,8 @@ function AnalyticsErrorBanner({ rateLimited, onRetry }: {
 }
 
 // ── Quick actions ─────────────────────────────────────────────────────────────
-// Plain bordered list — no card backgrounds, no shadows.
+// A 2×2 grid of interactive action cards — each with a distinct icon container,
+// an accent hairline that grows on hover, and a soft lift. Strictly teal/emerald.
 
 function QuickActions({ newCount, savedCount, onGo }: {
   newCount: number; savedCount: number; onGo: (tab: string) => void
@@ -193,30 +214,30 @@ function QuickActions({ newCount, savedCount, onGo }: {
   const items = [
     {
       id: 'review', tab: 'feed',
-      label: `Review your ${newCount} new matches`,
+      label: `Review ${newCount} new matches`,
       sub: 'Top matches this morning',
       accent: TOKENS.color.primary,
       Icon: SparkIcon,
     },
     {
       id: 'profile', tab: 'profile-builder:optimize_gaps',
-      label: 'Review your profile strengths',
+      label: 'Strengthen your profile',
       sub: 'Targets low-confidence claims first',
-      accent: TOKENS.color.violet,
+      accent: TOKENS.color.success,
       Icon: UserBadgeIcon,
     },
     {
       id: 'cv', tab: 'profile-builder',
       label: 'Update your CV',
       sub: 'Open the AI Profile Builder',
-      accent: TOKENS.color.success,
+      accent: TOKENS.color.primaryHover,
       Icon: FileIcon,
     },
     {
       id: 'prefs', tab: 'prefs',
       label: 'Tune your preferences',
       sub: 'Match score, work mode, location',
-      accent: TOKENS.color.warn,
+      accent: TOKENS.color.success,
       Icon: SlidersIcon,
     },
   ]
@@ -228,34 +249,53 @@ function QuickActions({ newCount, savedCount, onGo }: {
           Quick actions
         </h2>
       </div>
-      {/* Divided list — no individual card borders */}
-      <div className="divide-y divide-slate-100">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {items.map(it => {
           const { Icon } = it
           return (
             <button
               key={it.id}
               onClick={() => onGo(it.tab)}
-              className="group w-full text-left flex items-center gap-4 py-3.5 hover:bg-slate-50/60 transition-colors duration-150 rounded-lg px-1 -mx-1"
+              className="group relative overflow-hidden text-left rounded-2xl bg-white border border-slate-100 p-4 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-slate-200"
+              style={{ boxShadow: TOKENS.shadow.card }}
             >
+              {/* Accent hairline down the left edge — grows on hover */}
               <span
-                className="inline-flex h-8 w-8 items-center justify-center rounded-lg shrink-0"
-                style={{
-                  background: `color-mix(in oklab, ${it.accent} 10%, white)`,
-                  color: it.accent,
-                }}
-              >
-                <Icon s={14} />
-              </span>
-              <span className="flex-1 min-w-0">
-                <span className="block text-[13.5px] font-medium text-slate-800 leading-snug">
-                  {it.label}
+                aria-hidden
+                className="absolute left-0 top-4 bottom-4 w-[3px] rounded-full opacity-60 transition-all duration-300 group-hover:top-2 group-hover:bottom-2 group-hover:opacity-100"
+                style={{ background: it.accent }}
+              />
+              {/* Soft accent glow, bottom-right */}
+              <span
+                aria-hidden
+                className="pointer-events-none absolute -bottom-8 -right-8 h-20 w-20 rounded-full blur-2xl opacity-0 transition-opacity duration-300 group-hover:opacity-[0.12]"
+                style={{ background: it.accent }}
+              />
+              <div className="relative flex items-start gap-3">
+                <span
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl shrink-0 transition-transform duration-300 group-hover:scale-105"
+                  style={{
+                    background: `color-mix(in oklab, ${it.accent} 12%, white)`,
+                    color: it.accent,
+                  }}
+                >
+                  <Icon s={15} />
                 </span>
-                <span className="block text-[12px] text-slate-400 mt-0.5">{it.sub}</span>
-              </span>
-              <span className="text-slate-300 group-hover:text-slate-500 transition-colors shrink-0">
-                <ArrowIcon s={13} />
-              </span>
+                <span className="flex-1 min-w-0 pt-0.5">
+                  <span className="flex items-center gap-1.5">
+                    <span className="block text-[13.5px] font-semibold text-slate-800 leading-snug">
+                      {it.label}
+                    </span>
+                    <span
+                      className="text-slate-300 -translate-x-1 opacity-0 transition-all duration-300 group-hover:translate-x-0 group-hover:opacity-100"
+                      style={{ color: it.accent }}
+                    >
+                      <ArrowIcon s={12} />
+                    </span>
+                  </span>
+                  <span className="block text-[12px] text-slate-400 mt-1 leading-snug">{it.sub}</span>
+                </span>
+              </div>
             </button>
           )
         })}
@@ -268,6 +308,8 @@ function QuickActions({ newCount, savedCount, onGo }: {
 // A lightweight read-only row — NOT a full JobCard accordion.
 // Clicking navigates the user to the Matches tab rather than expanding in-place.
 
+// Score badge — a filled, tinted square so the match score reads as a
+// deliberate metric chip rather than loose text. Brand teal/emerald only.
 function ScorePip({ score }: { score: number }) {
   const color =
     score >= 80 ? TOKENS.color.success :
@@ -276,14 +318,17 @@ function ScorePip({ score }: { score: number }) {
                   TOKENS.color.danger
 
   return (
-    <div className="flex flex-col items-center gap-0.5 shrink-0 w-10">
-      <span
-        className="text-[15px] font-bold tabular-nums leading-none"
-        style={{ color }}
-      >
-        {score.toFixed(1)}
+    <div
+      className="flex flex-col items-center justify-center shrink-0 rounded-xl h-11 w-11 transition-transform duration-300 group-hover:scale-105"
+      style={{
+        background: `color-mix(in oklab, ${color} 12%, white)`,
+        border: `1px solid color-mix(in oklab, ${color} 24%, white)`,
+      }}
+    >
+      <span className="text-[14px] font-bold tabular-nums leading-none" style={{ color }}>
+        {score.toFixed(0)}
       </span>
-      <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">
+      <span className="text-[8px] font-bold uppercase tracking-wide mt-0.5" style={{ color }}>
         ATS
       </span>
     </div>
@@ -294,7 +339,8 @@ function TopMatchRow({ job, onClick }: { job: ApiFeedJob; onClick: () => void })
   return (
     <button
       onClick={onClick}
-      className="group w-full text-left flex items-center gap-4 py-3.5 border-b border-slate-100 last:border-none hover:bg-slate-50/50 transition-colors duration-150 rounded-lg px-1 -mx-1"
+      className="group relative w-full text-left flex items-center gap-3.5 rounded-2xl bg-white border border-slate-100 px-3.5 py-3 mb-2.5 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-slate-200"
+      style={{ boxShadow: TOKENS.shadow.card }}
     >
       <ScorePip score={job.match_score} />
 
@@ -309,16 +355,27 @@ function TopMatchRow({ job, onClick }: { job: ApiFeedJob; onClick: () => void })
           )}
           {job.location}
         </p>
-        {/* Reason tags as inline text — no pill borders */}
+        {/* Reason chips — compact tinted pills instead of loose inline text */}
         {job.reasons.length > 0 && (
-          <p className="text-[11px] text-slate-400 mt-1 truncate">
-            {job.reasons.slice(0, 2).map(r => r.label).join(' · ')}
-          </p>
+          <div className="flex items-center gap-1.5 mt-1.5 overflow-hidden">
+            {job.reasons.slice(0, 2).map((r, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center h-[19px] px-2 rounded-md text-[10.5px] font-medium whitespace-nowrap shrink-0"
+                style={{ background: TOKENS.color.primarySoft, color: TOKENS.color.primaryHover }}
+              >
+                {r.label}
+              </span>
+            ))}
+          </div>
         )}
       </div>
 
-      <span className="text-slate-300 group-hover:text-slate-500 transition-colors shrink-0">
-        <ArrowIcon s={13} />
+      <span
+        className="shrink-0 text-slate-300 transition-all duration-300 group-hover:translate-x-0.5"
+        style={{ color: undefined }}
+      >
+        <ArrowIcon s={14} />
       </span>
     </button>
   )
@@ -329,13 +386,10 @@ function TopMatchRow({ job, onClick }: { job: ApiFeedJob; onClick: () => void })
 function TopMatchSkeleton({ opacity }: { opacity: number }) {
   return (
     <div
-      className="flex items-center gap-4 py-3.5 border-b border-slate-100 last:border-none"
-      style={{ opacity }}
+      className="flex items-center gap-3.5 rounded-2xl bg-white border border-slate-100 px-3.5 py-3 mb-2.5"
+      style={{ opacity, boxShadow: TOKENS.shadow.card }}
     >
-      <div className="flex flex-col items-center gap-1 w-10 shrink-0">
-        <Skeleton className="h-4 w-8" />
-        <Skeleton className="h-2 w-6" />
-      </div>
+      <Skeleton className="h-11 w-11 rounded-xl shrink-0" />
       <div className="flex-1 space-y-1.5">
         <Skeleton className="h-3.5 w-48" />
         <Skeleton className="h-3 w-32" />
@@ -443,6 +497,13 @@ function _timeGreeting(): string {
   return 'Good night'
 }
 
+// e.g. "Tuesday, 7 July" — used in the header date pill for a live, welcoming feel.
+function _todayLabel(): string {
+  return new Date().toLocaleDateString('en-GB', {
+    weekday: 'long', day: 'numeric', month: 'long',
+  })
+}
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 interface OverviewProps {
@@ -506,11 +567,11 @@ export function Overview({
 
   // KPIs come EXCLUSIVELY from the analytics API (real per-user DB counts).
   // No client-derived or mock fallbacks: when the API has no data (or fails),
-  // the honest answer is 0 / empty — these tie directly to ATS match scores
-  // and Master Profile skill confidence, not generic activity counters.
+  // the honest answer is 0. The two "today" counters are UTC-midnight scoped
+  // server-side, so they reflect only today's activity.
+  const kpiJobsScannedToday  = overview?.jobs_scanned_today  ?? 0
+  const kpiActionsTakenToday = overview?.actions_taken_today ?? 0
   const kpiAverageMatchScore = overview?.average_match_score ?? 0
-  const kpiTopStrengths      = overview?.top_strengths       ?? []
-  const kpiTailoredCvCount   = overview?.tailored_cv_count   ?? 0
   const kpiLoading           = overviewLoading
 
   const handleMatchClick    = useCallback(()              => onGo('feed'),         [onGo])
@@ -535,7 +596,7 @@ export function Overview({
   }, [])
 
   return (
-    <div className="space-y-12">
+    <div className="space-y-10">
 
       {/* ── LinkedIn scraper status banners ──────────────────────────────── */}
       {scraperStatus?.status === 'BLOCKED' && (
@@ -546,16 +607,42 @@ export function Overview({
       )}
 
       {/* ── Hero greeting ───────────────────────────────────────────────── */}
-      <div>
-        <h1 className="text-[28px] font-semibold text-slate-900 tracking-tight leading-tight">
-          {_timeGreeting()}
-          {getGreetingName(displayName ?? '')
-            ? `, ${getGreetingName(displayName ?? '')}`
-            : ''}
-        </h1>
-        <p className="text-[14px] text-slate-400 mt-1.5">
-          Here&apos;s what happened overnight.
-        </p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-[34px] font-bold text-slate-900 tracking-[-0.02em] leading-[1.1]">
+            {_timeGreeting()}
+            {getGreetingName(displayName ?? '') && (
+              <>
+                ,{' '}
+                <span
+                  style={{
+                    background: `linear-gradient(90deg, ${TOKENS.color.primary}, ${TOKENS.color.success})`,
+                    WebkitBackgroundClip: 'text',
+                    backgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                  }}
+                >
+                  {getGreetingName(displayName ?? '')}
+                </span>
+              </>
+            )}
+          </h1>
+          <p className="text-[14.5px] text-slate-400 mt-2">
+            Here&apos;s what happened overnight.
+          </p>
+        </div>
+
+        {/* Live date pill — grounds the dashboard as a fresh daily snapshot */}
+        <span
+          className="inline-flex items-center gap-2 h-9 px-3.5 rounded-full bg-white border border-slate-100 text-[12.5px] font-medium text-slate-500 shrink-0"
+          style={{ boxShadow: TOKENS.shadow.card }}
+        >
+          <span
+            className="block h-1.5 w-1.5 rounded-full"
+            style={{ background: TOKENS.color.primary }}
+          />
+          {_todayLabel()}
+        </span>
       </div>
 
       {/* ── System Confidence Score — gamified Ariel engagement CTA ──────── */}
@@ -563,6 +650,9 @@ export function Overview({
 
       {/* ── KPI strip — server analytics with local fallback ─────────────── */}
       <section className="space-y-4">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+          Today at a glance
+        </h2>
         {overviewError && !overviewLoading && (
           <AnalyticsErrorBanner
             rateLimited={overviewError === 'rate_limited'}
@@ -570,22 +660,22 @@ export function Overview({
           />
         )}
         <KPIRow
+          jobsScannedToday={kpiJobsScannedToday}
+          actionsTakenToday={kpiActionsTakenToday}
           averageMatchScore={kpiAverageMatchScore}
-          topStrengths={kpiTopStrengths}
-          tailoredCvCount={kpiTailoredCvCount}
           loading={kpiLoading}
         />
       </section>
 
-      {/* ── Divider ─────────────────────────────────────────────────────── */}
-      <hr className="border-slate-100" />
-
       {/* ── Confidence Matrix (TrustDashboard) ──────────────────────────── */}
+      {/* Wrapped in a premium surface so it blends with the KPI cards above. */}
       {/* Remounts on every tab-switch to Overview, so fetchData fires fresh. */}
-      <TrustDashboard userId={userId} onScoreChange={setConfidenceScore} profileVersion={profileVersion} />
-
-      {/* ── Divider ─────────────────────────────────────────────────────── */}
-      <hr className="border-slate-100" />
+      <section
+        className="rounded-2xl bg-white border border-slate-100 p-6"
+        style={{ boxShadow: TOKENS.shadow.card }}
+      >
+        <TrustDashboard userId={userId} onScoreChange={setConfidenceScore} profileVersion={profileVersion} />
+      </section>
 
       {/* ── Quick actions + Top matches — side by side on wide screens ─── */}
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.1fr] gap-12">

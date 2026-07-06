@@ -622,12 +622,14 @@ export async function fetchAnalyticsSummary(): Promise<AnalyticsSummary> {
   return get<AnalyticsSummary>('/api/analytics/summary')
 }
 
-// ── Analytics overview (Phase 6 dashboard KPIs) ───────────────────────────────
+// ── Analytics overview (Overview dashboard daily KPIs) ────────────────────────
+// Daily activity snapshot — the two "today" counters reset at UTC midnight;
+// average_match_score is the stable lifetime quality signal.
 
 export interface AnalyticsOverview {
+  jobs_scanned_today:  number
+  actions_taken_today: number
   average_match_score: number
-  top_strengths:       Array<{ name: string; confidence_score: number }>
-  tailored_cv_count:   number
 }
 
 /** Thrown on HTTP 429 so callers can render a "busy" state instead of an error. */
