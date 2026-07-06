@@ -625,10 +625,9 @@ export async function fetchAnalyticsSummary(): Promise<AnalyticsSummary> {
 // ── Analytics overview (Phase 6 dashboard KPIs) ───────────────────────────────
 
 export interface AnalyticsOverview {
-  total_jobs_scanned: number
-  jobs_scanned_today: number
-  high_matches:       number
-  actions_taken:      number
+  average_match_score: number
+  top_strengths:       Array<{ name: string; confidence_score: number }>
+  tailored_cv_count:   number
 }
 
 /** Thrown on HTTP 429 so callers can render a "busy" state instead of an error. */

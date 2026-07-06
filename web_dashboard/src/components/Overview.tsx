@@ -79,6 +79,9 @@ function LinkedInPausedBanner() {
 function KPIStat({ label, value, sub, accent }: {
   label: string; value: string | number; sub: string; accent: string
 }) {
+  // Free-text values (e.g. a strengths label) get a smaller size than the
+  // big tabular-nums treatment reserved for short numeric/percentage stats.
+  const isFreeText = typeof value === 'string' && value.length > 6
   return (
     <div className="flex flex-col gap-1 min-w-0">
       <span
@@ -87,8 +90,13 @@ function KPIStat({ label, value, sub, accent }: {
         {label}
       </span>
       <span
-        className="text-[38px] font-semibold tabular-nums leading-none tracking-tight text-slate-900"
-        style={{ fontVariantNumeric: 'tabular-nums' }}
+        className={
+          isFreeText
+            ? "text-[18px] font-semibold leading-tight tracking-tight text-slate-900 truncate"
+            : "text-[38px] font-semibold tabular-nums leading-none tracking-tight text-slate-900"
+        }
+        style={isFreeText ? undefined : { fontVariantNumeric: 'tabular-nums' }}
+        title={isFreeText ? value : undefined}
       >
         {value}
       </span>
@@ -99,11 +107,11 @@ function KPIStat({ label, value, sub, accent }: {
   )
 }
 
-function KPIRow({ jobsScannedToday, highMatches, actionsTaken, loading }: {
-  jobsScannedToday: number
-  highMatches:      number
-  actionsTaken:     number
-  loading:          boolean
+function KPIRow({ averageMatchScore, topStrengths, tailoredCvCount, loading }: {
+  averageMatchScore: number
+  topStrengths:      Array<{ name: string; confidence_score: number }>
+  tailoredCvCount:   number
+  loading:           boolean
 }) {
   if (loading) {
     return (
@@ -118,24 +126,27 @@ function KPIRow({ jobsScannedToday, highMatches, actionsTaken, loading }: {
       </div>
     )
   }
+  const topStrengthLabel = topStrengths.length > 0
+    ? topStrengths.slice(0, 2).map(s => s.name).join(', ')
+    : 'Not enough profile data yet'
   return (
     <div className="grid grid-cols-3 gap-8">
       <KPIStat
-        label="Jobs scanned today"
-        value={jobsScannedToday}
-        sub="New roles discovered by agents"
+        label="Average match score"
+        value={`${averageMatchScore.toFixed(1)}%`}
+        sub="ATS fit across your scored jobs"
         accent={TOKENS.color.primary}
       />
       <KPIStat
-        label="High matches"
-        value={highMatches}
-        sub="ATS score above 85"
+        label="Top strengths"
+        value={topStrengthLabel}
+        sub="Highest-confidence skills in your profile"
         accent={TOKENS.color.success}
       />
       <KPIStat
-        label="Actions taken"
-        value={actionsTaken}
-        sub="Analyses run or CVs tailored"
+        label="Tailored CVs"
+        value={tailoredCvCount}
+        sub="CVs generated for specific roles"
         accent={TOKENS.color.violet}
       />
     </div>
@@ -495,13 +506,12 @@ export function Overview({
 
   // KPIs come EXCLUSIVELY from the analytics API (real per-user DB counts).
   // No client-derived or mock fallbacks: when the API has no data (or fails),
-  // the honest answer is 0 — the previous feed-derived fallback counted
-  // agent-generated analyses as "actions taken" and showed numbers for
-  // actions the user never performed.
-  const kpiJobsScanned  = overview?.jobs_scanned_today ?? 0
-  const kpiHighMatches  = overview?.high_matches       ?? 0
-  const kpiActionsTaken = overview?.actions_taken      ?? 0
-  const kpiLoading      = overviewLoading
+  // the honest answer is 0 / empty — these tie directly to ATS match scores
+  // and Master Profile skill confidence, not generic activity counters.
+  const kpiAverageMatchScore = overview?.average_match_score ?? 0
+  const kpiTopStrengths      = overview?.top_strengths       ?? []
+  const kpiTailoredCvCount   = overview?.tailored_cv_count   ?? 0
+  const kpiLoading           = overviewLoading
 
   const handleMatchClick    = useCallback(()              => onGo('feed'),         [onGo])
   const handleMatchJobClick = useCallback((jobId: string) => onGo('feed', jobId),  [onGo])
@@ -560,9 +570,9 @@ export function Overview({
           />
         )}
         <KPIRow
-          jobsScannedToday={kpiJobsScanned}
-          highMatches={kpiHighMatches}
-          actionsTaken={kpiActionsTaken}
+          averageMatchScore={kpiAverageMatchScore}
+          topStrengths={kpiTopStrengths}
+          tailoredCvCount={kpiTailoredCvCount}
           loading={kpiLoading}
         />
       </section>
