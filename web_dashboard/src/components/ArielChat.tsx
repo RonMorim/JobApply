@@ -715,9 +715,23 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
   const sessionIdRef     = useRef(sessionId)
   sessionIdRef.current   = sessionId   // always current without stale closures
 
-  const lastContent = messages.at(-1)?.content ?? ''
+  const lastContent   = messages.at(-1)?.content ?? ''
+  const inputDisabled = streaming || loadingSession
   useAutoHeight(textRef, input)
   const { forceBottom } = useSmartScroll(scrollRef, bottomRef, lastContent)
+
+  // Re-focus the input once it actually becomes enabled again (DOM committed),
+  // rather than calling textRef.current?.focus() synchronously right after
+  // setStreaming(false) — that races the React re-render that removes the
+  // `disabled` attribute, so the focus() call silently no-ops on a still-
+  // disabled element and the user has to click back into the input.
+  const wasDisabledRef = useRef(false)
+  useEffect(() => {
+    if (wasDisabledRef.current && !inputDisabled) {
+      textRef.current?.focus()
+    }
+    wasDisabledRef.current = inputDisabled
+  }, [inputDisabled])
 
   // ── Sync: fire once per exchange, after streaming ends ────────────────────
   // Detects the streaming true→false transition so we never sync mid-stream.
@@ -1010,8 +1024,9 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
         return next
       })
     } finally {
+      // Refocus happens in the wasDisabledRef effect once the textarea's
+      // `disabled` attribute actually clears in the DOM (see above).
       setStreaming(false)
-      textRef.current?.focus()
     }
   }, [messages, streaming, forceBottom])
 
@@ -1068,8 +1083,9 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
         return next
       })
     } finally {
+      // Refocus happens in the wasDisabledRef effect once the textarea's
+      // `disabled` attribute actually clears in the DOM (see above).
       setStreaming(false)
-      textRef.current?.focus()
     }
   }, [input, messages, streaming, replyingTo, attachments, forceBottom])
 
@@ -1230,7 +1246,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
           dir="auto"
           rows={1}
           autoFocus
-          disabled={streaming || loadingSession}
+          disabled={inputDisabled}
           className="flex-1 resize-none overflow-y-auto rounded-xl border border-slate-200 px-3 py-2.5 text-[13px] leading-[1.4] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-500/20 transition disabled:opacity-50 bg-white min-h-[44px] max-h-[112px]"
         />
 

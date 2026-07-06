@@ -10,8 +10,9 @@ POST /api/chat/ariel/private
   Returns: text/event-stream  (SSE)
 
   Ariel's authenticated private endpoint.  Always operates in Career Strategist
-  mode — profile data is retrieved live via the get_full_candidate_profile tool
-  at the start of each answer, not injected into the system prompt.
+  mode — the user's Master Profile is injected into the system prompt on every
+  call; the get_full_candidate_profile tool is available for mid-conversation
+  re-fetches (e.g. after a CV upload).
 
   Tool calls are executed server-side in a synchronous loop before the final
   text response is streamed to the client (two-phase: sync tool-loop → streaming).
@@ -38,7 +39,7 @@ from sqlalchemy.orm import Session
 from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, standard_rate_limit
 from backend.services.db import ENGINE, MasterProfileRow
 from backend.agents.ariel_tools import ARIEL_TOOLS, execute_tool
-from backend.services.user_profile import USER_PROFILE
+from backend.services.user_profile import USER_PROFILE, get_profile
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -318,16 +319,21 @@ If you catch yourself about to use a masculine form in Hebrew, stop and use
 the correct feminine form instead. There are no exceptions.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TOOL-FIRST RULE
+CANDIDATE PROFILE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-You have access to the get_full_candidate_profile tool. Call it before
-answering ANY career, strategy, gap-analysis, or profile-related question.
-Do not rely on memory of a previous call — re-fetch whenever you need
-current profile state.
+The user's full Master Profile — past roles, skills, education, career
+goals — is already provided below inside <MasterProfile>. It reflects the
+database state as of the start of this conversation. You have it from
+turn one; never claim you have no context or ask the user to repeat facts
+that already appear in it.
 
-After retrieving the profile, check it carefully:
-• If the profile is rich and complete → proceed to answer directly.
-• If the profile is empty or thin → enter PROFILING MODE (see below).
+If the user uploads a new CV or updates their profile mid-conversation,
+call the get_full_candidate_profile tool to re-fetch the current state
+rather than relying on the (now stale) snapshot below.
+
+Check the injected profile carefully:
+• If it is rich and complete → proceed to answer directly.
+• If it is empty or thin → enter PROFILING MODE (see below).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TARGET ROLE DEDUCTION & CAREER PATHS
@@ -472,7 +478,7 @@ experience, titles, outcomes, or company names.
 """
 
 
-def _build_ariel_system(pinned_messages: list[ChatMessage]) -> str:
+def _build_ariel_system(pinned_messages: list[ChatMessage], user_id: str) -> str:
     """
     Compose the full Ariel system prompt for the /ariel/private endpoint.
 
@@ -482,7 +488,14 @@ def _build_ariel_system(pinned_messages: list[ChatMessage]) -> str:
     roadmap that must govern all her answers — they take precedence over
     anything said later in the conversation.
 
-    The static persona + rules follow the CoreContext block.
+    The user's Master Profile is fetched here and injected inside a
+    <MasterProfile> block so Ariel has full context (past roles, skills,
+    education, career goals) from the very first turn, instead of relying
+    on the model reliably calling the get_full_candidate_profile tool
+    before every answer. The tool remains available for mid-conversation
+    re-fetches (e.g. after a CV upload updates the profile).
+
+    The static persona + rules follow.
     """
     parts: list[str] = []
 
@@ -501,6 +514,23 @@ def _build_ariel_system(pinned_messages: list[ChatMessage]) -> str:
             f"{context_lines}\n"
             "</CoreContext>"
         )
+
+    try:
+        # Profile text is CV-derived and user-controlled — sanitize before it
+        # re-enters the system prompt, same as the tool-result path, so a
+        # hostile CV can't smuggle instructions into Ariel's own persona.
+        profile_json = sanitize_text(
+            json.dumps(get_profile(user_id), ensure_ascii=False, indent=2)
+        )
+    except Exception as exc:
+        logger.error("[_build_ariel_system] profile fetch failed user=%s: %s", user_id, exc)
+        profile_json = "{}"
+
+    parts.append(
+        "<MasterProfile>\n"
+        f"{profile_json}\n"
+        "</MasterProfile>"
+    )
 
     parts.append(_ARIEL_STRATEGIST_CORE)
     return harden_system_prompt("\n\n".join(parts))
@@ -861,10 +891,12 @@ async def ariel_private(
     """
     Ariel's authenticated private chat endpoint.
 
-    Always uses Career Strategist mode.  Profile data is retrieved live via the
-    get_full_candidate_profile tool during the conversation — nothing is injected
-    into the system prompt.  Tool calls are executed server-side; the client only
-    receives the final text stream.
+    Always uses Career Strategist mode.  The user's Master Profile is fetched
+    and injected directly into the system prompt on every call (see
+    _build_ariel_system), so Ariel has full context from the first turn.  The
+    get_full_candidate_profile tool remains available for mid-conversation
+    re-fetches.  Tool calls are executed server-side; the client only receives
+    the final text stream.
 
     If any uploaded attachment looks like a CV/resume (document MIME + filename
     hint), a background task is enqueued to run the full profile ingestion
@@ -886,13 +918,13 @@ async def ariel_private(
             background.add_task(_ingest_cv_from_chat, user.user_id, item)
 
     # Ariel always operates in Career Strategist mode.
-    # Profile data is retrieved live via the get_full_candidate_profile tool —
     # onboarding_status is irrelevant to mode selection.
     db_session = Session(ENGINE)
 
-    # Extract pinned messages from history and inject them as CoreContext.
+    # Extract pinned messages from history and inject them as CoreContext,
+    # alongside the user's Master Profile (see _build_ariel_system).
     pinned = [m for m in body.chat_history if m.isPinned]
-    system = _build_ariel_system(pinned)
+    system = _build_ariel_system(pinned, user.user_id)
     logger.info(
         "[ariel/private] mode=strategist user=%s  pinned=%d",
         user.user_id, len(pinned),

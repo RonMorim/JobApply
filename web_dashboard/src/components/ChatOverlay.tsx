@@ -744,6 +744,25 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
 
 // ── Overlay shell helper ──────────────────────────────────────────────────────
 
+// User-resizable on desktop only (sm breakpoint, 640px+) — mobile keeps the
+// fixed full-width/full-height sheet since drag-resize handles don't work well
+// with touch and there's no room to grow anyway.
+const _DEFAULT_SIZE = { width: 380, height: 520 }
+const _MIN_WIDTH  = 320
+const _MIN_HEIGHT = 360
+
+function _useIsDesktop(): boolean {
+  const [isDesktop, setIsDesktop] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 640px)')
+    const update = () => setIsDesktop(mq.matches)
+    update()
+    mq.addEventListener('change', update)
+    return () => mq.removeEventListener('change', update)
+  }, [])
+  return isDesktop
+}
+
 function OverlayShell({
   isOpen,
   onBackdropClick,
@@ -759,6 +778,25 @@ function OverlayShell({
   shadowColor?:    string
   children:        React.ReactNode
 }) {
+  const shellRef   = useRef<HTMLDivElement>(null)
+  const isDesktop  = _useIsDesktop()
+  const [size, setSize] = useState(_DEFAULT_SIZE)
+
+  // Track the panel's live rendered size while the user drags the native
+  // CSS `resize` handle, so the next React re-render (e.g. a streaming
+  // message updating state) reasserts the resized dimensions instead of
+  // snapping back to the last value set in `style`.
+  useEffect(() => {
+    const el = shellRef.current
+    if (!el || !isOpen || !isDesktop) return
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect
+      setSize({ width: Math.round(width), height: Math.round(height) })
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [isOpen, isDesktop])
+
   return (
     <>
       {isOpen && (
@@ -768,12 +806,18 @@ function OverlayShell({
         />
       )}
       <div
+        ref={shellRef}
         role="dialog"
         aria-label={ariaLabel}
         aria-modal="true"
-        className="fixed bottom-0 right-0 z-50 flex flex-col w-full sm:w-[380px] sm:bottom-6 sm:rounded-2xl overflow-hidden transition-all duration-300 ease-out bg-white"
+        className="fixed bottom-0 right-0 z-50 flex flex-col w-full sm:bottom-6 sm:rounded-2xl overflow-hidden transition-all duration-300 ease-out bg-white resize-none sm:resize"
         style={{
-          height:        isOpen ? '520px' : '0px',
+          height:        isOpen ? `${size.height}px` : '0px',
+          width:         isDesktop ? `${size.width}px` : undefined,
+          minWidth:      isDesktop ? `${_MIN_WIDTH}px` : undefined,
+          minHeight:     isDesktop ? `${_MIN_HEIGHT}px` : undefined,
+          maxWidth:      isDesktop ? 'min(720px, calc(100vw - 48px))' : undefined,
+          maxHeight:     isDesktop ? 'min(800px, calc(100vh - 120px))' : undefined,
           opacity:       isOpen ? 1 : 0,
           pointerEvents: isOpen ? 'auto' : 'none',
           transform:     isOpen ? 'translateY(0) scale(1)' : 'translateY(16px) scale(0.97)',
