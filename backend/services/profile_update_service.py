@@ -139,6 +139,20 @@ class ProfileUpdateService:
     # career preferences) is missing.
     COMPLETENESS_PENALTY: float = 0.80
 
+    # Honest confidence ceiling per self-reported proficiency level. When a user
+    # clarifies their level in chat and no explicit score/modifier is supplied,
+    # apply_chat_proficiency_update anchors the entity's confidence_score down to
+    # (never up past) the matching ceiling — a self-claim cannot inflate a score,
+    # but "I'm only a beginner" honestly lowers an over-optimistic parse.
+    PROFICIENCY_CEILINGS: dict[str, float] = {
+        "beginner":     30.0,
+        "novice":       30.0,
+        "intermediate": 55.0,
+        "proficient":   65.0,
+        "advanced":     75.0,
+        "expert":       90.0,
+    }
+
     def __init__(self, engine):
         """
         Parameters
@@ -1295,3 +1309,159 @@ class ProfileUpdateService:
 
         # ── 4. Clamp & round ─────────────────────────────────────────────────
         return round(min(max(mean, 0.0), 100.0), 1)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Chat-driven entity UPDATE (proficiency / confidence correction)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def apply_chat_proficiency_update(
+        self,
+        user_id: str,
+        name: str,
+        *,
+        entity_type: str = "skill",
+        proficiency_level: Optional[str] = None,
+        new_confidence: Optional[float] = None,
+        confidence_modifier: Optional[float] = None,
+        note: Optional[str] = None,
+    ) -> dict:
+        """
+        UPDATE an existing profile entity in place from a chat clarification.
+
+        This is the write path for the case the user hit in Phase 30: the
+        parsed profile scored "Python" at 51.7, the user clarified they are
+        only a Beginner, and Ariel needs to LOWER the confidence and record the
+        stated proficiency — not add or remove the skill.
+
+        Unlike the evidence-ingest paths, this is a *direct correction*: the
+        user has authoritatively stated their own level, so we override the
+        score rather than blending in another weak evidence row. To honour the
+        "ProfileUpdateService is the only writer of confidence_score" invariant
+        (see db.py), the update lives here and writes a confidence_audit_log
+        row for traceability.
+
+        Resolution order for the new confidence_score:
+          1. ``new_confidence``       — explicit target from the agent (wins).
+          2. ``confidence_modifier``  — signed delta applied to the current score.
+          3. ``proficiency_level``    — anchor DOWN to PROFICIENCY_CEILINGS[level]
+             (i.e. min(current, ceiling)); a self-claim never inflates a score.
+          4. none of the above        — score unchanged (proficiency label only).
+
+        The final score is clamped to [0, 100]. verification_status is set to
+        'verified' because the value is now user-confirmed (whether that raised
+        or lowered it) — a chat admission is direct validation of the true level.
+
+        Returns
+        -------
+        dict with keys: status ('updated' | 'not_found' | 'error'),
+        and on success: name, entity_type, old_score, new_score,
+        proficiency_level, verification_status.
+        """
+        normalized = _normalize(name)
+        now = _now_iso()
+
+        try:
+            with self._engine.begin() as conn:
+                row = conn.execute(
+                    text("""
+                        SELECT entity_id, confidence_score, proficiency_level
+                        FROM   profile_entities
+                        WHERE  user_id = :uid
+                          AND  normalized_name = :norm
+                          AND  entity_type = :etype
+                        LIMIT 1
+                    """),
+                    {"uid": user_id, "norm": normalized, "etype": entity_type},
+                ).fetchone()
+
+                if row is None:
+                    return {
+                        "status": "not_found",
+                        "name": name,
+                        "entity_type": entity_type,
+                    }
+
+                entity_id  = row[0]
+                old_score  = float(row[1])
+                old_prof   = row[2]
+
+                # ── Resolve the new confidence score ──────────────────────────
+                if new_confidence is not None:
+                    target = float(new_confidence)
+                elif confidence_modifier is not None:
+                    target = old_score + float(confidence_modifier)
+                elif proficiency_level:
+                    ceiling = self.PROFICIENCY_CEILINGS.get(
+                        proficiency_level.strip().lower()
+                    )
+                    # Only anchor down to a known level's ceiling; unknown
+                    # labels leave the score untouched (label recorded only).
+                    target = min(old_score, ceiling) if ceiling is not None else old_score
+                else:
+                    target = old_score
+
+                new_score = round(min(max(target, 0.0), 100.0), 1)
+
+                # proficiency_level: COALESCE so omitting it preserves any prior
+                # label; passing it overwrites.
+                new_prof = proficiency_level.strip() if proficiency_level else None
+
+                conn.execute(
+                    text("""
+                        UPDATE profile_entities
+                        SET    confidence_score    = :score,
+                               proficiency_level   = COALESCE(:prof, proficiency_level),
+                               verification_status = 'verified',
+                               updated_at          = :now
+                        WHERE  entity_id = :eid
+                    """),
+                    {"score": new_score, "prof": new_prof, "now": now, "eid": entity_id},
+                )
+
+                # Immutable audit trail — mirrors _recompute_and_persist so the
+                # System Confidence history shows chat corrections too.
+                conn.execute(
+                    text("""
+                        INSERT INTO confidence_audit_log
+                            (entity_id, user_id, old_score, new_score, delta,
+                             trigger_source, evidence_id, session_id, changed_at, note)
+                        VALUES
+                            (:eid, :uid, :old, :new, :delta,
+                             'chat_proficiency_update', NULL, NULL, :now, :note)
+                    """),
+                    {
+                        "eid":   entity_id,
+                        "uid":   user_id,
+                        "old":   old_score,
+                        "new":   new_score,
+                        "delta": round(new_score - old_score, 1),
+                        "now":   now,
+                        "note":  note or (
+                            f"chat proficiency update: {old_prof or '—'} → "
+                            f"{new_prof or old_prof or '—'}"
+                        ),
+                    },
+                )
+
+            logger.info(
+                "[profile_update] chat proficiency update user=%s '%s' (%s) "
+                "%.1f → %.1f  proficiency=%s",
+                user_id, name, entity_type, old_score, new_score,
+                new_prof or old_prof,
+            )
+            return {
+                "status":              "updated",
+                "name":                name,
+                "entity_type":         entity_type,
+                "old_score":           round(old_score, 1),
+                "new_score":           new_score,
+                "proficiency_level":   new_prof or old_prof,
+                "verification_status": "verified",
+            }
+
+        except Exception as exc:
+            logger.error(
+                "[profile_update] apply_chat_proficiency_update failed user=%s name=%r: %s",
+                user_id, name, exc,
+            )
+            return {"status": "error", "name": name, "error": str(exc)}

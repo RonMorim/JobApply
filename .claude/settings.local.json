@@ -145,7 +145,8 @@
       "Bash(git check-ignore *)",
       "Bash(python -m pytest tests/test_profile_trust.py -q)",
       "Bash(.venv/bin/python -m pytest -q)",
-      "Bash(echo \"exit=$?  \\(no matches = unrelated to scoring\\)\")"
+      "Bash(echo \"exit=$?  \\(no matches = unrelated to scoring\\)\")",
+      "Bash(.venv/bin/python -m pytest tests/test_proficiency_update.py tests/test_profile_trust.py -q)"
     ]
   }
 }
