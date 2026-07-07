@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
 from datetime import datetime, timezone
@@ -101,25 +102,34 @@ def _parse_dt(value) -> datetime:
     return dt
 
 
-def _base_profile_complete(profile: Optional[dict]) -> bool:
+def _base_profile_completeness_fraction(profile: Optional[dict]) -> float:
     """
-    Return True when the user's base profile carries the critical anchor data
-    the Core Profile score requires: a name, a phone number, and at least one
-    stated career preference (target title).
+    Return the fraction (0.0–1.0) of the three critical base-profile anchors the
+    system knows about the user: name, phone, and at least one stated career
+    preference (target title).
 
-    A missing profile (None / not a dict) is treated as incomplete. Matches the
-    schema written by user_profile_store.load(): personal.{full_name,phone} and
+    Used by the Holistic Familiarity score as a POSITIVE contributor — the more
+    of these the system knows, the more familiar it is with the user. It is
+    never a penalty: a missing field simply withholds a bonus, it does not
+    subtract from breadth/depth.
+
+    A missing profile (None / not a dict) yields 0.0. Matches the schema written
+    by user_profile_store.load(): personal.{full_name,phone} and
     role_preferences.target_titles.
     """
     if not isinstance(profile, dict):
-        return False
+        return 0.0
     personal   = profile.get("personal", {})       or {}
     role_prefs = profile.get("role_preferences", {}) or {}
 
-    has_name  = bool(str(personal.get("full_name", "")).strip())
-    has_phone = bool(str(personal.get("phone", "")).strip())
-    has_prefs = bool(role_prefs.get("target_titles"))
-    return has_name and has_phone and has_prefs
+    present = 0
+    if str(personal.get("full_name", "")).strip():
+        present += 1
+    if str(personal.get("phone", "")).strip():
+        present += 1
+    if role_prefs.get("target_titles"):
+        present += 1
+    return present / 3.0
 
 
 # ── Service ───────────────────────────────────────────────────────────────────
@@ -130,14 +140,42 @@ class ProfileUpdateService:
     to match the existing db.py pattern in this project.
     """
 
-    # Core Profile scoring constants (Phase 29) — see compute_profile_trust_score.
+    # ── Holistic Familiarity score constants (Phase 31) ──────────────────────
+    # The System Confidence Score measures how well the system KNOWS the user
+    # (breadth + depth of familiarity), not how skilled the user is. Three
+    # additive pillars sum to a max of 100; see compute_profile_trust_score.
     #
-    # Effective-score ceiling for any entity not strongly validated by the AI
-    # (verification_status != 'verified'). Un-hydrated CV data cannot exceed this.
-    UNVERIFIED_SCORE_CAP: float = 60.0
-    # Flat multiplier applied when critical base-profile data (name / phone /
-    # career preferences) is missing.
-    COMPLETENESS_PENALTY: float = 0.80
+    # Pillar 1 — BREADTH: saturating in the raw count of known entities. Volume
+    # of parsed/known data = the system has mapped the user's landscape.
+    BREADTH_MAX:   float = 40.0
+    BREADTH_SCALE: float = 35.0   # entities at which breadth reaches ~63% of max
+    #
+    # Pillar 2 — DEPTH: saturating in the amount of VERIFIED knowledge (evidence
+    # tiers + chat-confirmed proficiencies). This is the path to 100.
+    DEPTH_MAX:   float = 40.0
+    DEPTH_SCALE: float = 8.0      # weighted-verified units for ~63% of max
+    #
+    # Pillar 3 — CONTEXT: additive positives, never penalties — category
+    # coverage, base-profile identity completeness, and proficiency engagement.
+    CONTEXT_COVERAGE_MAX:     float = 8.0   # spread across skill/trait/exp/domain
+    CONTEXT_IDENTITY_MAX:     float = 6.0   # name / phone / career-prefs known
+    CONTEXT_PROFICIENCY_MAX:  float = 6.0   # user-clarified proficiency levels
+    CONTEXT_PROFICIENCY_SCALE: float = 5.0
+
+    # Graded verification weight per entity for the DEPTH pillar. An entity the
+    # user has explicitly clarified (proficiency_level set) counts as at least
+    # half-verified even if its score is low — knowing a weakness IS knowledge.
+    VERIFICATION_WEIGHTS: dict[str, float] = {
+        "verified":       1.00,
+        "partial":        0.50,
+        "needs_evidence": 0.25,
+        "unverified":     0.00,
+    }
+    PROFICIENCY_MIN_VERIFICATION_WEIGHT: float = 0.50
+
+    # The four scored entity categories (unknown types still count toward
+    # breadth volume, but not toward category coverage).
+    _SCORED_CATEGORIES: frozenset = frozenset({"skill", "trait", "experience", "domain"})
 
     # Honest confidence ceiling per self-reported proficiency level. When a user
     # clarifies their level in chat and no explicit score/modifier is supplied,
@@ -1182,56 +1220,63 @@ class ProfileUpdateService:
         self, user_id: str, profile: Optional[dict] = None
     ) -> float:
         """
-        Compute the overall System Confidence Score across a user's profile.
+        Compute the System Confidence Score as a "Holistic Familiarity" metric.
 
-        The "Core Profile" algorithm (Phase 29)
-        ---------------------------------------
-        Phase 28 aggregated the 100+ per-entity scores with a geometric
-        ("noisy-OR") combination — `100 × (1 − ∏(1 − scoreᵢ/100))`. That is
-        mathematically wrong for a *system-confidence* metric: noisy-OR
-        saturates towards 100 with volume alone, so a user with 141 unverified
-        entities (each scoring ~45–55) hit ~100% instantly, even though the
-        system had no strong evidence for any single trait. Volume of weak
-        data must not manufacture confidence.
+        Philosophy (Phase 31)
+        ---------------------
+        This score does NOT measure "how skilled the user is." It measures how
+        well and how deeply the system KNOWS the user's true profile. The two
+        are deliberately decoupled: a user can be a self-declared beginner at
+        everything, and if the system knows that clearly and completely, its
+        confidence in its *understanding* is high.
 
-        The replacement judges the system's confidence by how well it knows
-        the user's *strongest, most relevant* traits — not by summing 140 weak
-        ones. Four rules:
+        This replaces the Phase 29 "Core Profile average", which measured skill
+        (a mean of the strongest capped entities) and therefore dropped to ~33
+        for a heavily-parsed, lightly-verified profile — punishing exactly the
+        user the system knows the most about. The four governing rules:
 
-        1. Unverified cap.
-           An entity that has not been strongly validated by the AI
-           (verification_status != 'verified') has its effective score capped
-           at ``UNVERIFIED_SCORE_CAP`` (60.0). Parsed-but-unverified CV data
-           therefore cannot push the average past 60 — the user must earn a
-           'verified' status (STAR probe, whiteboard test, Ariel chat) to
-           break the ceiling on any given entity.
+        1. Breadth is the baseline. Volume of known entities maps the user's
+           landscape; a large parsed profile secures a solid baseline on its
+           own, regardless of how weak or unverified any single entity is.
+        2. Honesty is confidence. Low-proficiency or unverified entities are
+           NEVER penalties. A beginner skill adds to breadth like any other,
+           and a user CLARIFYING a weakness (proficiency_level set) adds to
+           depth — knowing a weakness is knowledge.
+        3. Depth is the path to 100. Verifying the user's claims (STAR probes,
+           whiteboard tests, chat confirmations) is what carries the score up
+           from the breadth baseline toward full confidence.
+        4. Monotonic growth. Every pillar is a non-decreasing function of the
+           counts it consumes, so adding data, correcting the system, or
+           verifying a claim can only raise (never lower) the score.
 
-        2. Core Profile average.
-           Within each bucket, entities are sorted by confidence DESC and only
-           the Top-N "core" entities are kept:
-               skill + trait  →  top 10
-               experience     →  top 3
-               domain         →  top 2
-           The overall score is the *arithmetic mean* of these (≤15) capped
-           core scores. We deliberately ignore the long tail of weak entities.
+        Architecture — three additive pillars, summed and clamped to [0, 100]
+        --------------------------------------------------------------------
+          BREADTH  (≤ BREADTH_MAX)   = BREADTH_MAX · (1 − e^(−N / BREADTH_SCALE))
+              N = total known entities (all types, all confidence levels).
 
-        3. Completeness multiplier.
-           If the user is missing critical base-profile data (name, phone, or
-           any career preference / target title), the mean is multiplied by
-           ``COMPLETENESS_PENALTY`` (0.8). A profile the system can't even
-           anchor to a name and a goal is inherently less trustworthy.
+          DEPTH    (≤ DEPTH_MAX)     = DEPTH_MAX · (1 − e^(−V / DEPTH_SCALE))
+              V = Σ per-entity verification weight, where an entity scores
+              VERIFICATION_WEIGHTS[status], floored at
+              PROFICIENCY_MIN_VERIFICATION_WEIGHT (0.5) whenever the user has
+              clarified its proficiency_level. This is where honest correction
+              of a weak skill lifts the score.
 
-        4. Clamp to [0.0, 100.0], 1 decimal.
+          CONTEXT  (≤ 20)           = coverage + identity + proficiency, all
+              strictly additive positives (never penalties):
+                coverage    = CONTEXT_COVERAGE_MAX · (distinct categories / 4)
+                identity    = CONTEXT_IDENTITY_MAX · (name/phone/prefs known / 3)
+                proficiency = CONTEXT_PROFICIENCY_MAX ·
+                              (1 − e^(−P / CONTEXT_PROFICIENCY_SCALE))
+              P = entities with a user-clarified proficiency_level.
 
-        Net effect: a new user with parsed-but-unverified CV data lands
-        realistically around 40–60%, and only genuine interaction (tests,
-        Ariel chat) that lifts entities above the 60 cap pulls the overall
-        score towards 100.
+        Note: raw confidence_score is intentionally NOT read here — it measures
+        skill, which this metric must not reflect. Familiarity comes from count
+        (breadth), verification (depth), and coverage/identity/engagement.
 
         Parameters
         ----------
         user_id : str
-            The user whose entities are scored.
+            The user whose profile familiarity is scored.
         profile : dict, optional
             The user's base profile (as returned by user_profile_store.load).
             Injectable for testing / to avoid a redundant disk read; when
@@ -1239,19 +1284,13 @@ class ProfileUpdateService:
 
         Returns
         -------
-        float   Overall trust score in [0.0, 100.0], rounded to 1 decimal place.
+        float   Familiarity score in [0.0, 100.0], 1 decimal place.
+                Monotonically non-decreasing as the system learns more.
         """
-        # Top-N "core" entities kept per bucket before averaging.
-        _CORE_TOP_N: dict[str, int] = {
-            "skill_trait": 10,
-            "experience":  3,
-            "domain":      2,
-        }
-
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text("""
-                    SELECT entity_type, confidence_score, verification_status
+                    SELECT entity_type, verification_status, proficiency_level
                     FROM   profile_entities
                     WHERE  user_id = :uid
                 """),
@@ -1261,54 +1300,62 @@ class ProfileUpdateService:
         if not rows:
             return 0.0
 
-        # ── 1. Bucket entities, applying the unverified cap per entity ────────
-        buckets: dict[str, list[float]] = {
-            "skill_trait": [],
-            "experience":  [],
-            "domain":      [],
-        }
-        for entity_type, score, vstatus in rows:
-            group = (
-                "skill_trait" if entity_type in ("skill", "trait")
-                else entity_type if entity_type in ("experience", "domain")
-                else None
+        # ── Tally the counts each pillar consumes ────────────────────────────
+        n_entities        = len(rows)              # breadth volume (every entity)
+        verification_sum  = 0.0                    # depth (graded verification)
+        proficiency_count = 0                      # engagement (clarified levels)
+        categories_seen: set[str] = set()          # coverage
+
+        for entity_type, vstatus, proficiency in rows:
+            etype = str(entity_type or "").lower()
+            if etype in self._SCORED_CATEGORIES:
+                categories_seen.add(etype)
+
+            status_weight = self.VERIFICATION_WEIGHTS.get(
+                str(vstatus or "").lower(), 0.0
             )
-            if group is None:
-                # Unknown types are excluded from the aggregate (they still
-                # appear in entity listings, just not in this score).
-                continue
+            has_proficiency = bool(str(proficiency or "").strip())
+            if has_proficiency:
+                proficiency_count += 1
+                # A clarified weakness is still confirmed knowledge — floor the
+                # verification weight so honesty always builds depth.
+                status_weight = max(
+                    status_weight, self.PROFICIENCY_MIN_VERIFICATION_WEIGHT
+                )
+            verification_sum += status_weight
 
-            raw = min(max(float(score), 0.0), 100.0)
-            # Only a 'verified' status escapes the ceiling. Everything else —
-            # 'partial', 'needs_evidence', 'unverified', or NULL — is treated
-            # as pending validation and capped.
-            if str(vstatus or "").lower() != "verified":
-                raw = min(raw, self.UNVERIFIED_SCORE_CAP)
-            buckets[group].append(raw)
+        # ── Pillar 1: BREADTH ────────────────────────────────────────────────
+        breadth = self.BREADTH_MAX * (
+            1.0 - math.exp(-n_entities / self.BREADTH_SCALE)
+        )
 
-        # ── 2. Keep only the Top-N core entities per bucket, then flatten ────
-        core_scores: list[float] = []
-        for group, scores in buckets.items():
-            scores.sort(reverse=True)
-            core_scores.extend(scores[: _CORE_TOP_N[group]])
+        # ── Pillar 2: DEPTH ──────────────────────────────────────────────────
+        depth = self.DEPTH_MAX * (
+            1.0 - math.exp(-verification_sum / self.DEPTH_SCALE)
+        )
 
-        if not core_scores:
-            return 0.0
+        # ── Pillar 3: CONTEXT (coverage + identity + proficiency engagement) ──
+        coverage = self.CONTEXT_COVERAGE_MAX * (
+            len(categories_seen) / len(self._SCORED_CATEGORIES)
+        )
 
-        mean = sum(core_scores) / len(core_scores)
-
-        # ── 3. Completeness multiplier ───────────────────────────────────────
         if profile is None:
             try:
                 from backend.services import user_profile_store
                 profile = user_profile_store.load(user_id)
             except Exception:
                 profile = None
-        if not _base_profile_complete(profile):
-            mean *= self.COMPLETENESS_PENALTY
+        identity = self.CONTEXT_IDENTITY_MAX * _base_profile_completeness_fraction(profile)
 
-        # ── 4. Clamp & round ─────────────────────────────────────────────────
-        return round(min(max(mean, 0.0), 100.0), 1)
+        proficiency_engagement = self.CONTEXT_PROFICIENCY_MAX * (
+            1.0 - math.exp(-proficiency_count / self.CONTEXT_PROFICIENCY_SCALE)
+        )
+
+        context = coverage + identity + proficiency_engagement
+
+        # ── Sum the pillars, clamp, round ────────────────────────────────────
+        total = breadth + depth + context
+        return round(min(max(total, 0.0), 100.0), 1)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Chat-driven entity UPDATE (proficiency / confidence correction)
