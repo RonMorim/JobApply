@@ -6,8 +6,12 @@ Coverage:
   1. compute_profile_trust_score()
        - empty profile  →  0.0
        - single-category profile (all skills)
-       - mixed-category profile with known weights
-       - renormalisation when one category is absent
+       - mixed-category profile with known weights (weighted geometric "OR"
+         combination — see Phase 28 fix in profile_update_service.py)
+       - fixed (never renormalised) weights when one category is absent
+       - monotonicity regression: adding new (low-confidence) data, whether
+         to an existing category or a brand-new one, must never lower the
+         overall score
 
   2. HTTP endpoint  (FastAPI TestClient, auth dependency overridden)
        - 200 with correct JSON structure for a user with 2 entities
@@ -221,7 +225,17 @@ class TestComputeProfileTrustScore:
         assert score == 0.0
 
     def test_single_skill_entity(self):
-        """One skill entity → score equals that entity's confidence_score."""
+        """
+        One skill entity → weighted geometric ("OR") combination, not a raw
+        average. skill_trait's own group_score = geo_combine([80]) = 80.0,
+        but experience/domain are empty and each still carries its FIXED
+        weight as an exponent (never renormalised away), so a lone category
+        caps out below its raw score:
+
+          complement = (1 − 80/100)^0.40 × (1 − 0)^0.40 × (1 − 0)^0.20
+                     = 0.2^0.40 × 1 × 1 ≈ 0.525263
+          overall    = 100 × (1 − 0.525263) ≈ 47.5
+        """
         uid = "test-single-" + _uid()
         with _TEST_ENGINE.begin() as conn:
             _insert_entity(conn, user_id=uid, entity_type="skill",
@@ -229,18 +243,17 @@ class TestComputeProfileTrustScore:
 
         svc = self._service()
         score = svc.compute_profile_trust_score(uid)
-
-        # Only the skill_trait group is active → renormalized weight = 1.0
-        # → weighted average = avg([80.0]) = 80.0
-        assert score == pytest.approx(80.0, abs=0.1)
+        assert score == pytest.approx(47.5, abs=0.1)
 
     def test_weighted_combination_skill_and_experience(self):
         """
-        Two groups (skill + experience), each weight 0.40.
-        After renormalisation both carry 0.5 of the total.
-        skill avg  = 60.0
-        exp avg    = 80.0
-        expected   = 0.5 × 60 + 0.5 × 80 = 70.0
+        Two groups (skill + experience), each weight 0.40; domain empty.
+        group_score_skill = geo_combine([60]) = 60.0
+        group_score_exp   = geo_combine([80]) = 80.0
+
+          complement = (1 − 0.60)^0.40 × (1 − 0.80)^0.40 × (1 − 0)^0.20
+                     = 0.4^0.40 × 0.2^0.40 × 1 ≈ 0.363936
+          overall    = 100 × (1 − 0.363936) ≈ 63.6
         """
         uid = "test-weighted-" + _uid()
         with _TEST_ENGINE.begin() as conn:
@@ -251,15 +264,16 @@ class TestComputeProfileTrustScore:
 
         svc = self._service()
         score = svc.compute_profile_trust_score(uid)
-        assert score == pytest.approx(70.0, abs=0.1)
+        assert score == pytest.approx(63.6, abs=0.1)
 
     def test_all_three_groups_full_weights(self):
         """
-        All three groups present → weights (0.4, 0.4, 0.2) stay as-is.
-        skill avg  = 50.0  → contributes 0.4 × 50 = 20
-        exp avg    = 75.0  → contributes 0.4 × 75 = 30
-        domain avg = 100.0 → contributes 0.2 × 100 = 20
-        expected   = 70.0
+        All three groups present with weights (0.4, 0.4, 0.2). domain = 100.0
+        makes its term (1 − 1.0)^0.20 == 0, zeroing the whole complement:
+
+          complement = (1 − 0.50)^0.40 × (1 − 0.75)^0.40 × (1 − 1.00)^0.20
+                     = ... × 0.0 = 0.0
+          overall    = 100 × (1 − 0) = 100.0
         """
         uid = "test-full-" + _uid()
         with _TEST_ENGINE.begin() as conn:
@@ -272,21 +286,29 @@ class TestComputeProfileTrustScore:
 
         svc = self._service()
         score = svc.compute_profile_trust_score(uid)
-        assert score == pytest.approx(70.0, abs=0.1)
+        assert score == pytest.approx(100.0, abs=0.1)
 
     def test_trait_grouped_with_skill(self):
-        """Trait entities count toward the skill_trait bucket."""
+        """
+        Trait entities count toward the skill_trait bucket, combined via
+        geo_combine (not averaged): geo_combine([40, 60])
+          = 100 × (1 − (1−0.40)×(1−0.60)) = 100 × (1 − 0.24) = 76.0
+        Only skill_trait is populated, so its weight (0.40) still applies as
+        an exponent (experience/domain empty → neutral terms):
+
+          complement = (1 − 0.76)^0.40 × 1 × 1 = 0.24^0.40 ≈ 0.565345
+          overall    = 100 × (1 − 0.565345) ≈ 43.5
+        """
         uid = "test-trait-" + _uid()
         with _TEST_ENGINE.begin() as conn:
             _insert_entity(conn, user_id=uid, entity_type="skill",
                            name="Negotiation", confidence_score=40.0)
             _insert_entity(conn, user_id=uid, entity_type="trait",
                            name="Empathy", confidence_score=60.0)
-            # skill_trait avg = (40 + 60) / 2 = 50 → only group active → score = 50
 
         svc = self._service()
         score = svc.compute_profile_trust_score(uid)
-        assert score == pytest.approx(50.0, abs=0.1)
+        assert score == pytest.approx(43.5, abs=0.1)
 
     def test_score_clamped_to_100(self):
         """Score is always ≤ 100 even if somehow entities carry inflated values."""
@@ -298,6 +320,62 @@ class TestComputeProfileTrustScore:
         svc = self._service()
         score = svc.compute_profile_trust_score(uid)
         assert score <= 100.0
+
+    # -----------------------------------------------------------------------
+    # Regression: adding new (low-confidence) data must never lower the score
+    # -----------------------------------------------------------------------
+    # This is the Phase 28 bug report: a user chatted with Ariel, added valid
+    # new profile data, and watched their System Confidence Score drop
+    # (18 → 16). The old implementation averaged raw confidence_score per
+    # category, so a freshly-created entity (which always starts near 0 —
+    # see _upsert_entity) dragged the category mean down the instant it was
+    # added. The new geometric ("OR") combination is monotonically
+    # non-decreasing in every entity score, so this must never happen again.
+
+    def test_adding_low_confidence_entity_to_existing_category_never_lowers_score(self):
+        """Adding a second, low-scoring skill must not lower the overall score."""
+        uid = "test-mono-existing-" + _uid()
+        with _TEST_ENGINE.begin() as conn:
+            _insert_entity(conn, user_id=uid, entity_type="skill",
+                           name="Product Strategy", confidence_score=55.0)
+
+        svc = self._service()
+        before = svc.compute_profile_trust_score(uid)
+
+        # Simulate Ariel extracting a brand-new, still-unverified skill —
+        # freshly created entities start with a low confidence_score.
+        with _TEST_ENGINE.begin() as conn:
+            _insert_entity(conn, user_id=uid, entity_type="skill",
+                           name="Stakeholder Mapping", confidence_score=7.5)
+
+        after = svc.compute_profile_trust_score(uid)
+        assert after >= before
+
+    def test_adding_first_entity_to_new_category_never_lowers_score(self):
+        """
+        A user's FIRST-ever entity in a previously-empty category (e.g. their
+        first "domain" claim) must not lower the overall score either — this
+        was the second monotonicity hole in the old renormalised-weight
+        approach (a new category's weight share was carved out of the
+        existing categories' share the instant it gained data).
+        """
+        uid = "test-mono-new-category-" + _uid()
+        with _TEST_ENGINE.begin() as conn:
+            _insert_entity(conn, user_id=uid, entity_type="skill",
+                           name="Data Analysis", confidence_score=50.0)
+            _insert_entity(conn, user_id=uid, entity_type="experience",
+                           name="Senior PM", confidence_score=75.0)
+
+        svc = self._service()
+        before = svc.compute_profile_trust_score(uid)
+
+        # First-ever domain entity — freshly created, low confidence.
+        with _TEST_ENGINE.begin() as conn:
+            _insert_entity(conn, user_id=uid, entity_type="domain",
+                           name="FinTech", confidence_score=7.5)
+
+        after = svc.compute_profile_trust_score(uid)
+        assert after >= before
 
 
 # ---------------------------------------------------------------------------
@@ -392,9 +470,16 @@ class TestTrustScoreEndpoint:
         assert "entities" in body
         assert "fetched_at" in body
 
-        # ── overall_trust_score: only skills present, renorm weight=1.0
-        #    avg([80, 20]) = 50.0
-        assert body["overall_trust_score"] == pytest.approx(50.0, abs=0.2)
+        # ── overall_trust_score: weighted geometric ("OR") combination.
+        #    group_score_skill = geo_combine([80, 20])
+        #      = 100 × (1 − (1−0.80)×(1−0.20)) = 100 × (1 − 0.16) = 84.0
+        #    only skill_trait populated → its 0.40 weight applies as an
+        #    exponent (experience/domain empty → neutral terms):
+        #      complement = (1 − 0.84)^0.40 ≈ 0.4805
+        #      overall    = 100 × (1 − 0.4805) ≈ 52.0
+        # (category_averages below is a SEPARATE plain-average field used
+        #  only for display — e.g. the radar chart — and is unaffected.)
+        assert body["overall_trust_score"] == pytest.approx(52.0, abs=0.2)
 
         # ── category_averages ────────────────────────────────────────────────
         cat = body["category_averages"]

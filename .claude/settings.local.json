@@ -138,7 +138,10 @@
       "Bash(sqlite3 backend/jobs.db 'SELECT '\\\\''__TRACKED_VAR__'\\\\'' AS today, \\(SELECT COUNT\\(*\\) FROM jobs WHERE substr\\(created_at,1,10\\)='\\\\''__TRACKED_VAR__'\\\\''\\) AS scanned_today, \\(SELECT COUNT\\(*\\) FROM jobs WHERE applied=1 AND substr\\(applied_at,1,10\\)='\\\\''__TRACKED_VAR__'\\\\''\\) AS actions_today;')",
       "Bash(sqlite3 backend/jobs.db \"SELECT COUNT\\(*\\) FROM jobs WHERE substr\\(created_at,1,10\\)='2026-06-24';\")",
       "Bash(awk 'NR>=2316 && /return \\\\\\(/ {print NR\": \"$0}' src/components/TrustDashboard.tsx)",
-      "Bash(grep -n \"className={\\\\`\\\\|className={className\\\\|\\\\${className}\" src/components/TrustDashboard.tsx)"
+      "Bash(grep -n \"className={\\\\`\\\\|className={className\\\\|\\\\${className}\" src/components/TrustDashboard.tsx)",
+      "Bash(.venv/bin/pytest --version)",
+      "Bash(.venv/bin/pytest tests/test_profile_trust.py -v)",
+      "Bash(.venv/bin/pytest)"
     ]
   }
 }

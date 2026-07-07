@@ -58,6 +58,7 @@ from backend.services.confidence_math import (
     compute_confidence_score,
     compute_decoupled_score,
     gap_severity,
+    geo_combine,
     verification_status,
 )
 
@@ -1136,29 +1137,61 @@ class ProfileUpdateService:
 
     def compute_profile_trust_score(self, user_id: str) -> float:
         """
-        Compute the weighted overall confidence score across all profile entities.
+        Compute the overall confidence score across all profile entities.
 
         Category weights
         ----------------
-        The three groups below must sum to 1.0:
+        The three groups below sum to 1.0 and are FIXED — never renormalised:
           skill + trait  →  0.40   (professional competency signals)
           experience     →  0.40   (role-history depth signals)
           domain         →  0.20   (domain knowledge signals)
 
-        Algorithm
-        ---------
-        1. Load every profile_entity for user_id (uses stored confidence_score —
-           no evidence re-computation; that is ProfileUpdateService's job).
-        2. Bucket entities into the three groups.
-        3. For each non-empty group, compute the mean confidence_score.
-        4. Combine with the group weights; groups with zero entities are dropped
-           and the remaining weights are re-normalised so the result is always
-           in [0.0, 100.0].
-        5. Return 0.0 when the user has no entities at all (empty profile guard).
+        Why this is a weighted geometric ("OR") combination, not an average
+        ---------------------------------------------------------------------
+        The previous implementation averaged confidence_score per category
+        (`sum(scores) / len(scores)`), then renormalised the three weights
+        across whichever categories had at least one entity. Both steps are
+        monotonicity bugs:
+
+          1. A brand-new entity always starts near 0 (see _upsert_entity /
+             compute_decoupled_score — an unverified claim with one piece of
+             evidence and the 0.50 base evidence_multiplier scores well below
+             any established entity in the same category). Averaging it in
+             mathematically drags the category mean down the instant the user
+             adds it — i.e. engaging with Ariel and adding true, valid data
+             *lowered* the score. This is the "18 → 16" bug.
+          2. Renormalising weights when a category goes from empty to
+             non-empty shrinks every *other* category's effective weight
+             share in the same instant, which can lower the overall score
+             even when every individual entity score stayed the same or rose.
+
+        The fix: combine scores the same monotonic way confidence_math.py
+        already combines multiple evidence sources *within* one entity —
+        geometric ("noisy-OR") combination, via `geo_combine()`:
+
+            group_score = 100 × (1 − ∏ᵢ (1 − scoreᵢ / 100))
+
+        This is non-decreasing in every scoreᵢ: adding a new entity, no
+        matter how low its starting confidence, can only raise (or, in the
+        zero-score limit, leave unchanged) its category's score — never
+        lower it.
+
+        Categories are then combined with the FIXED weights above as
+        exponents in a weighted geometric blend:
+
+            overall = 100 × (1 − ∏g (1 − group_scoreg / 100) ** weightg)
+
+        An empty category contributes group_score = 0, whose term becomes
+        (1 − 0) ** weightg == 1 — the multiplicative identity — so it has
+        zero effect on the product. That means a user's *first* entity in a
+        previously-empty category also cannot lower the overall score, since
+        no weight is ever taken away from a category that already had data.
 
         Returns
         -------
         float   Overall trust score in [0.0, 100.0], rounded to 1 decimal place.
+                Monotonically non-decreasing as entities are added or any
+                individual entity's confidence_score increases.
         """
         _WEIGHTS: dict[str, float] = {
             "skill_trait": 0.40,
@@ -1192,21 +1225,23 @@ class ProfileUpdateService:
                 buckets["experience"].append(float(score))
             elif entity_type == "domain":
                 buckets["domain"].append(float(score))
-            # Unknown types are silently excluded from the weighted average
-            # (they still appear in entity listings, just not in the score).
+            # Unknown types are silently excluded from the score (they still
+            # appear in entity listings, just not in this aggregate).
 
-        # Compute group averages; skip empty groups and renormalise weights
-        active: list[tuple[float, float]] = []   # (group_avg, group_weight)
+        # Weighted geometric ("OR") combination — see docstring above.
+        # `complement` starts at 1.0 (no information) and each category
+        # narrows it towards 0; an empty category multiplies in exactly 1.0
+        # (no-op), so it can never pull the result down.
+        #
+        # Individual scores are clamped to [0, 100] first: geo_combine raises
+        # (1 - c/100) to fractional weight powers below, and a stray value
+        # above 100 would make that base negative — undefined for a
+        # fractional exponent (Python raises a complex number, not an error).
+        complement = 1.0
         for group, scores in buckets.items():
-            if scores:
-                active.append((sum(scores) / len(scores), _WEIGHTS[group]))
+            clamped = [min(max(s, 0.0), 100.0) for s in scores]
+            group_score = geo_combine(clamped) if clamped else 0.0
+            complement *= (1.0 - group_score / 100.0) ** _WEIGHTS[group]
 
-        if not active:
-            return 0.0
-
-        total_weight = sum(w for _, w in active)
-        if total_weight == 0.0:
-            return 0.0
-
-        weighted_sum = sum(avg * (w / total_weight) for avg, w in active)
+        weighted_sum = 100.0 * (1.0 - complement)
         return round(min(max(weighted_sum, 0.0), 100.0), 1)

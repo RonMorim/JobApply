@@ -239,6 +239,15 @@ def _geo_combine(contributions: list[float]) -> float:
     return 100.0 * (1.0 - complement)
 
 
+def geo_combine(contributions: list[float]) -> float:
+    """
+    Public alias of `_geo_combine` for callers outside this module (e.g.
+    ProfileUpdateService.compute_profile_trust_score) that need the same
+    monotonic, "more evidence never lowers the score" combination rule.
+    """
+    return _geo_combine(contributions)
+
+
 def _positive_score_from_rows(rows: list[EvidenceRow]) -> float:
     """
     Compute the positive evidence score (before negative penalty) for a set of rows.
