@@ -58,7 +58,6 @@ from backend.services.confidence_math import (
     compute_confidence_score,
     compute_decoupled_score,
     gap_severity,
-    geo_combine,
     verification_status,
 )
 
@@ -102,6 +101,27 @@ def _parse_dt(value) -> datetime:
     return dt
 
 
+def _base_profile_complete(profile: Optional[dict]) -> bool:
+    """
+    Return True when the user's base profile carries the critical anchor data
+    the Core Profile score requires: a name, a phone number, and at least one
+    stated career preference (target title).
+
+    A missing profile (None / not a dict) is treated as incomplete. Matches the
+    schema written by user_profile_store.load(): personal.{full_name,phone} and
+    role_preferences.target_titles.
+    """
+    if not isinstance(profile, dict):
+        return False
+    personal   = profile.get("personal", {})       or {}
+    role_prefs = profile.get("role_preferences", {}) or {}
+
+    has_name  = bool(str(personal.get("full_name", "")).strip())
+    has_phone = bool(str(personal.get("phone", "")).strip())
+    has_prefs = bool(role_prefs.get("target_titles"))
+    return has_name and has_phone and has_prefs
+
+
 # ── Service ───────────────────────────────────────────────────────────────────
 
 class ProfileUpdateService:
@@ -109,6 +129,15 @@ class ProfileUpdateService:
     Wraps a SQLAlchemy Engine (not Session) and uses raw SQL via conn.execute()
     to match the existing db.py pattern in this project.
     """
+
+    # Core Profile scoring constants (Phase 29) — see compute_profile_trust_score.
+    #
+    # Effective-score ceiling for any entity not strongly validated by the AI
+    # (verification_status != 'verified'). Un-hydrated CV data cannot exceed this.
+    UNVERIFIED_SCORE_CAP: float = 60.0
+    # Flat multiplier applied when critical base-profile data (name / phone /
+    # career preferences) is missing.
+    COMPLETENESS_PENALTY: float = 0.80
 
     def __init__(self, engine):
         """
@@ -1135,74 +1164,80 @@ class ProfileUpdateService:
     # Public: weighted overall trust score
     # ─────────────────────────────────────────────────────────────────────────
 
-    def compute_profile_trust_score(self, user_id: str) -> float:
+    def compute_profile_trust_score(
+        self, user_id: str, profile: Optional[dict] = None
+    ) -> float:
         """
-        Compute the overall confidence score across all profile entities.
+        Compute the overall System Confidence Score across a user's profile.
 
-        Category weights
-        ----------------
-        The three groups below sum to 1.0 and are FIXED — never renormalised:
-          skill + trait  →  0.40   (professional competency signals)
-          experience     →  0.40   (role-history depth signals)
-          domain         →  0.20   (domain knowledge signals)
+        The "Core Profile" algorithm (Phase 29)
+        ---------------------------------------
+        Phase 28 aggregated the 100+ per-entity scores with a geometric
+        ("noisy-OR") combination — `100 × (1 − ∏(1 − scoreᵢ/100))`. That is
+        mathematically wrong for a *system-confidence* metric: noisy-OR
+        saturates towards 100 with volume alone, so a user with 141 unverified
+        entities (each scoring ~45–55) hit ~100% instantly, even though the
+        system had no strong evidence for any single trait. Volume of weak
+        data must not manufacture confidence.
 
-        Why this is a weighted geometric ("OR") combination, not an average
-        ---------------------------------------------------------------------
-        The previous implementation averaged confidence_score per category
-        (`sum(scores) / len(scores)`), then renormalised the three weights
-        across whichever categories had at least one entity. Both steps are
-        monotonicity bugs:
+        The replacement judges the system's confidence by how well it knows
+        the user's *strongest, most relevant* traits — not by summing 140 weak
+        ones. Four rules:
 
-          1. A brand-new entity always starts near 0 (see _upsert_entity /
-             compute_decoupled_score — an unverified claim with one piece of
-             evidence and the 0.50 base evidence_multiplier scores well below
-             any established entity in the same category). Averaging it in
-             mathematically drags the category mean down the instant the user
-             adds it — i.e. engaging with Ariel and adding true, valid data
-             *lowered* the score. This is the "18 → 16" bug.
-          2. Renormalising weights when a category goes from empty to
-             non-empty shrinks every *other* category's effective weight
-             share in the same instant, which can lower the overall score
-             even when every individual entity score stayed the same or rose.
+        1. Unverified cap.
+           An entity that has not been strongly validated by the AI
+           (verification_status != 'verified') has its effective score capped
+           at ``UNVERIFIED_SCORE_CAP`` (60.0). Parsed-but-unverified CV data
+           therefore cannot push the average past 60 — the user must earn a
+           'verified' status (STAR probe, whiteboard test, Ariel chat) to
+           break the ceiling on any given entity.
 
-        The fix: combine scores the same monotonic way confidence_math.py
-        already combines multiple evidence sources *within* one entity —
-        geometric ("noisy-OR") combination, via `geo_combine()`:
+        2. Core Profile average.
+           Within each bucket, entities are sorted by confidence DESC and only
+           the Top-N "core" entities are kept:
+               skill + trait  →  top 10
+               experience     →  top 3
+               domain         →  top 2
+           The overall score is the *arithmetic mean* of these (≤15) capped
+           core scores. We deliberately ignore the long tail of weak entities.
 
-            group_score = 100 × (1 − ∏ᵢ (1 − scoreᵢ / 100))
+        3. Completeness multiplier.
+           If the user is missing critical base-profile data (name, phone, or
+           any career preference / target title), the mean is multiplied by
+           ``COMPLETENESS_PENALTY`` (0.8). A profile the system can't even
+           anchor to a name and a goal is inherently less trustworthy.
 
-        This is non-decreasing in every scoreᵢ: adding a new entity, no
-        matter how low its starting confidence, can only raise (or, in the
-        zero-score limit, leave unchanged) its category's score — never
-        lower it.
+        4. Clamp to [0.0, 100.0], 1 decimal.
 
-        Categories are then combined with the FIXED weights above as
-        exponents in a weighted geometric blend:
+        Net effect: a new user with parsed-but-unverified CV data lands
+        realistically around 40–60%, and only genuine interaction (tests,
+        Ariel chat) that lifts entities above the 60 cap pulls the overall
+        score towards 100.
 
-            overall = 100 × (1 − ∏g (1 − group_scoreg / 100) ** weightg)
-
-        An empty category contributes group_score = 0, whose term becomes
-        (1 − 0) ** weightg == 1 — the multiplicative identity — so it has
-        zero effect on the product. That means a user's *first* entity in a
-        previously-empty category also cannot lower the overall score, since
-        no weight is ever taken away from a category that already had data.
+        Parameters
+        ----------
+        user_id : str
+            The user whose entities are scored.
+        profile : dict, optional
+            The user's base profile (as returned by user_profile_store.load).
+            Injectable for testing / to avoid a redundant disk read; when
+            omitted it is loaded from the per-user profile store.
 
         Returns
         -------
         float   Overall trust score in [0.0, 100.0], rounded to 1 decimal place.
-                Monotonically non-decreasing as entities are added or any
-                individual entity's confidence_score increases.
         """
-        _WEIGHTS: dict[str, float] = {
-            "skill_trait": 0.40,
-            "experience":  0.40,
-            "domain":      0.20,
+        # Top-N "core" entities kept per bucket before averaging.
+        _CORE_TOP_N: dict[str, int] = {
+            "skill_trait": 10,
+            "experience":  3,
+            "domain":      2,
         }
 
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text("""
-                    SELECT entity_type, confidence_score
+                    SELECT entity_type, confidence_score, verification_status
                     FROM   profile_entities
                     WHERE  user_id = :uid
                 """),
@@ -1212,36 +1247,51 @@ class ProfileUpdateService:
         if not rows:
             return 0.0
 
-        # Bucket scores by group
+        # ── 1. Bucket entities, applying the unverified cap per entity ────────
         buckets: dict[str, list[float]] = {
             "skill_trait": [],
             "experience":  [],
             "domain":      [],
         }
-        for entity_type, score in rows:
-            if entity_type in ("skill", "trait"):
-                buckets["skill_trait"].append(float(score))
-            elif entity_type == "experience":
-                buckets["experience"].append(float(score))
-            elif entity_type == "domain":
-                buckets["domain"].append(float(score))
-            # Unknown types are silently excluded from the score (they still
-            # appear in entity listings, just not in this aggregate).
+        for entity_type, score, vstatus in rows:
+            group = (
+                "skill_trait" if entity_type in ("skill", "trait")
+                else entity_type if entity_type in ("experience", "domain")
+                else None
+            )
+            if group is None:
+                # Unknown types are excluded from the aggregate (they still
+                # appear in entity listings, just not in this score).
+                continue
 
-        # Weighted geometric ("OR") combination — see docstring above.
-        # `complement` starts at 1.0 (no information) and each category
-        # narrows it towards 0; an empty category multiplies in exactly 1.0
-        # (no-op), so it can never pull the result down.
-        #
-        # Individual scores are clamped to [0, 100] first: geo_combine raises
-        # (1 - c/100) to fractional weight powers below, and a stray value
-        # above 100 would make that base negative — undefined for a
-        # fractional exponent (Python raises a complex number, not an error).
-        complement = 1.0
+            raw = min(max(float(score), 0.0), 100.0)
+            # Only a 'verified' status escapes the ceiling. Everything else —
+            # 'partial', 'needs_evidence', 'unverified', or NULL — is treated
+            # as pending validation and capped.
+            if str(vstatus or "").lower() != "verified":
+                raw = min(raw, self.UNVERIFIED_SCORE_CAP)
+            buckets[group].append(raw)
+
+        # ── 2. Keep only the Top-N core entities per bucket, then flatten ────
+        core_scores: list[float] = []
         for group, scores in buckets.items():
-            clamped = [min(max(s, 0.0), 100.0) for s in scores]
-            group_score = geo_combine(clamped) if clamped else 0.0
-            complement *= (1.0 - group_score / 100.0) ** _WEIGHTS[group]
+            scores.sort(reverse=True)
+            core_scores.extend(scores[: _CORE_TOP_N[group]])
 
-        weighted_sum = 100.0 * (1.0 - complement)
-        return round(min(max(weighted_sum, 0.0), 100.0), 1)
+        if not core_scores:
+            return 0.0
+
+        mean = sum(core_scores) / len(core_scores)
+
+        # ── 3. Completeness multiplier ───────────────────────────────────────
+        if profile is None:
+            try:
+                from backend.services import user_profile_store
+                profile = user_profile_store.load(user_id)
+            except Exception:
+                profile = None
+        if not _base_profile_complete(profile):
+            mean *= self.COMPLETENESS_PENALTY
+
+        # ── 4. Clamp & round ─────────────────────────────────────────────────
+        return round(min(max(mean, 0.0), 100.0), 1)

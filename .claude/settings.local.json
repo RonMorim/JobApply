@@ -141,7 +141,11 @@
       "Bash(grep -n \"className={\\\\`\\\\|className={className\\\\|\\\\${className}\" src/components/TrustDashboard.tsx)",
       "Bash(.venv/bin/pytest --version)",
       "Bash(.venv/bin/pytest tests/test_profile_trust.py -v)",
-      "Bash(.venv/bin/pytest)"
+      "Bash(.venv/bin/pytest)",
+      "Bash(git check-ignore *)",
+      "Bash(python -m pytest tests/test_profile_trust.py -q)",
+      "Bash(.venv/bin/python -m pytest -q)",
+      "Bash(echo \"exit=$?  \\(no matches = unrelated to scoring\\)\")"
     ]
   }
 }
