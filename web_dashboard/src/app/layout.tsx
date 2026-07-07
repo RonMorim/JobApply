@@ -21,8 +21,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     // lang and dir are overridden client-side by I18nContext on every locale change.
     // 'en' / 'ltr' are the server-rendered defaults (fastest paint, no flash).
     <html lang="en" dir="ltr">
-      {/* bg-[#F8FAFC] matches --ja-bg token; prevents flash of warm ivory on paint */}
-      <body className={`${inter.className} bg-[#F8FAFC] min-h-screen`}>
+      {/* bg-ja-bg (--ja-bg token) prevents flash of warm ivory on paint */}
+      <body className={`${inter.className} bg-ja-bg min-h-screen`}>
         <I18nProvider>
           <AuthProvider>
             <OnboardingProvider>

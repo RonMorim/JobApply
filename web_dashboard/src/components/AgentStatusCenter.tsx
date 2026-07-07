@@ -92,10 +92,10 @@ function AgentCard({ agent }: { agent: ApiAgentStatus }) {
         {agent.state === 'active' && !agent.current_task && (
           <span className="text-slate-500">Running…</span>
         )}
-        {agent.state === 'idle'   && <span className="text-slate-400">Idle — waiting for next pipeline run.</span>}
+        {agent.state === 'idle'   && <span className="text-slate-400">Idle. Waiting for the next pipeline run.</span>}
         {agent.state === 'queued' && (
           <span className="text-slate-600">
-            {agent.queue_msg || 'Queued — starting shortly…'}
+            {agent.queue_msg || 'Queued. Starting shortly…'}
           </span>
         )}
         {agent.state === 'error'  && <span className="text-rose-600">{agent.error_msg}</span>}
@@ -158,8 +158,8 @@ function ErrorBanner({ message, onRetry }: { message: string; onRetry: () => voi
   return (
     <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 flex items-center justify-between gap-4">
       <p className="text-[13px] text-rose-700">
-        <span className="font-medium">Agent status unavailable</span>
-        <span className="text-rose-500"> — {message}</span>
+        <span className="font-medium">Agent status unavailable.</span>
+        <span className="text-rose-500"> {message}</span>
       </p>
       <button
         onClick={onRetry}
@@ -201,7 +201,7 @@ function AnalyzeTrigger({
       // Blocking call — returns the complete JobMatch when done, or throws on failure.
       const res = await startAnalysis(url.trim())
       setStatus('success')
-      setMessage(`"${res.title}" added — ATS score ${res.match_score.toFixed(1)}`)
+      setMessage(`"${res.title}" added. ATS score ${res.match_score.toFixed(1)}.`)
       setAnalyzedJob(res)
       setUrl('')
       onJobAnalyzed?.(res)
@@ -211,33 +211,67 @@ function AnalyzeTrigger({
     }
   }
 
+  const loading = status === 'loading'
+
   return (
-    <div className="mt-8 rounded-xl border border-slate-200 bg-white p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <SparkIcon s={14} />
-        <span className="text-[13px] font-semibold text-slate-900">Analyze a job URL</span>
-        <span className="text-[12px] text-slate-400 ml-1">Scrape · structure · score in one shot</span>
+    <div
+      className="mt-8 rounded-2xl border border-slate-100 bg-white p-5"
+      style={{ boxShadow: TOKENS.shadow.card }}
+    >
+      <div className="flex items-center gap-2.5 mb-4">
+        <span
+          className="inline-flex h-8 w-8 items-center justify-center rounded-xl shrink-0"
+          style={{ background: TOKENS.color.primarySoft, color: TOKENS.color.primary }}
+        >
+          <SparkIcon s={15} />
+        </span>
+        <div className="min-w-0">
+          <span className="block text-[13.5px] font-semibold text-slate-900 leading-tight">Analyze a job URL</span>
+          <span className="block text-[12px] text-slate-400">Scrape · structure · score in one shot</span>
+        </div>
       </div>
-      <form onSubmit={handleSubmit} className="flex gap-2">
+
+      {/* Command-palette input — leading glyph, inset field, docked Run button */}
+      <form
+        onSubmit={handleSubmit}
+        className="group flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-1.5 pl-3.5 transition-all duration-200 focus-within:bg-white focus-within:border-teal-300"
+        style={{ boxShadow: 'inset 0 1px 2px rgba(15,23,42,0.05)' }}
+      >
+        <span className="shrink-0 text-slate-300 group-focus-within:text-teal-500 transition-colors" aria-hidden>
+          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+          </svg>
+        </span>
         <input
           type="url"
           value={url}
           onChange={e => setUrl(e.target.value)}
-          placeholder="https://jobs.lever.co/company/job-id"
-          className="flex-1 h-9 rounded-full border border-slate-200 px-4 text-[13px] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200 hover:border-slate-300 transition"
-          disabled={status === 'loading'}
+          placeholder="Paste a job URL, e.g. https://jobs.lever.co/company/job-id"
+          className="flex-1 h-9 bg-transparent text-[13px] text-slate-900 placeholder:text-slate-400 focus:outline-none min-w-0"
+          disabled={loading}
         />
         <button
           type="submit"
-          disabled={status === 'loading' || !url.trim()}
-          className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-semibold text-white transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ background: TOKENS.color.primary }}
+          disabled={loading || !url.trim()}
+          className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg text-[13px] font-semibold text-white transition-all duration-150 active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          style={{ background: TOKENS.color.primary, boxShadow: '0 1px 3px rgba(13,148,136,0.35)' }}
         >
-          {status === 'loading' ? 'Analysing…' : <><ArrowIcon s={13} /> Run</>}
+          {loading ? (
+            <>
+              <span
+                className="inline-block h-3 w-3 rounded-full border-[1.5px] animate-spin"
+                style={{ borderColor: 'rgba(255,255,255,.4)', borderTopColor: '#fff' }}
+              />
+              Analysing…
+            </>
+          ) : (
+            <><ArrowIcon s={13} /> Run</>
+          )}
         </button>
       </form>
       {message && (
-        <p className={`mt-2 text-[12px] ${status === 'error' ? 'text-rose-600' : 'text-emerald-600'}`}>
+        <p className={`mt-2.5 text-[12px] font-medium ${status === 'error' ? 'text-rose-600' : 'text-emerald-600'}`}>
           {message}
         </p>
       )}
@@ -371,25 +405,51 @@ export function AgentStatusCenter({ agents, loading, error, onRetry, onJobAnalyz
 
   return (
     <section>
-      {/* ── Intro banner — merged from Overview "Working on it" panel ── */}
+      {/* ── Live Pipeline banner — premium dark-teal SaaS surface ── */}
       <div
-        className="rounded-2xl p-5 mb-5 border border-slate-200 relative overflow-hidden"
-        style={{ background: 'linear-gradient(140deg, oklch(0.98 0.015 255) 0%, oklch(0.99 0.008 160) 100%)' }}
+        className="relative overflow-hidden rounded-2xl border border-white/10 p-6 mb-5"
+        style={{
+          background: 'linear-gradient(135deg, #08201E 0%, #0C302B 55%, #0F3B35 100%)',
+          boxShadow: '0 12px 32px rgba(8,32,30,0.30), inset 0 1px 0 rgba(255,255,255,0.06)',
+        }}
       >
+        {/* Rich teal glow, top-right */}
         <div
-          className="absolute -right-16 -top-16 h-48 w-48 rounded-full opacity-70 blur-3xl pointer-events-none"
-          style={{ background: 'radial-gradient(circle, oklch(0.85 0.10 255) 0%, transparent 70%)' }}
+          aria-hidden
+          className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full blur-3xl"
+          style={{ background: 'radial-gradient(circle, rgba(13,148,136,0.45) 0%, transparent 70%)' }}
+        />
+        {/* Soft emerald counter-glow, bottom-left */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -left-24 -bottom-24 h-56 w-56 rounded-full blur-3xl"
+          style={{ background: 'radial-gradient(circle, rgba(5,150,105,0.22) 0%, transparent 70%)' }}
         />
         <div className="relative">
-          <div className="flex items-center gap-2 mb-1">
-            <SparkIcon s={14} />
-            <span className="text-[11.5px] uppercase tracking-[0.12em] text-slate-500 font-medium">Live Pipeline Status</span>
+          <div className="flex items-center gap-2 mb-2.5">
+            {/* Pulsing live dot */}
+            <span className="relative inline-flex h-2 w-2 shrink-0">
+              <span
+                className="absolute inline-flex h-full w-full rounded-full opacity-70 animate-ping"
+                style={{ background: '#2DD4BF' }}
+              />
+              <span
+                className="relative inline-flex h-2 w-2 rounded-full"
+                style={{ background: '#2DD4BF' }}
+              />
+            </span>
+            <span
+              className="text-[11px] uppercase tracking-[0.16em] font-semibold"
+              style={{ color: '#99F6E4' }}
+            >
+              Live Pipeline Status
+            </span>
           </div>
-          <h3 className="text-[18px] font-semibold text-slate-900 tracking-tight">
+          <h3 className="text-[18px] font-semibold text-white tracking-tight leading-snug">
             Job Apply is searching while you focus on what matters.
           </h3>
-          <p className="text-[13.5px] text-slate-600 mt-1.5 max-w-[60ch] leading-relaxed">
-            Four agents scan, analyze, rank, and apply to roles that fit your profile — quietly, in the background.
+          <p className="text-[13px] mt-1.5 max-w-[60ch] leading-relaxed" style={{ color: 'rgba(204,251,241,0.75)' }}>
+            Four agents work quietly in the background. They scan, analyze, rank, and apply to roles that fit your profile.
           </p>
         </div>
       </div>
@@ -473,7 +533,7 @@ export function AgentStatusCenter({ agents, loading, error, onRetry, onJobAnalyz
             </svg>
             <p className="text-[13px] text-rose-800">
               <span className="font-semibold">Pipeline stopped.</span>
-              <span className="text-rose-600"> One or more agents hit an error — check the cards below for details.</span>
+              <span className="text-rose-600"> One or more agents hit an error. Check the cards below for details.</span>
             </p>
           </div>
           <button

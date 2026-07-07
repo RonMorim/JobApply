@@ -676,8 +676,92 @@ def get_narrative(key: str) -> dict:
     return USER_PROFILE.get("key_narratives", {}).get(key, {})
 
 
-def build_full_text() -> str:
-    """Single searchable blob of all profile facts — used for debugging."""
+# ── Multi-tenant accessors ─────────────────────────────────────────────────────
+#
+# The module-level USER_PROFILE dict above is LEGACY SINGLE-USER data, valid
+# only for user_id='default' (pre-migration local development). Multi-tenant
+# code paths must go through get_profile(user_id) / build_full_text(user_id),
+# which compose the per-user profile from the master_profiles onboarding row
+# that Ariel maintains (see agents/ariel_tools.py handlers).
+
+def _onboarding_row_profile(user_id: str) -> dict:
+    """Load the onboarding profile dict from master_profiles for user_id ({} if absent)."""
+    try:
+        from sqlalchemy.orm import Session
+        from backend.services.db import ENGINE, MasterProfileRow
+        with Session(ENGINE) as s:
+            row = s.get(MasterProfileRow, user_id)
+            return dict(row.master_profile or {}) if row else {}
+    except Exception:
+        return {}
+
+
+def get_profile(user_id: str) -> dict:
+    """
+    Per-user profile in the legacy USER_PROFILE shape (personal / education /
+    experience / skills / key_narratives), so existing consumers (orchestrator
+    nodes, tailor context builders) work unchanged.
+
+    user_id='default' returns the legacy singleton verbatim. Other users get
+    an adapter over their master_profiles onboarding row: Ariel-shaped
+    experience entries ({company, role, start, end, bullets}) are mapped onto
+    the singleton shape ({company, role, period, details}).
+    """
+    if user_id == "default":
+        return USER_PROFILE
+
+    onboarding = _onboarding_row_profile(user_id)
+    experience = []
+    for e in onboarding.get("experience", []):
+        experience.append({
+            "company": e.get("company", ""),
+            "role":    e.get("role", ""),
+            "period":  f"{e.get('start', '')} - {e.get('end', '')}".strip(" -"),
+            "start":   e.get("start", ""),
+            "end":     e.get("end", ""),
+            "details": " ".join(str(b) for b in e.get("bullets", [])),
+        })
+    return {
+        "personal": {
+            "name":     onboarding.get("personal", {}).get("name", "")
+                        if isinstance(onboarding.get("personal"), dict) else "",
+            "title":    "",
+            "email":    "", "phone": "", "linkedin": "", "location": "",
+        },
+        "summary":        onboarding.get("professional_summary", ""),
+        "education":      onboarding.get("education", []),
+        "experience":     experience,
+        "skills":         onboarding.get("skills", []),
+        "career_goals":   onboarding.get("career_goals", {}),
+        "key_narratives": {},
+        "volunteering":   "",
+    }
+
+
+def build_full_text(user_id: str = "default") -> str:
+    """
+    Single searchable blob of all profile facts for user_id.
+
+    DEPRECATED zero-arg form: calling with no argument returns the legacy
+    'default' singleton text — kept only for pre-migration dev paths.
+    """
+    if user_id != "default":
+        profile = get_profile(user_id)
+        parts: list[str] = [f"Candidate: {profile['personal'].get('name', '')}"]
+        if profile.get("summary"):
+            parts.append(f"Summary: {profile['summary']}")
+        for edu in profile.get("education", []):
+            if isinstance(edu, dict):
+                parts.append(" — ".join(str(v) for v in edu.values() if v))
+        for exp in profile.get("experience", []):
+            parts.append(
+                f"{exp.get('role', '')} at {exp.get('company', '')} "
+                f"({exp.get('period', '')}): {exp.get('details', '')}"
+            )
+        if profile.get("skills"):
+            parts.append(f"Skills: {', '.join(str(s) for s in profile['skills'])}")
+        return "\n".join(p for p in parts if p.strip())
+
     parts: list[str] = [f"Candidate: {get_candidate_name()}"]
 
     for edu in USER_PROFILE.get("education", []):

@@ -129,6 +129,42 @@ def _patch_all(agent_id: str, **kwargs: Any) -> None:
             store[agent_id] = store[agent_id].model_copy(update=kwargs)
 
 
+# ── Per-user write helpers (multi-tenant — preferred) ─────────────────────────
+#
+# A pipeline run for user X must never mutate user Y's agent status. The
+# broadcast helpers below (set_active / set_idle / set_queued) survive ONLY
+# for the legacy shared background pipeline; per-user pipeline runs must use
+# these scoped variants.
+
+def set_active_for_user(user_id: str, agent_id: str, task: str) -> None:
+    ensure_user_seeded(user_id)
+    store = _USER_STORES[user_id]
+    if agent_id in store:
+        agent = store[agent_id]
+        store[agent_id] = agent.model_copy(update={
+            "state":        "active",
+            "current_task": task,
+            "error_msg":    None,
+            "stats":        agent.stats.model_copy(
+                update={"queue": max(0, agent.stats.queue - 1)}
+            ),
+        })
+
+
+def set_idle_for_user(user_id: str, agent_id: str) -> None:
+    ensure_user_seeded(user_id)
+    store = _USER_STORES[user_id]
+    if agent_id in store:
+        agent  = store[agent_id]
+        today  = agent.stats.today + 1
+        spark  = (agent.stats.spark + [today])[-_SPARK_MAX:]
+        store[agent_id] = agent.model_copy(update={
+            "state":        "idle",
+            "current_task": None,
+            "stats":        AgentStats(today=today, queue=agent.stats.queue, spark=spark),
+        })
+
+
 def set_active(agent_id: str, task: str) -> None:
     ensure_user_seeded("default")   # guarantee at least the legacy store exists
     for uid, store in _USER_STORES.items():

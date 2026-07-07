@@ -494,9 +494,9 @@ def _build_optimize_gaps_opening(
 # ── Profile context loader ────────────────────────────────────────────────────
 
 def _build_profile_context(
+    user_id:               str,
     user_name_override:    str | None = None,
     current_role_override: str | None = None,
-    user_id:               str = "default",
     user_email:            str | None = None,
 ) -> dict:
     """
@@ -901,7 +901,7 @@ def _merge_confidence(existing: dict | None, delta: dict, draft: dict) -> dict:
 # ── Main interview functions ──────────────────────────────────────────────────
 
 def start_session(
-    user_id:               str = "default",
+    user_id:               str,
     user_name_override:    str | None = None,
     current_role_override: str | None = None,
     user_email:            str | None = None,
@@ -971,7 +971,7 @@ def start_session(
     }
 
 
-def process_message(session_id: str, user_text: str, user_id: str = "default") -> dict:
+def process_message(session_id: str, user_text: str, user_id: str) -> dict:
     """
     Process one user turn:
       1. Append the user message to history.
@@ -1128,7 +1128,7 @@ def process_message(session_id: str, user_text: str, user_id: str = "default") -
     }
 
 
-def get_session(session_id: str, user_id: str = "default") -> dict:
+def get_session(session_id: str, user_id: str) -> dict:
     """
     Fetch full session state.
 
@@ -1155,7 +1155,7 @@ def get_session(session_id: str, user_id: str = "default") -> dict:
         }
 
 
-def resume_session(session_id: str, user_id: str = "default") -> dict:
+def resume_session(session_id: str, user_id: str) -> dict:
     """
     Generate a context-aware "Resume & Status" message for a returning user,
     append it to the session history, persist it, and return the updated state.

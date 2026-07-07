@@ -2,57 +2,58 @@
 
 import Link        from 'next/link'
 import AuthGuard   from '@/components/AuthGuard'
-import { TOKENS }  from '@/lib/tokens'
 
 // ── Trending job seed data ─────────────────────────────────────────────────────
 
+// Deliberately diverse placeholder mix — this page is shown to visitors and
+// incomplete profiles across every field, not just product management.
 const TRENDING_JOBS = [
   {
     id: '1',
-    title: 'Senior Product Manager',
-    company: 'Meta',
+    title: 'Account Manager',
+    company: 'Monday.com',
     location: 'Tel Aviv, IL',
-    tags: ['B2C', 'Growth', 'Data-driven'],
+    tags: ['SaaS', 'Client-facing', 'B2B'],
     postedAgo: '2h ago',
   },
   {
     id: '2',
-    title: 'Product Manager — Payments',
-    company: 'Stripe',
-    location: 'Remote',
-    tags: ['Fintech', 'API', 'B2B'],
-    postedAgo: '5h ago',
+    title: 'Full Stack Developer',
+    company: 'Wix',
+    location: 'Tel Aviv, IL',
+    tags: ['React', 'Node.js', 'Platform'],
+    postedAgo: '4h ago',
   },
   {
     id: '3',
-    title: 'Group Product Manager',
-    company: 'Wix',
-    location: 'Tel Aviv, IL',
-    tags: ['Platform', 'Leadership'],
-    postedAgo: '8h ago',
+    title: 'Marketing Director',
+    company: 'Fiverr',
+    location: 'Hybrid — Tel Aviv',
+    tags: ['Brand', 'Growth', 'Leadership'],
+    postedAgo: '7h ago',
   },
   {
     id: '4',
-    title: 'Product Manager — Mobile',
-    company: 'Monday.com',
-    location: 'Tel Aviv, IL',
-    tags: ['Mobile', 'SaaS', 'B2B'],
+    title: 'Data Analyst',
+    company: 'Lightricks',
+    location: 'Jerusalem, IL',
+    tags: ['SQL', 'Dashboards', 'Product Analytics'],
     postedAgo: '1d ago',
   },
   {
     id: '5',
-    title: 'Technical Product Manager',
-    company: 'Cloudinary',
-    location: 'Petah Tikva, IL',
-    tags: ['Infrastructure', 'APIs'],
+    title: 'Customer Success Manager',
+    company: 'Gong',
+    location: 'Remote',
+    tags: ['Enterprise', 'Onboarding', 'Renewals'],
     postedAgo: '1d ago',
   },
   {
     id: '6',
-    title: 'Principal Product Manager',
-    company: 'Check Point',
-    location: 'Tel Aviv, IL',
-    tags: ['Cybersecurity', 'Enterprise'],
+    title: 'Product Manager',
+    company: 'Stripe',
+    location: 'Remote',
+    tags: ['Fintech', 'API', 'B2B'],
     postedAgo: '2d ago',
   },
 ]
@@ -73,27 +74,24 @@ function CompanyAvatar({ name }: { name: string }) {
   )
 }
 
-function ScorePending() {
+function MatchScoreTeaser() {
+  // Inviting placeholder — replaces the old "Match score pending" +
+  // "Complete your profile to unlock" pair that read like an error state.
   return (
-    <div
-      className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
-      style={{ background: 'rgba(148,163,184,0.12)', color: '#64748b', border: '1px solid rgba(148,163,184,0.2)' }}
-    >
+    <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-ja-primary bg-ja-primarySubtle rounded-full px-2.5 py-1">
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
       </svg>
-      Match score pending
-    </div>
+      Sign in to see your match score
+    </span>
   )
 }
 
 function JobCard({ job }: { job: typeof TRENDING_JOBS[0] }) {
   return (
     <div
-      className="bg-white rounded-2xl border border-slate-100 p-5 flex flex-col gap-4 hover:shadow-md transition-shadow"
-      style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}
+      className="bg-white rounded-2xl border border-slate-100 p-5 flex flex-col gap-4 shadow-elevation-1 hover:shadow-elevation-2 transition-shadow"
     >
       <div className="flex items-start gap-3">
         <CompanyAvatar name={job.company} />
@@ -112,17 +110,15 @@ function JobCard({ job }: { job: typeof TRENDING_JOBS[0] }) {
         {job.tags.map(tag => (
           <span
             key={tag}
-            className="text-[11px] px-2 py-0.5 rounded-md font-medium"
-            style={{ background: 'rgba(20,184,166,0.08)', color: '#0d9488' }}
+            className="text-[11px] px-2 py-0.5 rounded-md font-medium bg-ja-primarySubtle text-ja-primary"
           >
             {tag}
           </span>
         ))}
       </div>
 
-      <div className="flex items-center justify-between pt-1 border-t border-slate-50">
-        <ScorePending />
-        <span className="text-[11px] text-slate-400 italic">Complete your profile to unlock</span>
+      <div className="flex items-center pt-1 border-t border-slate-50">
+        <MatchScoreTeaser />
       </div>
     </div>
   )
@@ -133,16 +129,11 @@ function JobCard({ job }: { job: typeof TRENDING_JOBS[0] }) {
 function DiscoverContent() {
   return (
     <div className="min-h-screen bg-slate-50">
+      {/* Single primary CTA policy: the "Complete profile" banner below is the
+          one and only profile CTA on this page — no duplicate header button. */}
       <header className="bg-white border-b border-slate-100 sticky top-0 z-20">
-        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
+        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center">
           <span className="text-base font-extrabold tracking-tight text-slate-900">JobApply</span>
-          <Link
-            href="/onboarding"
-            className="text-sm font-semibold text-white px-4 py-2 rounded-lg transition-opacity hover:opacity-90"
-            style={{ background: TOKENS.color.primary }}
-          >
-            Build your profile
-          </Link>
         </div>
       </header>
 
@@ -150,19 +141,18 @@ function DiscoverContent() {
 
         {/* Profile prompt banner */}
         <div
-          className="rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center gap-4"
-          style={{ background: 'linear-gradient(135deg, #0F172A 0%, #0a1f1c 100%)', border: '1px solid rgba(255,255,255,0.06)' }}
+          className="rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center gap-4 border border-white/[0.06]"
+          style={{ background: 'linear-gradient(135deg, var(--ja-ink) 0%, var(--ja-ink-deep) 100%)' }}
         >
           <div className="flex-1 space-y-1">
             <p className="text-white font-semibold text-[15px]">Your match scores are waiting</p>
-            <p className="text-[13px]" style={{ color: '#94a3b8' }}>
+            <p className="text-[13px] text-ja-subtle">
               Complete your profile to unlock personalised match scores for every job below.
             </p>
           </div>
           <Link
             href="/onboarding"
-            className="flex-shrink-0 text-sm font-semibold px-5 py-2.5 rounded-xl transition-opacity hover:opacity-90 text-center"
-            style={{ background: TOKENS.color.primary, color: '#fff' }}
+            className="flex-shrink-0 text-sm font-semibold px-5 py-2.5 rounded-xl text-white text-center bg-ja-primary hover:bg-ja-primaryHover transition-colors"
           >
             Complete profile
           </Link>
@@ -175,8 +165,7 @@ function DiscoverContent() {
             <p className="text-sm text-slate-500 mt-0.5">Updated daily based on market demand</p>
           </div>
           <span
-            className="text-[11px] font-semibold px-2.5 py-1 rounded-full"
-            style={{ background: `${TOKENS.color.primary}15`, color: TOKENS.color.primary }}
+            className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-ja-primarySubtle text-ja-primary"
           >
             {TRENDING_JOBS.length} roles
           </span>

@@ -16,16 +16,34 @@ Scoring is split into two phases that map directly to the pipeline stages:
   Phase B  compute_full_match_score_async()      ← called in s2 (Sourcing Specialist)
   ─────────────────────────────────────────────────────────────────────
   Combines Phase A with two LLM sub-scores via a single claude-haiku call
-  (temperature=0.0 for determinism).  Weights:
+  (temperature=0.0 for determinism).  Capability-based weighting (rebalanced
+  to favour semantic/contextual fit over rigid keyword matching):
 
-    30%  Local title + seniority alignment  (Phase A result)
-    50%  Semantic experience fit            (LLM: domain, hard skills, SaaS/Fintech/B2B2C)
-    20%  Management trajectory fit          (LLM: leadership, cross-functional ownership)
+    30%  Keyword Matching Score   (Phase A local proxy: title + seniority,
+                                    now alias/synonym-aware — see
+                                    _CAPABILITY_ALIASES)
+    70%  LLM Semantic Capability Score, itself an internal split of:
+           50/70 of the bucket → semantic_score   (domain, transferable
+                                                     execution, growth trajectory)
+           20/70 of the bucket → management_score (tooling, methodology,
+                                                     stakeholder management)
+         i.e. the original 50:20 emphasis between the two LLM dimensions
+         is preserved, just rescaled to sum to the new 70% allocation.
 
-  Final score = 0.30 × local + 0.50 × semantic + 0.20 × management
+  Final score = 0.30 × local + 0.70 × (5/7 × semantic + 2/7 × management)
 
   Also runs _phase1() for the rich keyword/skills breakdown used by the
   tag row in the UI (matched_keywords, missing_skills, etc.).
+
+Alias / Synonym Resolution (Phase 1 capability matching)
+----------------------------------------------------------
+  Before docking points for a "missing" keyword or skill in _phase1(), the
+  pure-Python matcher cross-references _CAPABILITY_ALIASES so that, e.g.,
+  "Project Manager" credits a CV that says "Customer Success Team Leader",
+  "user stories" credits "PRDs" / "specs", and "B2C clients" credits
+  "B2B2C" / "end-users".  This only affects the deterministic Phase 1
+  component — the LLM semantic layer already evaluates capability
+  transferability directly against full CV text and is unaffected.
 
 Backwards Compatibility
 -----------------------
@@ -45,7 +63,9 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
+
+from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +203,72 @@ _DOMAIN_TITLE_SIGNALS: tuple[str, ...] = (
     "group", "principal",
 )
 
+# ── Capability alias / synonym dictionary (Phase 1) ──────────────────────────
+#
+# PURPOSE
+#   The keyword/skill matching in _phase1() does literal substring checks
+#   against the candidate's experience text. A JD that says "Project Manager"
+#   will report that as MISSING for a candidate whose CV says "Customer
+#   Success Team Leader" — even though the underlying capability (owning
+#   roadmaps, running cross-functional execution, managing stakeholders) is
+#   identical. This dictionary closes that gap WITHOUT touching the LLM
+#   semantic layer — it is a pure-Python, deterministic equivalence table
+#   applied before a term is docked as "missing".
+#
+# STRUCTURE
+#   Each entry is a canonical concept → frozenset of surface-form synonyms
+#   (including the canonical term itself). Matching is bidirectional: if the
+#   JD term belongs to a group, ANY surface form of that group appearing in
+#   the candidate's experience text counts as a match.
+#
+# SCOPE — THIS DOES NOT REPLACE THE LLM LAYER
+#   This only affects Phase 1 (_phase1) keyword_overlap / skills_alignment
+#   scoring (0-40 / 0-35 pts) — the pure-Python, deterministic component.
+#   It has no effect on semantic_score / management_score, which are scored
+#   by the LLM directly against the full CV text and are already capability-
+#   aware. This keeps the Exploration Freedom and Company Legacy principles
+#   (LLM-prompt level) completely untouched.
+_CAPABILITY_ALIASES: tuple[frozenset[str], ...] = (
+    frozenset({
+        "project manager", "program manager", "operations manager",
+        "product owner", "product manager", "customer success team leader",
+        "customer success manager", "delivery manager", "scrum master",
+    }),
+    frozenset({
+        "user stories", "user story", "prds", "prd",
+        "product requirements", "product requirement", "specs", "spec",
+        "specifications", "requirements documents",
+    }),
+    frozenset({
+        "b2c clients", "b2c", "b2b2c", "end-users", "end users",
+        "end-user", "end user", "consumer-facing",
+    }),
+)
+
+# Reverse index: surface form → the full alias group it belongs to.
+# Built once at import time; O(1) lookup at scoring time.
+_ALIAS_LOOKUP: dict[str, frozenset[str]] = {
+    surface: group
+    for group in _CAPABILITY_ALIASES
+    for surface in group
+}
+
+
+def _term_or_alias_in_text(term: str, text: str) -> bool:
+    """
+    Return True if `term` — or any of its registered synonyms — appears in
+    `text`.  Falls back to a plain substring check when the term has no
+    registered alias group (the original behaviour, unchanged).
+    """
+    term_lower = term.lower().strip()
+    if term_lower in text:
+        return True
+    group = _ALIAS_LOOKUP.get(term_lower)
+    if not group:
+        return False
+    return any(alias in text for alias in group if alias != term_lower)
+
+
 # ── Proficiency requirement signals ──────────────────────────────────────────
 _REQUIRED_SIGNALS: frozenset[str] = frozenset({
     "required", "must have", "must-have", "you must", "expert",
@@ -203,12 +289,22 @@ class MatchScoreResult:
     """
     Composite match score with full component breakdown.
 
-    Three-component weights (when LLM is available):
-      total = 0.30 × local_score + 0.50 × semantic_score + 0.20 × management_score
+    Unified weights (when LLM + ATS engine are both available):
+      llm   = 0.30 × local_score (Keyword Matching Score)
+            + 0.70 × ( 5/7 × semantic_score + 2/7 × management_score )
+              \\__________________________________________________/
+                       "LLM Semantic Capability Score" bucket
+      total = 0.60 × llm + 0.40 × ats_score        (engine base_score)
+      total = min(total, 40.0)                     when knockout_failed
+
+    When the ATS engine is unavailable (ats_score=None): total = llm.
+    See finalize_composite() — the only place this arithmetic may live.
 
     The keyword_overlap / skills_alignment / seniority_alignment sub-scores
     come from _phase1() and power the tag row in the UI regardless of whether
-    the LLM ran.
+    the LLM ran.  _phase1() keyword/skill matching is alias-aware — see
+    _CAPABILITY_ALIASES — so synonymous capabilities (e.g. "Customer Success
+    Team Leader" ≈ "Project Manager") are not penalised as missing.
     """
     total:               float           # 0-100, 1 decimal
     keyword_overlap:     float           # 0-40  (Phase 1 component)
@@ -221,12 +317,25 @@ class MatchScoreResult:
     suggestions:         list[str]       = field(default_factory=list)
     llm_validated:       bool            = False
     proficiency_notes:   list[str]       = field(default_factory=list)
-    # ── Three-component sub-scores (0-100 each) ───────────────────────────────
-    local_score:         float           = 0.0   # 30% — pure Python title+seniority
-    semantic_score:      float           = 0.0   # 50% — LLM: domain + hard skills
-    management_score:    float           = 0.0   # 20% — LLM: leadership + cross-func
-    # ── LLM-generated fit brief ───────────────────────────────────────────────
-    why_ron:             Optional[str]   = None  # populated by _llm_dual_score
+    # ── Composite sub-scores (0-100 each) ─────────────────────────────────────
+    local_score:         float           = 0.0   # 30% — Keyword Matching Score (alias-aware)
+    semantic_score:      float           = 0.0   # within the 70% LLM bucket (5/7 share)
+    management_score:    float           = 0.0   # within the 70% LLM bucket (2/7 share)
+    # ── LLM-generated fit brief + conceptual gap list ─────────────────────────
+    why_ron:                       Optional[str]   = None  # populated by _llm_dual_score
+    missing_critical_capabilities: list[str]        = field(default_factory=list)
+    # high-level conceptual capability gaps from the LLM — NOT a low-level
+    # missing-word list (that's missing_keywords / missing_skills from Phase 1).
+    # ── ATS Match Engine integration (unified scoring) ────────────────────────
+    # ats_score is the engine's PRE-knockout composite (base_score); the
+    # knockout penalty is applied exactly once, in finalize_composite, as a
+    # hard cap on the unified total. None ⇒ engine unavailable for this run
+    # (thin JD, entity fetch failure) and total is the pure LLM composite.
+    ats_score:            Optional[float] = None   # engine base_score, 0-100
+    ats_competency_score: Optional[float] = None   # Layer-1 coverage vs Confidence Matrix
+    knockout_failed:      bool            = False  # Layer-0 hard-constraint conflict
+    knockout_reasons:     list[str]       = field(default_factory=list)
+    ats_gaps:             list[str]       = field(default_factory=list)  # unmet must-haves
 
     def as_dict(self) -> dict:
         return {
@@ -245,6 +354,12 @@ class MatchScoreResult:
             "semantic_score":      self.semantic_score,
             "management_score":    self.management_score,
             "why_ron":             self.why_ron,
+            "missing_critical_capabilities": self.missing_critical_capabilities,
+            "ats_score":            self.ats_score,
+            "ats_competency_score": self.ats_competency_score,
+            "knockout_failed":      self.knockout_failed,
+            "knockout_reasons":     self.knockout_reasons,
+            "ats_gaps":             self.ats_gaps,
         }
 
 
@@ -287,7 +402,7 @@ def _cv_declarative_text(cv_data: dict) -> str:
 
 
 def _is_experience_backed(term: str, exp_text: str) -> bool:
-    if term in exp_text:
+    if _term_or_alias_in_text(term, exp_text):
         return True
     tokens = [t for t in term.split() if len(t) >= 4]
     return bool(tokens) and any(tok in exp_text for tok in tokens)
@@ -622,7 +737,7 @@ def _phase1(
     kw_weight_sum = 0.0
 
     for kw in sorted(jd_keywords):
-        if kw not in exp_text:
+        if not _term_or_alias_in_text(kw, exp_text):
             missing_kw.append(kw)
             continue
         user_level, matched_tok = _resolve_proficiency(kw, profs)
@@ -821,17 +936,40 @@ def compute_local_proxy_score(job_title: str, jd_text: str = "") -> float:
     return result
 
 
-# ── Phase B LLM sub-scorer: semantic + management (50% + 20% components) ─────
+# ── Phase B LLM sub-scorer: semantic + management (within the 70% bucket) ────
+
+class LLMCapabilityScore(BaseModel):
+    """
+    Strict output schema for the capability-based LLM scorer.
+
+    Enforced via Pydantic so a malformed or partial LLM response fails
+    validation explicitly (caught by _llm_dual_score's except block) rather
+    than silently propagating wrong types (e.g. a string where a float is
+    expected) into the composite-score arithmetic.
+    """
+    semantic_score:   float = Field(ge=0, le=100,
+        description="Overall capability alignment, transferable execution "
+                     "skills, and growth trajectory vs. the role.")
+    management_score: float = Field(ge=0, le=100,
+        description="Tooling (Jira/Monday/etc.), methodology, and "
+                     "stakeholder-management fit.")
+    why_ron: str = Field(default="",
+        description="Detailed contextual justification of the candidate's "
+                     "core strengths relative to the role.")
+    missing_critical_capabilities: List[str] = Field(default_factory=list,
+        description="High-level, conceptual capability gaps — NOT a "
+                     "low-level list of missing keywords.")
+
 
 _LLM_SYSTEM_SCORER = (
-    "You are a precise ATS scoring engine. "
+    "You are a precise capability-based evaluation engine. "
     "Output ONLY a valid, complete JSON object — no markdown fences, no prose, no explanation. "
     "The entire response must be parseable by json.loads(). "
-    "Keep the 'why_apply' field under 250 characters to avoid truncation."
+    "Keep the 'why_ron' field under 250 characters to avoid truncation."
 )
 
 _LLM_SCORER_TEMPLATE = """\
-Score this JOB vs. CANDIDATE across two independent dimensions.
+Score this JOB vs. CANDIDATE across two independent capability dimensions.
 Return ONLY valid JSON — no markdown, no extra text.
 
 JOB TITLE: {job_title}
@@ -851,16 +989,23 @@ CANDIDATE EXPERIENCE (most recent first):
 {company_legacy_note}
 Return this exact JSON object:
 {{
-  "semantic_experience_score": <integer 0-100>,
-  "management_trajectory_score": <integer 0-100>,
-  "why_apply": "<concise fit rationale — max 250 characters>"
+  "semantic_score": <integer 0-100>,
+  "management_score": <integer 0-100>,
+  "why_ron": "<concise, contextual fit rationale — max 250 characters>",
+  "missing_critical_capabilities": ["<high-level conceptual gap>", ...]
 }}
 
-WHY_APPLY RULES:
+WHY_RON RULES:
   • Plain text, no markdown, no bullet symbols, no newlines.
   • One or two sentences: state the strongest fit signal and the main gap (if any).
   • Direct and factual — no filler ("great opportunity", "excited to").
   • Hard limit: ≤ 250 characters total. Truncate rather than exceed.
+
+MISSING_CRITICAL_CAPABILITIES RULES:
+  • List CONCEPTUAL capability gaps, not individual missing keywords.
+    Good:  "No direct people-management experience"
+    Bad:   "missing word: 'Jira'"
+  • Empty list if there are no meaningful gaps. Max 5 items.
 
 ══════════════════════════════════════════════════════════
 MANDATORY ARCHITECTURAL PRINCIPLES — override all defaults
@@ -871,6 +1016,10 @@ MANDATORY ARCHITECTURAL PRINCIPLES — override all defaults
    for a title mismatch between their current/most-recent role and this JD.
    Evaluate TRANSFERABLE CAPABILITIES across the FULL experience history.
    If the underlying skill exists anywhere in their record, credit it fully.
+   This includes role-title synonyms: e.g. a "Customer Success Team Leader"
+   who owns PRDs, manages enterprise stakeholders, and drives execution is
+   functionally equivalent to a "Project Manager" / "Product Owner" — do not
+   penalize for the title string not matching literally.
 
 2. SENIORITY SCALING
    Overqualification is NEVER a penalty — treat it as a positive signal.
@@ -888,7 +1037,7 @@ MANDATORY ARCHITECTURAL PRINCIPLES — override all defaults
 SCORING CRITERIA
 ══════════════════════════════════════════════════════════
 
-COMPANY CONTEXT — factor this into semantic_experience_score
+COMPANY CONTEXT — factor this into semantic_score
   Use the HIRING COMPANY field above to assess environment fit:
   • Stage fit: hyper-growth startup, scale-up, enterprise, or public company?
     The candidate's background is strongest in high-growth B2B SaaS / scale-up
@@ -897,29 +1046,34 @@ COMPANY CONTEXT — factor this into semantic_experience_score
     industry contexts (banks, telcos, government) should slightly lower the score
     unless the JD content itself shows the company operates in an agile way.
   • Domain fit: B2B SaaS, marketplace, fintech, e-commerce — weight positively.
-  • Culture signals inferred from the company name may inform the why_apply brief
+  • Culture signals inferred from the company name may inform the why_ron brief
     but should not be the primary score driver — JD content takes precedence.
 
-semantic_experience_score  — weight 50% of composite
+semantic_score  — capability alignment, transferable execution, growth trajectory
   Evaluate domain alignment (SaaS / Fintech / E-commerce / B2B / B2B2C) AND
-  hard-skill overlap with JD requirements across the candidate's ENTIRE record.
+  hard-skill / capability overlap with JD requirements across the candidate's
+  ENTIRE record — not literal keyword matches, but the underlying capability
+  (e.g. "owns PRDs and drives R&D execution" satisfies a "Project Manager" JD
+  even without that exact phrase appearing in the CV).
   Factor in company stage/culture fit (see COMPANY CONTEXT above).
   Career-pivot exploration must NOT lower this score — focus on transferability.
-  90-100 = exceptional domain + skills fit (or validated prior employer).
+  90-100 = exceptional capability + domain fit (or validated prior employer).
   70-89  = strong transferable match, minor gaps.
   50-69  = solid partial match, bridgeable with ramp-up.
   30-49  = limited alignment, notable gaps.
   0-29   = poor fit, fundamental mismatch.
 
-management_trajectory_score  — weight 20% of composite
-  Does the candidate's record show leadership, people management, or
-  cross-functional ownership — regardless of whether the JD requires it?
+management_score  — tooling, methodology, and stakeholder-management fit
+  Does the candidate's record show leadership, people management,
+  cross-functional ownership, or tooling/methodology fit (Jira, Monday,
+  Scrum/Agile, stakeholder management) — regardless of whether the JD
+  requires it explicitly?
   Higher seniority than required = ASSET, score it at the top of the band.
-  90-100 = clear leadership match (demonstrated and/or required).
+  90-100 = clear leadership/tooling match (demonstrated and/or required).
   70-89  = good trajectory signals, minor gap.
-  50-69  = some leadership evidence, partial match.
+  50-69  = some leadership/tooling evidence, partial match.
   30-49  = limited evidence or JD is IC-only.
-  0-29   = no leadership evidence whatsoever.
+  0-29   = no leadership/tooling evidence whatsoever.
 """
 
 
@@ -966,16 +1120,16 @@ def _parse_json_robust(raw: str, job_title: str = "") -> dict | None:
 
     Truncation pattern: the model fills `max_tokens` mid-string, producing
     something like:
-        {"semantic_experience_score": 72, "management_trajectory_score": 65,
-         "why_apply": "🟢 Core Strengths:\\n• Led product at GO-OUT
+        {"semantic_score": 72, "management_score": 65,
+         "why_ron": "🟢 Core Strengths:\\n• Led product at GO-OUT
     (no closing quote, comma, or brace)
 
     Repair order:
       1. Direct parse — succeeds for well-formed responses.
       2. Close open string + object  →  append  '"}
       3. Close object only           →  append  }
-      4. Extract scores with regex, drop why_apply entirely.
-      5. Return None  — caller uses (60, 60, "") fallback.
+      4. Extract scores with regex, drop why_ron / missing_critical_capabilities.
+      5. Return None  — caller uses (60, 60, "", []) fallback.
     """
     # 1. Direct
     try:
@@ -995,19 +1149,20 @@ def _parse_json_robust(raw: str, job_title: str = "") -> dict | None:
     except json.JSONDecodeError:
         pass
 
-    # 4. Regex extraction — scores only, no why_apply
-    sem_m  = re.search(r'"semantic_experience_score"\s*:\s*(\d+)',   raw)
-    mgmt_m = re.search(r'"management_trajectory_score"\s*:\s*(\d+)', raw)
+    # 4. Regex extraction — scores only, no why_ron / capability gaps
+    sem_m  = re.search(r'"semantic_score"\s*:\s*(\d+)',   raw)
+    mgmt_m = re.search(r'"management_score"\s*:\s*(\d+)', raw)
     if sem_m or mgmt_m:
         logger.warning(
             "match_score LLM: truncated JSON repaired via regex for title='%s' — "
-            "scores recovered but why_apply lost. raw=%r",
+            "scores recovered but why_ron/missing_critical_capabilities lost. raw=%r",
             job_title, raw[:200],
         )
         return {
-            "semantic_experience_score":   int(sem_m.group(1))  if sem_m  else 60,
-            "management_trajectory_score": int(mgmt_m.group(1)) if mgmt_m else 60,
-            "why_apply": "",
+            "semantic_score":   int(sem_m.group(1))  if sem_m  else 60,
+            "management_score": int(mgmt_m.group(1)) if mgmt_m else 60,
+            "why_ron": "",
+            "missing_critical_capabilities": [],
         }
 
     # 5. Unrecoverable
@@ -1023,22 +1178,29 @@ async def _llm_dual_score(
     jd_text: str,
     job_title: str = "",
     company_name: str = "",
-) -> tuple[float, float, str]:
+) -> tuple[float, float, str, list[str]]:
     """
-    Single claude-haiku-4-5 call returning (semantic_score, management_score, why_apply).
+    Single claude-haiku-4-5 call returning
+    (semantic_score, management_score, why_ron, missing_critical_capabilities).
+
+    The response is validated against LLMCapabilityScore (Pydantic) so a
+    malformed payload — wrong types, out-of-range scores — is caught
+    explicitly rather than propagating bad data into the composite formula.
 
     temperature=0.0 guarantees identical output for identical inputs (determinism).
-    Falls back to (60.0, 60.0, "") on any API or parse error so the composite
-    still gets a reasonable score and the pipeline never crashes.
+    Falls back to (60.0, 60.0, "", []) on any API, parse, or validation error
+    so the composite still gets a reasonable score and the pipeline never crashes.
     """
     import anthropic
+
+    _FALLBACK: tuple[float, float, str, list[str]] = (60.0, 60.0, "", [])
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         logger.warning(
             "match_score LLM: ANTHROPIC_API_KEY not set — returning neutral fallback scores"
         )
-        return 60.0, 60.0, ""
+        return _FALLBACK
 
     # ── Compact CV fields for the prompt ─────────────────────────────────────
     cv_summary = (cv_data.get("summary") or "")[:400]
@@ -1082,8 +1244,8 @@ async def _llm_dual_score(
             "  • Validated domain fit (product, market, tech stack, client base).\n"
             "  • Zero onboarding ramp-up on context that external candidates spend\n"
             "    months acquiring.\n"
-            "YOU MUST score semantic_experience_score ≥ 85 AND\n"
-            "management_trajectory_score ≥ 80 unless there is an explicit,\n"
+            "YOU MUST score semantic_score ≥ 85 AND\n"
+            "management_score ≥ 80 unless there is an explicit,\n"
             "disqualifying hard-skill gap stated in the JD.\n"
         )
         logger.info(
@@ -1113,7 +1275,7 @@ async def _llm_dual_score(
         client  = anthropic.AsyncAnthropic(api_key=api_key)
         message = await client.messages.create(
             model       = "claude-haiku-4-5-20251001",
-            max_tokens  = 400,   # raised from 220 — why_apply bullets need headroom
+            max_tokens  = 450,   # headroom for why_ron + missing_critical_capabilities list
             temperature = 0.0,   # deterministic — same input → same output every time
             system      = _LLM_SYSTEM_SCORER,
             messages    = [{"role": "user", "content": prompt}],
@@ -1131,30 +1293,45 @@ async def _llm_dual_score(
 
         payload = _parse_json_robust(raw, job_title)
         if payload is None:
-            return 60.0, 60.0, ""
+            return _FALLBACK
 
-        semantic   = max(0.0, min(100.0, float(payload.get("semantic_experience_score",   60))))
-        management = max(0.0, min(100.0, float(payload.get("management_trajectory_score", 60))))
-        why_apply  = str(payload.get("why_apply", "")).strip()
+        # ── Strict Pydantic validation ────────────────────────────────────────
+        # Catches wrong types / missing required fields explicitly rather than
+        # letting a malformed payload silently corrupt the composite formula.
+        try:
+            validated = LLMCapabilityScore.model_validate(payload)
+        except ValidationError as exc:
+            logger.warning(
+                "match_score LLM: schema validation failed for title='%s' (%s) — "
+                "payload=%r — using fallback 60/60",
+                job_title, exc, payload,
+            )
+            return _FALLBACK
+
+        semantic   = validated.semantic_score
+        management = validated.management_score
+        why_ron    = validated.why_ron.strip()
+        gaps       = validated.missing_critical_capabilities[:5]
 
         logger.info(
-            "match_score LLM: semantic=%.0f  management=%.0f  why_apply_len=%d  title='%s'",
-            semantic, management, len(why_apply), job_title,
+            "match_score LLM: semantic=%.0f  management=%.0f  why_ron_len=%d  "
+            "gaps=%d  title='%s'",
+            semantic, management, len(why_ron), len(gaps), job_title,
         )
-        return semantic, management, why_apply
+        return semantic, management, why_ron, gaps
 
     except json.JSONDecodeError as exc:
         logger.warning(
             "match_score LLM: JSON parse failed for title='%s' (%s) — raw=%r — using fallback 60",
             job_title, exc, raw[:300] if 'raw' in dir() else '<no raw>',
         )
-        return 60.0, 60.0, ""
+        return _FALLBACK
     except Exception as exc:
         logger.warning(
             "match_score LLM: API call failed for title='%s': %s (%s)",
             job_title, type(exc).__name__, exc,
         )
-        return 60.0, 60.0, ""
+        return _FALLBACK
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -1174,6 +1351,167 @@ def compute_match_score(
     return _phase1(cv_data, jd_text, skill_proficiencies)
 
 
+# ── Unified composite — single source of truth ────────────────────────────────
+#
+# The ATS Match Engine (ats_match_engine.py) is no longer shadow-only: its
+# Layer-0 KnockoutResult and Layer-1 competency coverage feed the production
+# Match Score. Every code path that (re)derives a composite from sub-scores
+# MUST go through finalize_composite() — never inline the arithmetic — so the
+# knockout cap and the ATS blend can never be silently dropped (this exact
+# drift previously existed in feed_service's local_stored rebuild branch).
+#
+# Blend rationale:
+#   • The LLM semantic composite keeps the MAJORITY share because Principles
+#     2 & 3 (company legacy, exploration freedom) are enforced at the prompt
+#     level — the semantic scorer is where pivots and legacy get their credit.
+#   • The ATS base_score (evidence-backed coverage + impact + local) gets a
+#     strong minority share, so a profile with no evidence for the JD's
+#     must-haves can no longer show 90+ while the ATS panel shows 45.
+#   • A Layer-0 knockout failure caps the unified total outright: a provable
+#     hard-constraint conflict (work model / language / minimum years) is an
+#     "explicit, disqualifying gap" in the sense of Principle 2, so the cap
+#     legitimately overrides even a company-legacy floor.
+
+_LOCAL_WEIGHT      = 0.30
+_LLM_BUCKET_WEIGHT = 0.70
+_SEMANTIC_SHARE    = 5 / 7   # within the 70% bucket — was 50/(50+20)
+_MANAGEMENT_SHARE  = 2 / 7   # within the 70% bucket — was 20/(50+20)
+
+_LLM_BLEND_WEIGHT  = 0.60    # unified: share of the LLM semantic composite
+_ATS_BLEND_WEIGHT  = 0.40    # unified: share of the ATS engine base_score
+KNOCKOUT_SCORE_CAP = 40.0    # hard ceiling when Layer-0 knockout fails
+
+
+def finalize_composite(
+    local: float,
+    semantic: float,
+    management: float,
+    ats_base: float | None = None,
+    knockout_failed: bool = False,
+) -> float:
+    """
+    Compose the final 0-100 Match Score from its parts. Pure and deterministic.
+
+      llm_composite = 0.30 × local + 0.70 × (5/7 × semantic + 2/7 × management)
+      unified       = 0.60 × llm_composite + 0.40 × ats_base   (when ATS ran)
+      capped        = min(unified, 40.0)                        (knockout failed)
+
+    ats_base must be the engine's PRE-knockout base_score — the knockout
+    penalty is applied here, once, as a cap (never also via the engine's
+    0.35 multiplier, which would double-penalise).
+
+    Thin-JD callers (Principle 4) do not use this function's ATS path: they
+    zero semantic/management and pass no ats_base, preserving 0.30 × local.
+    """
+    llm_bucket    = _SEMANTIC_SHARE * semantic + _MANAGEMENT_SHARE * management
+    llm_composite = _LOCAL_WEIGHT * local + _LLM_BUCKET_WEIGHT * llm_bucket
+
+    composite = llm_composite
+    if ats_base is not None:
+        composite = _LLM_BLEND_WEIGHT * llm_composite + _ATS_BLEND_WEIGHT * ats_base
+    if knockout_failed:
+        composite = min(composite, KNOCKOUT_SCORE_CAP)
+    return round(min(100.0, max(0.0, composite)), 1)
+
+
+def _run_ats_engine(
+    cv_data: dict,
+    jd_text: str,
+    company_name: str,
+    local: float,
+    user_id: str,
+) -> "object | None":
+    """
+    Run the ATS Match Engine against the caller's data. Returns AtsMatchResult
+    or None when the engine cannot run (thin JD, entity fetch failure, …).
+
+    user_id is REQUIRED and must come from the caller's verified context
+    (JWT or per-user pipeline loop) — tenancy invariant, never a global lookup.
+
+    None means "degrade gracefully to the pure LLM composite" — scoring a job
+    must never crash the feed because the Confidence Matrix was unreachable.
+    """
+    try:
+        from backend.services.ats_match_engine import (
+            ThinJdError, compute_ats_match, heuristic_structured_jd,
+        )
+        from backend.services.confidence_matrix_service import get_entity_breakdown
+        from backend.services.db import ENGINE
+
+        entities = get_entity_breakdown(user_id, ENGINE)   # list[EntityScore] dicts
+
+        # Prefer knockout prefs from the master profile when available.
+        try:
+            from backend.services.master_profile_service import get_knockout_prefs
+            prefs = get_knockout_prefs(user_id)
+        except Exception:
+            prefs = {}
+
+        structured = heuristic_structured_jd(jd_text)
+        return compute_ats_match(
+            jd_text=jd_text,
+            structured_jd=structured,
+            cv_data=cv_data,
+            entity_scores=list(entities),
+            local_score=local,
+            target_company=company_name,
+            user_prefs=prefs,
+        )
+    except ThinJdError:
+        return None   # Principle-4 territory — caller keeps the 0.30 × local path
+    except Exception as exc:
+        logger.warning("[ats-engine] engine unavailable (non-fatal, LLM-only composite): %s", exc)
+        return None
+
+
+def _persist_score_audit(
+    job_title: str,
+    company_name: str,
+    llm_composite: float,
+    unified: float,
+    ats: "object",
+    user_id: str,
+) -> None:
+    """
+    Persist the LLM-only vs ATS vs unified scores for calibration review.
+    Guaranteed non-fatal — the production path never depends on this succeeding.
+    """
+    try:
+        import json as _json
+        from datetime import datetime, timezone
+
+        from backend.services.db import ENGINE, ShadowScoreRow
+        from sqlalchemy.orm import Session as _Session
+
+        with _Session(ENGINE) as s:
+            s.add(ShadowScoreRow(
+                user_id        = user_id,
+                job_title      = job_title[:200],
+                company        = company_name[:200],
+                existing_score = llm_composite,
+                ats_score      = ats.final_score,
+                breakdown_json = _json.dumps({
+                    "unified":    unified,
+                    "ats_base":   ats.base_score,
+                    "competency": ats.competency_score,
+                    "impact":     ats.impact.score,
+                    "local":      ats.local_score,
+                    "knockout_failed":  not ats.knockout.passed,
+                    "knockout_reasons": ats.knockout.reasons,
+                    "legacy_company":   ats.legacy_company,
+                    "gaps":             ats.gap_analysis,
+                    "must_have_count":  sum(
+                        1 for m in ats.competency_detail
+                        if m.competency.tier.value == "must_have"
+                    ),
+                }, ensure_ascii=False),
+                created_at = datetime.now(timezone.utc).isoformat(),
+            ))
+            s.commit()
+    except Exception as exc:
+        logger.warning("[ats-audit] score audit persist failed (non-fatal): %s", exc)
+
+
 async def compute_match_score_async(
     cv_data: dict,
     jd_text: str,
@@ -1181,14 +1519,23 @@ async def compute_match_score_async(
     skill_proficiencies: dict[str, str] | None = None,
     job_title: str = "",
     company_name: str = "",
+    *,
+    user_id: str,
 ) -> MatchScoreResult:
     """
     Async composite scorer — primary entry point for route handlers.
 
     When run_llm_validation=True (default):
-      Runs Phase 1 for keyword breakdown, then the LLM dual-scorer for the
-      50% semantic + 20% management components.
-      final = 0.30 × local + 0.50 × semantic + 0.20 × management
+      Runs Phase 1 for keyword breakdown (now alias/synonym-aware — see
+      _CAPABILITY_ALIASES), then the LLM dual-scorer for the 70% "LLM
+      Semantic Capability Score" bucket (semantic_score + management_score).
+      final = 0.30 × local  +  0.70 × (5/7 × semantic + 2/7 × management)
+
+      The 5/7 : 2/7 split inside the 70% bucket preserves the original
+      50:20 relative emphasis between semantic fit and management/tooling
+      fit — only the OUTER local-vs-LLM ratio changed (was 30/50/20 across
+      three independent weights, now 30/70 with semantic+management sharing
+      the 70% allocation in their original ratio).
 
     When run_llm_validation=False:
       Phase 1 only — fast, no API calls.  Suitable for live-editor re-scores,
@@ -1207,6 +1554,10 @@ async def compute_match_score_async(
     job_title : str
         Job title string — improves LLM prompt context and local proxy accuracy.
         If omitted, extracted from the first 60 chars of jd_text.
+    user_id : str  (keyword-only, REQUIRED)
+        Owner of the CV / Confidence Matrix being scored. Must originate from
+        a verified JWT (route handlers) or the per-user pipeline loop — the
+        tenancy invariant forbids resolving it from any global registry.
     company_name : str
         Target company name — used by _find_prior_employer to detect Company
         Legacy matches.  Must be passed from the job object, NOT derived from
@@ -1222,20 +1573,26 @@ async def compute_match_score_async(
     # have fetched the real JD before reaching this point; this guard is the
     # last line of defence.
     #
-    # BUG FIX: previously this returned _phase1() directly.  _phase1().total
-    # can reach 94+ for an exact title match ("Senior Product Manager") even
-    # when jd_text is only a title stub — a Phase-1-only score of 94 was then
-    # stored as match_score, floating empty jobs to the top of the feed.
-    #
-    # Correct behaviour: thin JDs get semantic=0 and management=0 so the
-    # composite formula caps at  0.30 × local + 0 + 0 ≤ ~28 for a perfect
-    # title match.  This keeps un-hydrated jobs near the bottom of the list
-    # without discarding the local/keyword breakdown the UI tag row needs.
+    # MANDATORY ARCHITECTURAL RULE — Strict Fallback for Thin JDs (CLAUDE.md §4)
+    # ───────────────────────────────────────────────────────────────────────
+    # Threshold is 300 characters (NOT a smaller value) and the fallback MUST
+    # zero out semantic_score and management_score — never substitute a flat
+    # magic-number cap (e.g. a hardcoded 28.2). The anti-pattern this guards
+    # against: returning _phase1().total directly, which can reach 94+ for an
+    # exact title match ("Senior Product Manager") even when jd_text is only
+    # a title stub — that false positive floats empty jobs to the top of the
+    # feed. Composite = 0.30 × local with semantic=management=0 naturally
+    # caps near ~28-30 for a strong title match and lower otherwise, keeping
+    # un-hydrated jobs near the bottom of the list without discarding the
+    # local/keyword breakdown the UI tag row needs. Any future change to this
+    # threshold or fallback formula must be reviewed against CLAUDE.md §4
+    # before merging.
     _LLM_MIN_JD_CHARS = 300
     if len(jd_text.strip()) < _LLM_MIN_JD_CHARS:
         inferred_title = job_title or jd_text[:60].split("\n")[0].strip()
         local          = compute_local_proxy_score(inferred_title, jd_text)
-        composite      = round(0.30 * local, 1)   # semantic=0, management=0
+        # semantic=0, management=0, no ATS blend → exactly 0.30 × local
+        composite      = finalize_composite(local, 0.0, 0.0)
         p1             = _phase1(cv_data, jd_text, skill_proficiencies)
         logger.warning(
             "match_score LLM: jd_text too thin (%d chars) — semantic=0 management=0 "
@@ -1258,29 +1615,58 @@ async def compute_match_score_async(
             semantic_score      = 0.0,
             management_score    = 0.0,
             why_ron             = None,
+            missing_critical_capabilities = [],
         )
 
-    # ── Full 3-component composite ────────────────────────────────────────────
+    # ── Full unified composite ────────────────────────────────────────────────
+    #
+    # 1) LLM semantic composite:
+    #      30% local proxy + 70% LLM bucket (5/7 semantic : 2/7 management)
+    # 2) ATS Match Engine (Layer 0 knockouts + Layer 1 coverage + Layer 2 impact)
+    #    blended in at 40%, and its KnockoutResult applied as a hard 40-pt cap.
+    # All arithmetic lives in finalize_composite() — the single source of truth
+    # shared with feed_service's local_stored rebuild branch.
 
-    # 30% — local proxy (pure Python title + seniority)
     inferred_title = job_title or jd_text[:60].split("\n")[0].strip()
     local = compute_local_proxy_score(inferred_title, jd_text)
 
-    # 50% + 20% — LLM dual scorer (single haiku call, temperature=0.0)
-    semantic, management, why_apply = await _llm_dual_score(cv_data, jd_text, inferred_title, company_name)
+    # LLM dual scorer (single haiku call, temperature=0.0, Pydantic-validated)
+    semantic, management, why_ron, missing_caps = await _llm_dual_score(
+        cv_data, jd_text, inferred_title, company_name
+    )
 
-    # Composite
-    composite = round(0.30 * local + 0.50 * semantic + 0.20 * management, 1)
-    composite = min(100.0, max(0.0, composite))
+    # ATS Match Engine — None ⇒ degrade gracefully to the pure LLM composite.
+    ats = _run_ats_engine(cv_data, jd_text, company_name, local, user_id)
+
+    llm_composite   = finalize_composite(local, semantic, management)
+    knockout_failed = bool(ats and not ats.knockout.passed)
+    composite       = finalize_composite(
+        local, semantic, management,
+        ats_base        = ats.base_score if ats else None,
+        knockout_failed = knockout_failed,
+    )
 
     # Phase 1 for rich keyword/skills breakdown (populates UI tag row)
     p1 = _phase1(cv_data, jd_text, skill_proficiencies)
 
-    logger.info(
-        "match_score composite: local=%.1f(×.30) + semantic=%.1f(×.50) + "
-        "management=%.1f(×.20) → %.1f  title='%s'",
-        local, semantic, management, composite, inferred_title,
-    )
+    if ats:
+        logger.info(
+            "match_score unified: llm=%.1f(×%.2f) + ats_base=%.1f(×%.2f)%s → %.1f  "
+            "[local=%.1f sem=%.1f mgmt=%.1f | ats C=%.1f I=%.1f K=%s]  title='%s'",
+            llm_composite, _LLM_BLEND_WEIGHT, ats.base_score, _ATS_BLEND_WEIGHT,
+            f" capped@{KNOCKOUT_SCORE_CAP:.0f} (knockout)" if knockout_failed else "",
+            composite, local, semantic, management,
+            ats.competency_score, ats.impact.score,
+            "FAIL" if knockout_failed else "pass", inferred_title,
+        )
+        # Calibration audit trail (non-fatal) — LLM-only vs ATS vs unified.
+        _persist_score_audit(inferred_title, company_name, llm_composite, composite, ats, user_id)
+    else:
+        logger.info(
+            "match_score composite (LLM-only, ATS engine unavailable): "
+            "local=%.1f sem=%.1f mgmt=%.1f → %.1f  title='%s'",
+            local, semantic, management, composite, inferred_title,
+        )
 
     return MatchScoreResult(
         total               = composite,
@@ -1297,5 +1683,11 @@ async def compute_match_score_async(
         local_score         = local,
         semantic_score      = semantic,
         management_score    = management,
-        why_ron             = why_apply or None,
+        why_ron             = why_ron or None,
+        missing_critical_capabilities = missing_caps,
+        ats_score            = ats.base_score if ats else None,
+        ats_competency_score = ats.competency_score if ats else None,
+        knockout_failed      = knockout_failed,
+        knockout_reasons     = list(ats.knockout.reasons) if ats else [],
+        ats_gaps             = list(ats.gap_analysis) if ats else [],
     )

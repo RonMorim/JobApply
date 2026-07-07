@@ -1,22 +1,19 @@
 """
 pytest configuration for backend/tests/
 ========================================
-Mirrors the sys.path manipulation that main.py performs when uvicorn starts
-so that bare `api.*` and `config` imports resolve correctly from the project
-root.
+Ensures the project root is on sys.path so the canonical `backend.*` package
+path resolves when pytest is run from anywhere.
 
-The server is launched from the backend/ directory, which puts backend/ on
-sys.path automatically.  pytest is run from the project root (one level up),
-so we add backend/ explicitly here.
+All intra-backend imports use the `backend.` prefix (see main.py). The bare
+`api.*` / `services.*` / `config` forms are forbidden: they load the same
+file as a second, independent module object, which breaks monkeypatching and
+FastAPI dependency_overrides (the override keys on a different function
+object than the one the app actually calls).
 """
 import sys
 from pathlib import Path
 
-# Add backend/ so `from api.deps import ...` and `import config` resolve,
-# exactly as they do when uvicorn runs from inside backend/.
-_BACKEND_DIR = Path(__file__).resolve().parent.parent          # .../backend
-_PROJECT_ROOT = _BACKEND_DIR.parent                            # .../JobApply_Venture
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent   # .../JobApply_Venture
 
-for _p in (_BACKEND_DIR, _PROJECT_ROOT):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))

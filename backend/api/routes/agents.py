@@ -53,9 +53,9 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.deps import CurrentUser, get_current_user
+from backend.api.deps import CurrentUser, get_current_user
 from models.agent import AgentStatus
-import services.agent_store as store
+import backend.services.agent_store as store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

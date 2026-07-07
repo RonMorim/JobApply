@@ -1,11 +1,11 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
-import { fetchAgents, setAuthToken } from '@/lib/api'
-import { useAuth }                   from '@/contexts/AuthContext'
-import type { ApiAgentStatus }       from '@/lib/apiTypes'
+import { fetchAgents }                from '@/lib/api'
+import { useAuth }                    from '@/contexts/AuthContext'
+import type { ApiAgentStatus }        from '@/lib/apiTypes'
 
 // Static frontend: no automatic polling.
-// Agent status is fetched ONCE on mount and when the user clicks Refresh.
+// Agent status is fetched ONCE when auth is ready and when the user clicks Refresh.
 
 interface UseAgentStatusResult {
   agents:  ApiAgentStatus[]
@@ -15,15 +15,19 @@ interface UseAgentStatusResult {
 }
 
 export function useAgentStatus(): UseAgentStatusResult {
-  const { session } = useAuth()
+  const { session, loading: authLoading } = useAuth()
 
   const [agents,  setAgents]  = useState<ApiAgentStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState<string | null>(null)
 
+  // fetchAgents() goes through the authenticated get() wrapper, which awaits
+  // ensureFreshToken() and attaches the current Bearer token itself. The old
+  // implementation called setAuthToken(session.access_token) with the token
+  // captured in React state — after a refresh or the post-onboarding
+  // USER_UPDATED window that token could be stale, overwriting the fresh one
+  // and producing 401s on /api/agents/. Never inject tokens manually here.
   const load = useCallback(async () => {
-    if (!session?.access_token) return
-    setAuthToken(session.access_token)
     setLoading(true)
     try {
       const data = await fetchAgents()
@@ -34,14 +38,15 @@ export function useAgentStatus(): UseAgentStatusResult {
     } finally {
       setLoading(false)
     }
-  }, [session])
-
-  // Fire once on mount (or when the session first becomes available).
-  // No setInterval — the user triggers any subsequent refresh manually.
-  useEffect(() => {
-    load()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Fire once auth has resolved (and again if the session identity changes).
+  // The previous mount-only effect raced the session: when it ran before the
+  // token existed it bailed and never retried, leaving the widget stuck.
+  useEffect(() => {
+    if (authLoading || !session) return
+    void load()
+  }, [authLoading, session?.user?.id, load])   // eslint-disable-line react-hooks/exhaustive-deps
 
   return { agents, loading, error, refetch: load }
 }

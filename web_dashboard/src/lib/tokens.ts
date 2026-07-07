@@ -11,10 +11,11 @@ export const TOKENS = {
     primary:     '#0D9488',   // teal-600 — deep teal
     primaryHover:'#0F766E',   // teal-700
     primarySoft: '#F0FDFA',   // teal-50
-    success:     'oklch(0.65 0.13 155)',
-    warn:        'oklch(0.75 0.13 80)',
-    danger:      'oklch(0.60 0.17 25)',
-    violet:      'oklch(0.52 0.18 290)',
+    // Semantic — MUST mirror the --ja-* vars in globals.css exactly
+    success:     '#059669',   // emerald-600
+    warn:        '#D97706',   // amber-600
+    danger:      '#DC2626',   // red-600
+    violet:      '#7C3AED',   // violet-600 — tertiary accent (KPIs, quick actions)
   },
   shadow: {
     card: '0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04)',

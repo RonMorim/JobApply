@@ -1,8 +1,7 @@
 'use client'
-import { useId, useState, useCallback, useEffect, useRef } from 'react'
-import { TOKENS } from '@/lib/tokens'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import type { ApiFeedJob, JobSourceType, ReasonKind } from '@/lib/apiTypes'
-import { markJobApplied, refreshFeedScores, fetchJobJd, getAuthHeaders } from '@/lib/api'
+import { markJobApplied, refreshFeedScores, fetchJobJd, ensureFreshToken, getAuthHeaders } from '@/lib/api'
 import { ProbeModal, type ProbeState } from './TrustDashboard'
 
 const IS_DEV = process.env.NODE_ENV === 'development'
@@ -229,72 +228,6 @@ function formatJdText(text: string): React.ReactNode {
   return blocks.length > 0 ? <>{blocks}</> : <ParagraphBlock text={text.trim()} />
 }
 
-// ── Score ring ────────────────────────────────────────────────────────────────
-
-function ScoreRing({ score, size = 48 }: { score: number; size?: number }) {
-  const id     = useId()
-  const stroke = 4
-  const r      = (size - stroke) / 2
-  const c      = 2 * Math.PI * r
-  const pct    = Math.max(0, Math.min(100, score)) / 100
-
-  const [from, to] =
-    score >= 80 ? ['oklch(0.72 0.15 160)', 'oklch(0.55 0.18 240)'] :
-    score >= 60 ? ['oklch(0.62 0.18 260)', 'oklch(0.58 0.20 300)'] :
-    score >= 40 ? ['oklch(0.78 0.14 80)',  'oklch(0.66 0.18 40)']  :
-    score  > 0  ? ['oklch(0.70 0.14 40)',  'oklch(0.60 0.18 20)']  :
-                  ['oklch(0.82 0.00 0)',   'oklch(0.75 0.00 0)']
-
-  const textColor =
-    score >= 80 ? 'oklch(0.38 0.10 200)' :
-    score >= 60 ? 'oklch(0.38 0.14 275)' :
-    score >= 40 ? 'oklch(0.40 0.12 60)'  :
-    score  > 0  ? 'oklch(0.40 0.14 25)'  :
-                  'oklch(0.60 0.00 0)'
-
-  const gid = `jc-ring-${id}`
-
-  if (score === 0) {
-    return (
-      <div
-        className="shrink-0 inline-flex items-center justify-center rounded-full border-2 border-slate-200"
-        style={{ width: size, height: size }}
-        title="Not yet scored"
-      >
-        <span className="text-[10px] font-medium text-slate-400">—</span>
-      </div>
-    )
-  }
-
-  return (
-    <div className="relative inline-flex shrink-0" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="-rotate-90">
-        <defs>
-          <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%"   stopColor={from} />
-            <stop offset="100%" stopColor={to}   />
-          </linearGradient>
-        </defs>
-        <circle cx={size/2} cy={size/2} r={r} stroke="#EEF0F3" strokeWidth={stroke} fill="none" />
-        <circle
-          cx={size/2} cy={size/2} r={r}
-          stroke={`url(#${gid})`} strokeWidth={stroke} fill="none"
-          strokeDasharray={c} strokeDashoffset={c * (1 - pct)} strokeLinecap="round"
-          style={{ transition: 'stroke-dashoffset 700ms cubic-bezier(.22,1,.36,1)' }}
-        />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-[11px] font-bold tabular-nums leading-none" style={{ color: textColor }}>
-          {score.toFixed(1)}
-        </span>
-        <span className="text-[8px] font-semibold leading-none mt-0.5 tracking-wide" style={{ color: textColor, opacity: 0.65 }}>
-          ATS
-        </span>
-      </div>
-    </div>
-  )
-}
-
 // ── Source badge ──────────────────────────────────────────────────────────────
 
 const SOURCE_LABELS: Record<JobSourceType, string> = {
@@ -302,17 +235,18 @@ const SOURCE_LABELS: Record<JobSourceType, string> = {
   company_site: 'Company Site',
   other:        'Other',
 }
-const SOURCE_STYLES: Record<JobSourceType, { bg: string; fg: string }> = {
-  linkedin:     { bg: 'oklch(0.94 0.04 255)', fg: 'oklch(0.38 0.18 255)' },
-  company_site: { bg: 'oklch(0.94 0.05 155)', fg: 'oklch(0.32 0.13 155)' },
-  other:        { bg: 'oklch(0.96 0.00 0)',   fg: 'oklch(0.50 0.00 0)'   },
+// Tone pairs use the Tailwind 50/700 scale — same recipe as the "Strong Match"
+// badge (teal-50/teal-700), so every badge shares one visual grammar and clears
+// WCAG AA contrast on its subtle background.
+const SOURCE_STYLES: Record<JobSourceType, string> = {
+  linkedin:     'bg-blue-50 text-blue-700',
+  company_site: 'bg-emerald-50 text-emerald-700',
+  other:        'bg-slate-100 text-slate-600',
 }
 function SourceBadge({ type }: { type: JobSourceType }) {
-  const s = SOURCE_STYLES[type]
   return (
     <span
-      className="inline-flex items-center h-[17px] px-1.5 rounded text-[10px] font-semibold tracking-wide"
-      style={{ background: s.bg, color: s.fg }}
+      className={`inline-flex items-center h-[17px] px-1.5 rounded text-[10px] font-semibold tracking-wide ${SOURCE_STYLES[type]}`}
     >
       {SOURCE_LABELS[type]}
     </span>
@@ -322,8 +256,7 @@ function SourceBadge({ type }: { type: JobSourceType }) {
 function DirectApplyBadge() {
   return (
     <span
-      className="inline-flex items-center gap-0.5 h-[17px] px-1.5 rounded text-[10px] font-semibold"
-      style={{ background: 'oklch(0.94 0.06 145)', color: 'oklch(0.30 0.12 150)' }}
+      className="inline-flex items-center gap-0.5 h-[17px] px-1.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800"
       title="Apply directly on the company's careers page"
     >
       ⚡ Direct
@@ -333,19 +266,18 @@ function DirectApplyBadge() {
 
 // ── Gap / reason tags ─────────────────────────────────────────────────────────
 
-const GAP_TONES: Record<ReasonKind, { bg: string; fg: string; Icon: (p: { s?: number }) => JSX.Element }> = {
-  skill: { bg: 'oklch(0.97 0.03 155)', fg: 'oklch(0.38 0.11 155)', Icon: SkillIcon },
-  exp:   { bg: 'oklch(0.97 0.02 255)', fg: 'oklch(0.38 0.14 255)', Icon: ExpIcon   },
-  loc:   { bg: 'oklch(0.97 0.03 295)', fg: 'oklch(0.40 0.14 295)', Icon: LocIcon   },
-  neg:   { bg: 'oklch(0.98 0.02 25)',  fg: 'oklch(0.48 0.12 25)',  Icon: WarnIcon  },
+const GAP_TONES: Record<ReasonKind, { cls: string; Icon: (p: { s?: number }) => JSX.Element }> = {
+  skill: { cls: 'bg-emerald-50 text-emerald-700', Icon: SkillIcon },
+  exp:   { cls: 'bg-blue-50 text-blue-700',       Icon: ExpIcon   },
+  loc:   { cls: 'bg-violet-50 text-violet-700',   Icon: LocIcon   },
+  neg:   { cls: 'bg-ja-dangerSubtle text-red-700', Icon: WarnIcon  },
 }
 function GapTag({ kind, label }: { kind: ReasonKind; label: string }) {
   const t = GAP_TONES[kind] ?? GAP_TONES.neg
   const { Icon } = t
   return (
     <span
-      className="inline-flex items-center gap-1 h-5 px-1.5 rounded-md text-[11px] font-medium"
-      style={{ background: t.bg, color: t.fg }}
+      className={`inline-flex items-center gap-1 h-5 px-1.5 rounded-md text-[11px] font-medium ${t.cls}`}
     >
       <Icon s={10} />
       {label}
@@ -508,27 +440,24 @@ function JdPanel({ text, expanded, onToggleExpand, isHebrewLocale = false }: JdP
 function AnalysisSkeleton() {
   return (
     <div
-      className="rounded-lg px-4 py-4 space-y-2.5"
-      style={{ background: 'oklch(0.975 0.00 0)', border: '1px solid oklch(0.93 0.00 0)' }}
+      className="rounded-lg px-4 py-4 space-y-2.5 bg-slate-50 border border-slate-200"
       aria-busy="true"
       aria-label="Generating analysis"
     >
       <div className="flex items-center gap-2 mb-1">
         <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-50"
-            style={{ background: TOKENS.color.primary }} />
-          <span className="relative inline-flex rounded-full h-2 w-2"
-            style={{ background: TOKENS.color.primary }} />
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-50 bg-ja-primary" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-ja-primary" />
         </span>
-        <span className="text-[12px] font-medium" style={{ color: TOKENS.color.primary }}>
+        <span className="text-[12px] font-medium text-ja-primary">
           Generating deep insights…
         </span>
       </div>
       {[70, 90, 55].map((w, i) => (
         <div
           key={i}
-          className="h-2.5 rounded-full animate-pulse"
-          style={{ width: `${w}%`, background: 'oklch(0.91 0.00 0)', animationDelay: `${i * 120}ms` }}
+          className="h-2.5 rounded-full animate-pulse bg-slate-200"
+          style={{ width: `${w}%`, animationDelay: `${i * 120}ms` }}
         />
       ))}
     </div>
@@ -555,8 +484,7 @@ const AUTH_WALL_SENTINEL  = '__auth_wall__'
 function AnalysisUnavailable() {
   return (
     <div
-      className="rounded-lg px-4 py-3 flex items-start gap-3"
-      style={{ background: 'oklch(0.98 0.02 25)', border: '1px solid oklch(0.88 0.04 25)' }}
+      className="rounded-lg px-4 py-3 flex items-start gap-3 bg-ja-dangerSubtle border border-red-200"
     >
       <span className="text-[15px] mt-0.5" aria-hidden="true">⚠️</span>
       <div className="flex-1 min-w-0">
@@ -573,8 +501,7 @@ function AnalysisUnavailable() {
 function AnalysisAuthWall() {
   return (
     <div
-      className="rounded-lg px-4 py-3 flex items-start gap-3"
-      style={{ background: 'oklch(0.97 0.04 255)', border: '1px solid oklch(0.85 0.08 255)' }}
+      className="rounded-lg px-4 py-3 flex items-start gap-3 bg-blue-50 border border-blue-200"
     >
       <span className="text-[15px] mt-0.5" aria-hidden="true">🔒</span>
       <div className="flex-1 min-w-0">
@@ -637,12 +564,7 @@ function AnalyzeJobButton({ jobId }: { jobId: string }) {
     <button
       onClick={handleClick}
       disabled={state === 'loading'}
-      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[11.5px] font-semibold shrink-0 transition active:scale-[0.97] disabled:opacity-50"
-      style={{
-        background: TOKENS.color.primarySoft,
-        color:      TOKENS.color.primary,
-        border:     `1px solid oklch(0.85 0.07 170)`,
-      }}
+      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[11.5px] font-semibold shrink-0 bg-ja-primarySubtle text-ja-primary border border-teal-200 hover:bg-teal-100 transition active:scale-[0.97] disabled:opacity-50"
     >
       {state === 'loading' ? (
         <><SpinnerTiny s={11} /> Analyzing…</>
@@ -677,6 +599,8 @@ function ArielInsightButton({
     setLoading(true)
     setError(null)
     try {
+      // Guard both fetches below against the mount-time token race.
+      await ensureFreshToken()
       // 1. Fetch trust entities to find the matching entity_id
       const trustRes = await fetch(`/api/profile/${userId}/trust-score`, {
         headers: getAuthHeaders(),
@@ -730,12 +654,7 @@ function ArielInsightButton({
         <button
           onClick={handleClick}
           disabled={loading}
-          className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold transition active:scale-[0.97] disabled:opacity-50"
-          style={{
-            background: TOKENS.color.primarySoft,
-            color:      TOKENS.color.primary,
-            border:     `1px solid oklch(0.85 0.07 170)`,
-          }}
+          className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-ja-primarySubtle text-ja-primary border border-teal-200 hover:bg-teal-100 transition active:scale-[0.97] disabled:opacity-50"
           title={`Strengthen your "${skillName}" evidence with Ariel`}
         >
           {loading ? <SpinnerTiny s={11} /> : <span aria-hidden="true">⚡</span>}
@@ -782,8 +701,7 @@ function AgentAnalysisBox({ job, userId }: { job: ApiFeedJob; userId?: string })
       {analysisReady ? (
         <>
           <div
-            className="rounded-lg px-4 py-3"
-            style={{ background: 'oklch(0.975 0.00 0)', border: '1px solid oklch(0.93 0.00 0)' }}
+            className="rounded-lg px-4 py-3 bg-slate-50 border border-slate-200"
           >
             <p className="text-[13px] text-slate-600 leading-relaxed max-w-3xl">
               {raw}
@@ -855,7 +773,11 @@ export function JobCard({
   const [showOutreach,     setShowOutreach]     = useState(false)
   const [showAtsPanel,     setShowAtsPanel]     = useState(false)
   const [isMarkingApplied, setIsMarkingApplied] = useState(false)
-  const [markedApplied,    setMarkedApplied]    = useState(false)
+  // Seed from server state so a refresh doesn't show "Mark Applied" again
+  // for a job that's already in the applied/submitted pipeline stage.
+  const [markedApplied,    setMarkedApplied]    = useState(
+    () => job.status === 'applied'
+  )
   const cardRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
@@ -872,12 +794,17 @@ export function JobCard({
 
   const isDirect           = job.is_direct_application === true || job.source_type === 'company_site'
   const isSaved            = job.status === 'saved'
+  // Server-authoritative applied state — button must be visible/enabled for
+  // any job NOT already in the 'applied' pipeline stage, regardless of
+  // apply_url presence or has_tailored_cv. ('submitted' is an ApplicationRow
+  // /CRM-pipeline status, not a JobStatus — it doesn't apply to job.status.)
+  const isAlreadyApplied   = job.status === 'applied'
   const isHebrewLocale     = job.locale === 'he'
   const parsedStructuredJd = job.jd_structured ? parseStructuredJd(job.jd_structured) : null
   const hasJD              = Boolean(parsedStructuredJd) || Boolean(job.jd_text && job.jd_text.trim().length > 80)
 
   const handleMarkApplied = useCallback(async () => {
-    if (isMarkingApplied || markedApplied) return
+    if (isMarkingApplied || markedApplied || isAlreadyApplied) return
     setIsMarkingApplied(true)
     try {
       await markJobApplied(job.job_id)
@@ -885,7 +812,7 @@ export function JobCard({
       onMarkApplied?.(job.job_id)
     } catch { /* silently fail */ }
     finally { setIsMarkingApplied(false) }
-  }, [isMarkingApplied, markedApplied, job.job_id, onMarkApplied])
+  }, [isMarkingApplied, markedApplied, isAlreadyApplied, job.job_id, onMarkApplied])
 
   const handleToggleDetails = () => setShowDetails(v => !v)
 
@@ -896,34 +823,29 @@ export function JobCard({
   return (
     <article
       ref={cardRef}
-      className={`bg-white rounded-2xl border transition-all ${
+      className={`bg-white rounded-2xl border transition-shadow duration-200 ${
         isDirect ? 'border-emerald-200' : 'border-slate-100'
-      }`}
-      style={{
-        boxShadow: showDetails
-          ? isDirect
-            ? '0 4px 16px rgba(16,185,129,0.12), 0 2px 8px rgba(0,0,0,0.02)'
-            : '0 2px 8px rgba(0,0,0,0.02), 0 24px 50px rgba(0,0,0,0.05)'
-          : isDirect
-            ? '0 1px 4px rgba(16,185,129,0.07), 0 2px 8px rgba(0,0,0,0.02)'
-            : '0 2px 8px rgba(0,0,0,0.02), 0 20px 40px rgba(0,0,0,0.03)',
-        transition: 'box-shadow 200ms ease, border-color 150ms ease',
-      }}
+      } ${showDetails ? 'shadow-elevation-2' : 'shadow-elevation-1'}`}
     >
       {/* Direct-apply teal accent bar */}
       {isDirect && (
         <div
           className="h-0.5 rounded-t-2xl"
-          style={{ background: 'linear-gradient(90deg, oklch(0.65 0.13 155), oklch(0.55 0.18 195))' }}
+          style={{ background: 'linear-gradient(90deg, var(--ja-success), var(--ja-primary))' }}
         />
       )}
 
       {/* ── Collapsed header row — always visible, click to expand ────────── */}
       <div
         role="button"
+        tabIndex={0}
         aria-expanded={showDetails}
+        aria-label={`${job.title} at ${job.company || 'Unknown Company'} — ${showDetails ? 'collapse' : 'expand'} details`}
         onClick={handleToggleDetails}
-        className={`group px-6 py-5 flex items-center gap-4 cursor-pointer select-none transition-colors ${
+        onKeyDown={e => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleToggleDetails() }
+        }}
+        className={`group px-6 py-5 flex items-center gap-4 cursor-pointer select-none transition-colors rounded-t-2xl ${
           showDetails ? 'bg-slate-50/50' : 'hover:bg-slate-50/60'
         }`}
       >
@@ -933,8 +855,7 @@ export function JobCard({
             <h2 className="text-[15px] font-bold text-slate-900 tracking-tight">
               {job.is_new && (
                 <span
-                  className="inline-block h-1.5 w-1.5 rounded-full align-middle mr-2 -translate-y-[2px]"
-                  style={{ background: TOKENS.color.primary }}
+                  className="inline-block h-1.5 w-1.5 rounded-full align-middle mr-2 -translate-y-[2px] bg-ja-primary"
                   title="New"
                 />
               )}
@@ -948,8 +869,7 @@ export function JobCard({
             {isDirect && <DirectApplyBadge />}
             {belowThreshold && (
               <span
-                className="inline-flex items-center px-1.5 py-0.5 rounded-lg text-[10px] font-semibold shrink-0"
-                style={{ background: 'oklch(0.97 0.03 55)', color: 'oklch(0.46 0.10 50)' }}
+                className="inline-flex items-center px-1.5 py-0.5 rounded-lg text-[10px] font-semibold shrink-0 bg-ja-warnSubtle text-amber-700"
               >
                 ↓ Below threshold
               </span>
@@ -1003,7 +923,7 @@ export function JobCard({
             <div className="flex items-center gap-3 flex-wrap">
               <button
                 onClick={e => { e.stopPropagation(); onTailorCV(job) }}
-                className="bg-[#0D9488] text-white text-xs font-semibold tracking-wide uppercase px-6 py-3 rounded-lg hover:bg-[#0F766E] transition-colors shadow-sm active:scale-[0.97]"
+                className="bg-ja-primary text-white text-xs font-semibold tracking-wide uppercase px-6 py-3 rounded-lg hover:bg-ja-primaryHover transition-colors shadow-sm active:scale-[0.97]"
               >
                 Tailor CV
               </button>
@@ -1032,10 +952,9 @@ export function JobCard({
                     onClick={e => e.stopPropagation()}
                     className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[11.5px] font-semibold transition ${
                       job.source_type === 'linkedin'
-                        ? 'border border-[#0A66C2]/25 text-[#0A66C2] hover:border-[#0A66C2]/50 hover:bg-[#0A66C2]/5'
+                        ? 'border border-ja-linkedin/25 bg-ja-linkedin/5 text-ja-linkedin hover:border-ja-linkedin/50'
                         : 'border border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100'
                     }`}
-                    style={job.source_type === 'linkedin' ? { background: 'rgba(10,102,194,0.05)' } : undefined}
                   >
                     {job.source_type === 'linkedin' ? <LinkedInIcon s={12} /> : <ExternalLinkIcon s={11} />}
                     {job.source_type === 'linkedin' ? 'LinkedIn' : 'Listing'}
@@ -1059,18 +978,24 @@ export function JobCard({
                   Skip
                 </ActionBtn>
 
-                {job.has_tailored_cv && (
-                  <ActionBtn
-                    onClick={e => { (e as React.MouseEvent).stopPropagation(); handleMarkApplied() }}
-                    disabled={isMarkingApplied || markedApplied}
-                    className={markedApplied
-                      ? 'border border-emerald-300 bg-emerald-50 text-emerald-700'
-                      : 'border border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50'
-                    }
-                  >
-                    {markedApplied ? '✓ Applied' : isMarkingApplied ? 'Saving…' : '✓ Mark Applied'}
-                  </ActionBtn>
-                )}
+                {/*
+                  Always rendered for any job not already applied/submitted.
+                  No dependency on apply_url or has_tailored_cv — manual status
+                  updates must work regardless of whether the scraper found a
+                  direct application link or a CV has been tailored yet.
+                */}
+                <ActionBtn
+                  onClick={e => { (e as React.MouseEvent).stopPropagation(); handleMarkApplied() }}
+                  disabled={isMarkingApplied || isAlreadyApplied || markedApplied}
+                  className={(markedApplied || isAlreadyApplied)
+                    ? 'border border-emerald-300 bg-emerald-50 text-emerald-700'
+                    : 'border border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50'
+                  }
+                >
+                  {(markedApplied || isAlreadyApplied)
+                    ? '✓ Applied'
+                    : isMarkingApplied ? 'Saving…' : '✓ Mark Applied'}
+                </ActionBtn>
               </div>
             </div>
 

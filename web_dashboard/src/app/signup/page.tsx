@@ -95,14 +95,14 @@ function inputCls(hasError = false) {
 function WorkspaceAnimation({ name }: { name: string }) {
   return (
     <div className="fixed inset-0 z-[200] flex flex-col items-center justify-center gap-6"
-      style={{ background: 'linear-gradient(145deg, #0F172A 0%, #0a1f1c 60%, #0F172A 100%)' }}>
+      style={{ background: 'linear-gradient(145deg, var(--ja-ink) 0%, var(--ja-ink-deep) 60%, var(--ja-ink) 100%)' }}>
       <div className="relative">
         <div className="w-20 h-20 rounded-3xl flex items-center justify-center text-white text-2xl font-extrabold tracking-tight"
           style={{ background: TOKENS.color.primary, animation: 'logo-pulse 1.5s ease-in-out infinite' }}>
           JA
         </div>
-        <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full border-[3px]"
-          style={{ background: '#22c55e', borderColor: '#0F172A', animation: 'dot-blink 1.2s ease-in-out infinite' }} />
+        <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full border-[3px] bg-green-500"
+          style={{ borderColor: 'var(--ja-ink)', animation: 'dot-blink 1.2s ease-in-out infinite' }} />
       </div>
       <div className="text-center space-y-1.5">
         <p className="text-white text-xl font-bold tracking-tight">
@@ -442,8 +442,8 @@ export default function SignupPage() {
 
               {/* Error banner */}
               {submitError && (
-                <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs"
-                  style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }} role="alert">
+                <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-ja-dangerSubtle text-ja-danger"
+                  role="alert">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                     strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 mt-0.5" aria-hidden="true">
                     <circle cx="12" cy="12" r="10" />

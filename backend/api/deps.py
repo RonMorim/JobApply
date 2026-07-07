@@ -25,17 +25,24 @@ Setup
   backend/.env should contain at least one of:
     SUPABASE_URL=https://<ref>.supabase.co   ← enables RS256/JWKS
     SUPABASE_JWT_SECRET=<raw-secret>         ← HS256 fallback only
-"""
-from __future__ import annotations
 
+NOTE — no `from __future__ import annotations` in this module, on purpose.
+With postponed annotations, FastAPI (on Python 3.9) cannot resolve the
+`request: Request` annotation on RateLimiter.__call__ (a callable-instance
+dependency) and silently degrades it to a REQUIRED QUERY PARAMETER named
+`request`, making every rate-limited endpoint return 422 for all callers.
+All annotations below are runtime-valid on 3.9 without the future import.
+"""
 import logging
 import os
+import threading
 import time
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 logger = logging.getLogger(__name__)
@@ -137,8 +144,24 @@ _bearer = HTTPBearer(auto_error=False)
 
 @dataclass
 class CurrentUser:
-    user_id: str
-    email:   str = field(default="")
+    user_id:  str
+    email:    str  = field(default="")
+    is_admin: bool = field(default=False)
+
+
+def _load_is_admin(user_id: str) -> bool:
+    """Cheap master_profiles lookup; absent row (or any DB error) → False."""
+    try:
+        from sqlalchemy import text as _text
+        from backend.services.db import ENGINE
+        with ENGINE.connect() as conn:
+            row = conn.execute(
+                _text("SELECT is_admin FROM master_profiles WHERE user_id = :uid"),
+                {"uid": user_id},
+            ).fetchone()
+        return bool(row[0]) if row else False
+    except Exception:
+        return False
 
 
 async def get_current_user(
@@ -178,10 +201,30 @@ async def get_current_user(
 
     # ── RS256/JWKS path ───────────────────────────────────────────────────────
     if _SUPABASE_URL:
-        return await _verify_rs256(token, jwt, JWTError)
+        user = await _verify_rs256(token, jwt, JWTError)
+    else:
+        # ── HS256 fallback ────────────────────────────────────────────────────
+        user = _verify_hs256(token, jwt, JWTError)
 
-    # ── HS256 fallback ────────────────────────────────────────────────────────
-    return _verify_hs256(token, jwt, JWTError)
+    user.is_admin = _load_is_admin(user.user_id)
+    return user
+
+
+async def require_admin(
+    user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """
+    FastAPI dependency for admin-only routes (Phase 2 foundation — defined
+    and exported, not yet mounted on any route).
+
+        user: CurrentUser = Depends(require_admin)
+    """
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required.",
+        )
+    return user
 
 
 async def _verify_rs256(token: str, jwt, JWTError) -> CurrentUser:
@@ -264,3 +307,110 @@ def _extract_user(payload: dict) -> CurrentUser:
         user_id=user_id,
         email=payload.get("email", ""),
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Rate limiting — lightweight, memory-backed, dependency-injectable
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# A sliding-window counter keyed per identity (authenticated user_id when a
+# Bearer token is present, else the client IP). No external store (Redis, etc.)
+# — a process-local dict of timestamp deques, guarded by a lock so it is safe
+# under the threadpool that runs sync path operations.
+#
+# Buckets are namespaced by `scope` so an endpoint's strict LLM budget and the
+# standard budget are counted independently for the same identity.
+#
+# NOTE: state is per-process. Behind multiple workers each has its own window,
+# so effective limits scale with worker count — acceptable for abuse/overload
+# protection at this stage; swap the backing store for Redis if global limits
+# are later required.
+
+_RATE_BUCKETS: dict[str, deque] = defaultdict(deque)
+_RATE_LOCK = threading.Lock()
+_RATE_MAX_KEYS = 50_000   # opportunistic-cleanup threshold to bound memory
+
+
+def _rate_identity(request: Request) -> str:
+    """
+    Best-effort caller identity for rate keying.
+
+    Prefers the JWT `sub` (unverified decode — keying only, never trusted for
+    authz), falls back to a token prefix, then to the client IP. Unverified
+    decode is safe here: a forged `sub` only changes which bucket the caller's
+    own requests land in, so a caller can throttle only themselves — they can
+    never lift another identity's limit.
+    """
+    auth = request.headers.get("authorization", "")
+    if auth[:7].lower() == "bearer ":
+        token = auth[7:].strip()
+        if token:
+            try:
+                from jose import jwt as _jwt
+                sub = _jwt.get_unverified_claims(token).get("sub")
+                if sub:
+                    return f"user:{sub}"
+            except Exception:
+                pass
+            return f"token:{token[:24]}"
+    client = request.client
+    host   = client.host if client else "unknown"
+    # Trusted-proxy hop: the Next.js server proxies public traffic from
+    # 127.0.0.1, which would collapse every anonymous visitor into one bucket.
+    # Honour X-Forwarded-For ONLY when the direct peer is loopback — a remote
+    # caller can't spoof its way into a fresh bucket because their XFF header
+    # is ignored unless they already own the local proxy.
+    if host in ("127.0.0.1", "::1", "localhost"):
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if forwarded:
+            return f"ip:{forwarded}"
+    return f"ip:{host}"
+
+
+class RateLimiter:
+    """
+    FastAPI dependency enforcing `max_requests` per `window_seconds` per caller.
+
+    Usage — router-level:   APIRouter(dependencies=[Depends(llm_rate_limit)])
+            per-route:       @router.post(..., dependencies=[Depends(llm_rate_limit)])
+
+    Raises 429 (with a Retry-After header) when the window is saturated.
+    """
+
+    def __init__(self, max_requests: int, window_seconds: int = 60, scope: str = "default"):
+        self.max_requests   = max_requests
+        self.window_seconds = window_seconds
+        self.scope          = scope
+
+    async def __call__(self, request: Request) -> None:
+        key = f"{self.scope}:{_rate_identity(request)}"
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        with _RATE_LOCK:
+            # Opportunistic memory bound: drain fully-expired buckets when the
+            # key space grows large (cheap amortised cleanup, no timers).
+            if len(_RATE_BUCKETS) > _RATE_MAX_KEYS:
+                for k in [k for k, dq in _RATE_BUCKETS.items() if not dq or dq[-1] < cutoff]:
+                    del _RATE_BUCKETS[k]
+
+            bucket = _RATE_BUCKETS[key]
+            while bucket and bucket[0] < cutoff:
+                bucket.popleft()
+
+            if len(bucket) >= self.max_requests:
+                retry_after = max(1, int(self.window_seconds - (now - bucket[0])) + 1)
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Rate limit exceeded. Please slow down and try again shortly.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+            bucket.append(now)
+
+
+# Shared limiter instances — import and attach as route/router dependencies.
+#   llm_rate_limit      → strict budget for expensive LLM-generation endpoints
+#   standard_rate_limit → generous budget for ordinary reads/writes
+#   webhook_rate_limit  → strict budget for unauthenticated inbound webhooks
+llm_rate_limit      = RateLimiter(max_requests=10, window_seconds=60, scope="llm")
+standard_rate_limit = RateLimiter(max_requests=60, window_seconds=60, scope="std")
+webhook_rate_limit  = RateLimiter(max_requests=30, window_seconds=60, scope="webhook")

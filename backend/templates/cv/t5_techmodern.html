@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>{{name}}</title>
+<style>
+@page { size: 210mm 297mm; margin: 0; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --accent:     #0D9488;
+  --accent-lt:  #14B8A6;
+  --side-bg:    #0F172A;
+  --side-ink:   #E2E8F0;
+  --side-muted: rgba(226,232,240,0.62);
+  --ink:        #0F172A;
+  --ink-2:      #1E293B;
+  --muted:      #64748B;
+  --faint:      #94A3B8;
+  --line:       #E2E8F0;
+}
+
+html, body {
+  width: 210mm; max-width: 210mm;
+  height: 297mm; max-height: 297mm;
+  overflow: hidden;
+  font-family: "Segoe UI", Arial, Helvetica, sans-serif;
+  font-size: 8.5pt;
+  color: var(--ink);
+  background: #fff;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  width: 210mm; height: 297mm;
+  max-height: 297mm;
+  overflow: hidden;
+  display: flex;
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: 72mm;
+  flex-shrink: 0;
+  background: var(--side-bg);
+  color: var(--side-ink);
+  padding: 24px 18px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.hdr-name {
+  font-size: 16pt;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.15;
+  letter-spacing: -0.2px;
+}
+
+.hdr-title {
+  font-size: 7.5pt;
+  font-weight: 600;
+  color: var(--accent-lt);
+  margin-top: 5px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.hdr-contact {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(226,232,240,0.18);
+}
+
+.contact-line {
+  font-size: 7pt;
+  color: var(--side-muted);
+  display: block;
+  line-height: 1.85;
+  word-break: break-word;
+}
+
+/* ── Sidebar section title ── */
+.side-sec .sec-title {
+  display: block;
+  font-size: 6.5pt;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--accent-lt);
+  margin-bottom: 6px;
+}
+
+.side-sec { flex-shrink: 0; margin-top: 16px; }
+
+/* ── Skills (sidebar) ── */
+.skill-cat { margin-bottom: 7px; }
+
+.skill-cat-label {
+  font-size: 6.5pt;
+  font-weight: 700;
+  color: var(--side-ink);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.skill-items { font-size: 7pt; color: var(--side-muted); display: block; line-height: 1.55; }
+
+/* ── Languages (sidebar) ── */
+.lang-row { margin-bottom: 4px; }
+.lang-name { font-size: 7.5pt; font-weight: 600; color: var(--side-ink); display: block; }
+.lang-level { font-size: 6.5pt; color: var(--side-muted); display: block; }
+
+/* ── Military (sidebar) ── */
+.mil-role { display: block; font-size: 7.5pt; font-weight: 600; color: var(--side-ink); }
+.mil-unit { display: block; font-size: 6.5pt; color: var(--side-muted); margin-top: 0.5px; }
+
+/* ── Volunteering (sidebar) ── */
+.vol-text { font-size: 7pt; color: var(--side-muted); line-height: 1.5; }
+
+/* ── Main column ── */
+.main-col {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 24px 24px 18px;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-sec { flex-shrink: 0; margin-bottom: 3px; }
+
+.main-sec .sec-title {
+  display: block;
+  font-size: 7pt;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding-bottom: 4px;
+  border-bottom: 1.5px solid var(--accent);
+  margin-bottom: 8px;
+  margin-top: 12px;
+}
+
+.main-sec:first-of-type .sec-title { margin-top: 0; }
+
+/* ── Summary ── */
+.summary-text { font-size: 8.5pt; color: var(--ink-2); line-height: 1.55; }
+
+/* ── Experience ── */
+.exp-entry { margin-bottom: 9px; }
+
+.entry-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.entry-meta { flex: 1; min-width: 0; }
+
+.entry-role { display: block; font-size: 9.5pt; font-weight: 700; color: var(--ink); }
+.entry-company { display: block; font-size: 7.5pt; color: var(--accent); font-weight: 600; margin-top: 1px; }
+
+.entry-dates {
+  font-size: 7pt;
+  color: var(--faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.bullets { margin-top: 4px; padding-left: 12px; }
+
+.bullets li {
+  font-size: 8pt;
+  color: var(--ink-2);
+  line-height: 1.48;
+  margin-bottom: 2px;
+  list-style: none;
+  position: relative;
+}
+
+.bullets li::before {
+  content: "▸";
+  position: absolute;
+  left: -12px;
+  color: var(--accent);
+  font-size: 7pt;
+}
+
+/* ── Education ── */
+.edu-entry { margin-bottom: 8px; }
+
+.edu-degree { display: block; font-size: 9pt; font-weight: 700; color: var(--ink); }
+.edu-institution { display: block; font-size: 7.5pt; color: var(--accent); font-weight: 600; margin-top: 1px; }
+.edu-honors { display: block; font-size: 7.5pt; color: var(--ink-2); margin-top: 2px; font-style: italic; }
+.edu-coursework { display: block; font-size: 7pt; color: var(--faint); margin-top: 1px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <aside class="sidebar">
+    <div class="hdr-name">{{name}}</div>
+    <div class="hdr-title">{{title}}</div>
+    <div class="hdr-contact">
+      <span class="contact-line">{{email}}</span>
+      {{phone_line}}
+      <span class="contact-line">{{linkedin}}</span>
+      {{location_line}}
+    </div>
+
+    {{skills_section}}
+    {{languages_section}}
+    {{military_section}}
+    {{volunteering_section}}
+  </aside>
+
+  <div class="main-col">
+    <div class="main-sec">
+      <span class="sec-title">Summary</span>
+      <div class="summary-text">{{summary}}</div>
+    </div>
+
+    <div class="main-sec">
+      <span class="sec-title">Experience</span>
+      {{experience_blocks}}
+    </div>
+
+    <div class="main-sec">
+      <span class="sec-title">Education</span>
+      {{education_blocks}}
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var MIN_SCALE = 0.72;
+  var body = document.querySelector('.main-col');
+  var sidebar = document.querySelector('.sidebar');
+  if (!body) return;
+  var available = body.clientHeight;
+  var needed    = body.scrollHeight;
+  var sideAvail = sidebar ? sidebar.clientHeight : 0;
+  var sideNeeded = sidebar ? sidebar.scrollHeight : 0;
+  var scale = 1;
+  if (available > 0 && needed > available) {
+    scale = Math.min(scale, Math.max(MIN_SCALE, available / needed));
+  }
+  if (sideAvail > 0 && sideNeeded > sideAvail) {
+    scale = Math.min(scale, Math.max(MIN_SCALE, sideAvail / sideNeeded));
+  }
+  if (scale < 1) {
+    body.style.transformOrigin = 'top left';
+    body.style.transform       = 'scale(' + scale + ')';
+    body.style.width           = (100 / scale) + '%';
+    if (sidebar) {
+      sidebar.style.transformOrigin = 'top left';
+      sidebar.style.transform       = 'scale(' + scale + ')';
+      sidebar.style.width           = (100 / scale) + '%';
+    }
+  }
+})();
+</script>
+</body>
+</html>

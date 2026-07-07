@@ -1,7 +1,77 @@
-# Project: JobApply_Venture (B2C Upgrade)
+# CLAUDE.md
 
-## AI Persona: Senior Product Manager (Skill by shining319)
-You are a senior product manager responsible for end-to-end product development.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project: JobApply_Venture (B2C Upgrade)
+
+B2C, ATS-optimized job-application platform. Backend is FastAPI (Python); frontend is Next.js. Four core B2C features under active development: Master Profile (persistent supplemental-answer storage), Match Score (0-100% JD match algorithm + UI), Template Engine (3 ATS-safe HTML/CSS resume templates), Live Editor (manual CV text editing before PDF export).
+
+## Commands
+
+**Backend** (FastAPI, run from repo root):
+```bash
+uvicorn backend.main:app --reload
+```
+- All intra-backend imports must use the `backend.` prefix (e.g. `from backend.services import db`) — bare `api.*`/`services.*`/`config` imports load a second, independent module instance (duplicated rate-limit buckets, JWKS caches, DB engines). `backend/main.py` enforces this by inserting the project root onto `sys.path`.
+- Env vars come from `backend/.env` (not root `.env`): `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `SUPABASE_URL`, `SUPABASE_JWT_SECRET`.
+- Single test: `pytest backend/tests/test_profile_trust.py` (no pytest.ini/pyproject config — pytest isn't pinned in requirements.txt, install separately if missing).
+
+**Frontend** (Next.js, run from `web_dashboard/`):
+```bash
+npm run dev      # next dev
+npm run build     # next build
+npm run lint      # next lint
+```
+No test framework is configured for the frontend.
+
+## Architecture
+
+### Backend (`backend/`)
+- `main.py` — FastAPI app entry point; wires all routers.
+- `api/routes/` — one router per domain: `agents`, `analytics`, `applications`, `ariel` (AI assistant/copilot), `auth`, `chat`, `crm`, `history`, `jobs`, `outreach`, `profile`, `resumes`, `settings`, `webhooks`.
+- `agents/` — LLM agent classes (applier, matcher, resume, scraper, tailor, copilot, gatekeeper, truth_check, ariel_tools).
+- `engines/` — core scoring logic: master_profile, matching_engine, optimization_engine.
+- `services/` — bulk of business logic: `db.py`, feed/job/match_score/confidence_matrix/master_profile/cv_assembly/pdf_builder/outreach/ats_match_engine services.
+- `scrapers/` — per-site job scrapers (LinkedIn, AllJobs, Drushim, Comeet, Gotfriends, Nisha, etc.) plus `relevancy.py`, `scraper_manager.py`.
+- `integrations/` — external service glue (`job_scraper.py`, `oauth_integrations.py`).
+- `logic/` — legacy modules (`outreach_engine.py`, `verifier.py`) used only by the root Streamlit app, not the FastAPI app.
+- `templates/` — resume HTML templates (`cv_template.html`, `cv/`).
+
+**Database**: SQLite is the actual, active primary datastore — `backend/services/db.py` connects to `sqlite:///backend/jobs.db` (has live `-shm`/`-wal` files). `DATABASE_URL`/Postgres in `.env.example` is not wired into `backend/config.py` — treat as aspirational/unused. Supabase is used only for auth (JWT) and a chat-logs table (`supabase/migrations/`), not as the main app DB. Root-level `jobs.db` is a stray 0-byte artifact, unrelated to `backend/jobs.db`.
+
+### Legacy standalone Streamlit app (not part of the FastAPI product)
+Root `app.py` is a separate Streamlit dashboard that imports `orchestrator.py` and `backend/logic/*`. `orchestrator.py` defines `analyze_fit()` and a hardcoded `_TARGET_JOB`. Do not confuse this with the FastAPI backend — it's a parallel/older UI kept for reference.
+
+### Frontend (`web_dashboard/`)
+App root and package name are `job-apply-web`; source lives in `web_dashboard/src/{app,components,contexts,hooks,lib,locales}`. Next.js 14 (app router), Tailwind, Supabase JS client. `web_dashboard/job-apply-web/` is **not** a nested app — it's a stray build-cache leftover with no source, safe to ignore.
+
+### Shared Pydantic models (`models/`)
+- `agent.py` — agent state/stats for UI agent cards.
+- `application.py` — `ApplicationStatus` enum (submitted → offer/rejected).
+- `job.py` — `RawJobPosting` and job source/status/locale literals.
+- `matching.py` — `ScoringBreakdown`/`MatchAnalysis` for the matching engine.
+- `optimization.py` — `CVImprovement`/`OptimizationReport` for CV rewrite suggestions.
+- `profile.py` — deep profile including `ProfessionalRole`.
+- `user.py` — `UserProfile` (skills, seniority, salary targets).
+
+## Design system
+
+See `DESIGN_SYSTEM.md` ("Editorial Intercom" system) for full detail. Key rules:
+- Teal (`#0D9488`) primary — no corporate blue.
+- Boxless UI: prefer whitespace/borders over nested cards.
+- `rounded-2xl` for cards, `rounded-lg` for buttons; avoid `rounded-full` on nav.
+- Custom multi-layer micro-shadows — never flat `shadow-md`/`shadow-lg`.
+- AI chat (Ariel) is on-demand/overlay, never a persistent split-screen panel.
+
+## Global rules (`.ai_rules`)
+
+- All scores must use 1 decimal precision.
+- User interactions must update the central User Profile.
+- New features must not override existing source labeling (LinkedIn/Company Site).
+
+## AI Persona: Senior Product Manager
+
+For product-design work (not implementation), operate as a senior product manager responsible for end-to-end product development.
 
 **Core Design Principles:**
 1. Reality First: Solutions must be technically, temporally, and financially feasible. Avoid idealized assumptions.
@@ -9,18 +79,11 @@ You are a senior product manager responsible for end-to-end product development.
 3. Humanistic Care: Integrate inclusivity (accessibility), emotional support (friendly feedback), and moral responsibility (privacy).
 
 **Workflow:**
-Step 1: Understand Context (Business goals, constraints, target users).
-Step 2: User Research (Build user personas detailing goals, pain points, behaviors).
-Step 3: Feature Design (Output feature list with P0/P1/P2 priorities, core flows, edge cases, MVP scope).
-Step 4: Humanistic Design (Accessibility, emotional design, privacy/ethics).
-Step 5: Document Output (Save output to `docs/prd-b2c.md`).
-
-## Current Context (The Requirement)
-We are building four B2C features for an ATS-optimized resume platform:
-1. **Master Profile:** Persistent user data storage for supplemental answers.
-2. **Match Score:** A 0-100% JD match indicator algorithm and UI display.
-3. **Template Engine:** A system offering 3 ATS-safe HTML/CSS templates.
-4. **Live Editor:** A UI for manual text editing of the generated CV before PDF export.
+1. Understand Context (business goals, constraints, target users).
+2. User Research (build user personas detailing goals, pain points, behaviors).
+3. Feature Design (output feature list with P0/P1/P2 priorities, core flows, edge cases, MVP scope).
+4. Humanistic Design (accessibility, emotional design, privacy/ethics).
+5. Document Output (save to `docs/prd-b2c.md`).
 
 ---
 

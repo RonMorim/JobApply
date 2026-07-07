@@ -886,7 +886,7 @@ def _enforce_limits(data: dict) -> dict:
 
 # ── Static section injection ─────────────────────────────────────────────────
 
-def _inject_static_sections(data: dict) -> dict:
+def _inject_static_sections(data: dict, respect_deletions: bool = False) -> dict:
     """
     Overwrite Education, Skills, and Military with the canonical values from
     USER_PROFILE — verbatim, every time, after the LLM has generated cv_data.
@@ -904,61 +904,89 @@ def _inject_static_sections(data: dict) -> dict:
 
     The function is intentionally non-destructive of experience / summary so
     the tailored parts of the CV are preserved untouched.
+
+    respect_deletions: when True (used by the Copilot edit path), an explicit
+    null / empty-array value already present in `data` for one of these keys
+    is treated as an intentional user deletion and is NOT overwritten with the
+    Master Profile's canonical value. A key that is simply absent from `data`
+    is still treated as an accidental omission and gets re-injected as before
+    — the CopilotAgent's system prompt requires it to emit an explicit
+    null/[] for deletions, so absence still means "the model forgot it."
+    The tailoring pipeline (fresh cv_data generation, refine) calls this with
+    the default `respect_deletions=False` and always gets full injection.
     """
+    def _explicitly_deleted(key: str) -> bool:
+        if not respect_deletions or key not in data:
+            return False
+        value = data.get(key)
+        if isinstance(value, dict):
+            # "skills" comes back as {"categories": [...]} — an empty or
+            # missing "categories" list means the model deleted it, even
+            # though the outer dict itself is non-empty (and thus truthy).
+            if key == "skills":
+                return not value.get("categories")
+            return len(value) == 0
+        return not value
+
     # ── Education ─────────────────────────────────────────────────────────────
-    profile_edu = USER_PROFILE.get("education") or []
-    if profile_edu:
-        canonical_edu = []
-        for e in profile_edu:
-            if e.get("degree"):
-                # Standard degree entry
-                canonical_edu.append({
-                    "degree":      e.get("degree", ""),
-                    "institution": e.get("school") or e.get("institution", ""),
-                    "dates":       e.get("period") or e.get("dates", ""),
-                    "honors":      e.get("status") or e.get("honors", ""),
-                    "coursework":  e.get("coursework", ""),
-                })
-            elif e.get("certification"):
-                # Certification entry — render as degree row
-                canonical_edu.append({
-                    "degree":      e.get("certification", ""),
-                    "institution": e.get("provider") or e.get("institution", ""),
-                    "dates":       e.get("period") or e.get("dates", ""),
-                    "honors":      e.get("status") or e.get("honors", ""),
-                    "coursework":  e.get("details") or e.get("coursework", ""),
-                })
-        if canonical_edu:
-            data["education"] = canonical_edu
+    if not _explicitly_deleted("education"):
+        profile_edu = USER_PROFILE.get("education") or []
+        if profile_edu:
+            canonical_edu = []
+            for e in profile_edu:
+                if e.get("degree"):
+                    # Standard degree entry
+                    canonical_edu.append({
+                        "degree":      e.get("degree", ""),
+                        "institution": e.get("school") or e.get("institution", ""),
+                        "dates":       e.get("period") or e.get("dates", ""),
+                        "honors":      e.get("status") or e.get("honors", ""),
+                        "coursework":  e.get("coursework", ""),
+                    })
+                elif e.get("certification"):
+                    # Certification entry — render as degree row
+                    canonical_edu.append({
+                        "degree":      e.get("certification", ""),
+                        "institution": e.get("provider") or e.get("institution", ""),
+                        "dates":       e.get("period") or e.get("dates", ""),
+                        "honors":      e.get("status") or e.get("honors", ""),
+                        "coursework":  e.get("details") or e.get("coursework", ""),
+                    })
+            if canonical_edu:
+                data["education"] = canonical_edu
 
     # ── Military ──────────────────────────────────────────────────────────────
     # Military entries in USER_PROFILE["experience"] have a "unit" key but no
     # "company" key — that's the reliable discriminator.
-    for exp in USER_PROFILE.get("experience", []):
-        if exp.get("unit") and not exp.get("company"):
-            data["military"] = {
-                "role":  exp.get("role", ""),
-                "unit":  exp.get("unit", ""),
-                "dates": exp.get("period") or exp.get("dates", ""),
-            }
-            break  # only one military entry expected
+    if not _explicitly_deleted("military"):
+        for exp in USER_PROFILE.get("experience", []):
+            if exp.get("unit") and not exp.get("company"):
+                data["military"] = {
+                    "role":  exp.get("role", ""),
+                    "unit":  exp.get("unit", ""),
+                    "dates": exp.get("period") or exp.get("dates", ""),
+                }
+                break  # only one military entry expected
+    else:
+        data["military"] = None
 
     # ── Skills ────────────────────────────────────────────────────────────────
-    profile_skills = USER_PROFILE.get("skills") or []
-    if profile_skills:
-        if isinstance(profile_skills, list):
-            # Flat list of strings → pack into a single category
-            data["skills"] = {
-                "categories": [
-                    {
-                        "label": "Core Skills",
-                        "items": [str(s) for s in profile_skills[:12]],
-                    }
-                ]
-            }
-        elif isinstance(profile_skills, dict):
-            # Already in {categories: [...]} format — use as-is
-            data["skills"] = profile_skills
+    if not _explicitly_deleted("skills"):
+        profile_skills = USER_PROFILE.get("skills") or []
+        if profile_skills:
+            if isinstance(profile_skills, list):
+                # Flat list of strings → pack into a single category
+                data["skills"] = {
+                    "categories": [
+                        {
+                            "label": "Core Skills",
+                            "items": [str(s) for s in profile_skills[:12]],
+                        }
+                    ]
+                }
+            elif isinstance(profile_skills, dict):
+                # Already in {categories: [...]} format — use as-is
+                data["skills"] = profile_skills
 
     return data
 
@@ -1120,7 +1148,7 @@ def _build_entity_intelligence_block() -> str:
     """
     try:
         from backend.services.master_profile_service import get_enriched_entities
-        entities = get_enriched_entities()
+        entities = get_enriched_entities("default")   # legacy single-user path (Phase 2 carve-out)
     except Exception:
         return ""
 

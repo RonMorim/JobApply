@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>{{name}}</title>
+<style>
+@page { size: 210mm 297mm; margin: 0; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --ink:     #18181B;
+  --ink-2:   #3F3F46;
+  --muted:   #71717A;
+  --faint:   #A1A1AA;
+  --line:    #E4E4E7;
+  --accent:  #18181B;
+}
+
+html, body {
+  width: 210mm; max-width: 210mm;
+  height: 297mm; max-height: 297mm;
+  overflow: hidden;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 8.5pt;
+  color: var(--ink);
+  background: #fff;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  width: 210mm; height: 297mm;
+  max-height: 297mm;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 26px 34px 20px;
+}
+
+/* ── Header — text-only, no color block, generous whitespace ── */
+.header {
+  flex-shrink: 0;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ink);
+  margin-bottom: 16px;
+}
+
+.hdr-name {
+  font-size: 22pt;
+  font-weight: 300;
+  letter-spacing: 0.5px;
+  color: var(--ink);
+  line-height: 1.1;
+}
+
+.hdr-title {
+  font-size: 8.5pt;
+  font-weight: 400;
+  color: var(--muted);
+  margin-top: 5px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.hdr-contact {
+  margin-top: 9px;
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.contact-line {
+  font-size: 7.5pt;
+  color: var(--muted);
+  display: inline-block;
+}
+
+.contact-line + .contact-line::before { content: "·"; margin-right: 14px; color: var(--faint); }
+
+/* ── Body ── */
+.body { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+
+/* ── Section title — small caps, wide tracking, no border/box ── */
+.sec-title {
+  display: block;
+  font-size: 7.5pt;
+  font-weight: 700;
+  letter-spacing: 2.4px;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 8px;
+  margin-top: 13px;
+}
+
+.main-sec:first-of-type .sec-title { margin-top: 0; }
+.main-sec { flex-shrink: 0; }
+
+/* ── Summary ── */
+.summary-text { font-size: 8.5pt; color: var(--ink-2); line-height: 1.55; }
+
+/* ── Experience ── */
+.exp-entry { margin-bottom: 10px; }
+
+.entry-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.entry-meta { flex: 1; min-width: 0; }
+
+.entry-role { display: inline; font-size: 9.5pt; font-weight: 600; color: var(--ink); }
+.entry-company { display: inline; font-size: 8.5pt; color: var(--muted); }
+.entry-company::before { content: ", "; color: var(--muted); }
+
+.entry-dates {
+  font-size: 7.5pt;
+  color: var(--faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.bullets { margin-top: 4px; padding-left: 12px; }
+
+.bullets li {
+  font-size: 8pt;
+  color: var(--ink-2);
+  line-height: 1.5;
+  margin-bottom: 2px;
+  list-style: none;
+  position: relative;
+}
+
+.bullets li::before {
+  content: "–";
+  position: absolute;
+  left: -12px;
+  color: var(--faint);
+}
+
+/* ── Education ── */
+.edu-entry { margin-bottom: 8px; }
+
+.edu-degree { display: inline; font-size: 9pt; font-weight: 600; color: var(--ink); }
+.edu-institution { display: inline; font-size: 8pt; color: var(--muted); }
+.edu-institution::before { content: ", "; color: var(--muted); }
+
+.edu-honors { display: block; font-size: 7.5pt; color: var(--ink-2); margin-top: 2px; font-style: italic; }
+.edu-coursework { display: block; font-size: 7.5pt; color: var(--faint); margin-top: 1px; }
+
+/* ── Side sections render as full-width blocks, same rhythm as main ── */
+.side-sec { flex-shrink: 0; margin-top: 13px; }
+
+/* ── Skills ── */
+.skill-cat { margin-bottom: 4px; display: flex; gap: 6px; }
+
+.skill-cat-label {
+  font-size: 7.5pt;
+  font-weight: 700;
+  color: var(--ink);
+  flex-shrink: 0;
+}
+
+.skill-cat-label::after { content: ":"; }
+
+.skill-items { font-size: 8pt; color: var(--ink-2); }
+
+/* ── Languages ── */
+.lang-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 3px;
+}
+
+.lang-name { font-size: 8pt; font-weight: 600; color: var(--ink); }
+.lang-level { font-size: 7.5pt; color: var(--muted); }
+
+/* ── Military — mirrors the experience-entry rhythm exactly ── */
+.mil-role { display: inline; font-size: 9pt; font-weight: 600; color: var(--ink); }
+.mil-unit { display: inline; font-size: 8pt; color: var(--muted); }
+.mil-unit::before { content: ", "; color: var(--muted); }
+
+/* ── Volunteering ── */
+.vol-text { font-size: 8pt; color: var(--ink-2); line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="header">
+    <div class="hdr-name">{{name}}</div>
+    <div class="hdr-title">{{title}}</div>
+    <div class="hdr-contact">
+      <span class="contact-line">{{email}}</span>
+      {{phone_line}}
+      <span class="contact-line">{{linkedin}}</span>
+      {{location_line}}
+    </div>
+  </header>
+
+  <div class="body">
+    <div class="main-sec">
+      <span class="sec-title">Summary</span>
+      <div class="summary-text">{{summary}}</div>
+    </div>
+
+    <div class="main-sec">
+      <span class="sec-title">Experience</span>
+      {{experience_blocks}}
+    </div>
+
+    <div class="main-sec">
+      <span class="sec-title">Education</span>
+      {{education_blocks}}
+    </div>
+
+    {{skills_section}}
+    {{languages_section}}
+    {{military_section}}
+    {{volunteering_section}}
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var MIN_SCALE = 0.72;
+  var body = document.querySelector('.body');
+  if (!body) return;
+  var available = body.clientHeight;
+  var needed    = body.scrollHeight;
+  if (available > 0 && needed > available) {
+    var scale = Math.max(MIN_SCALE, available / needed);
+    body.style.transformOrigin = 'top left';
+    body.style.transform       = 'scale(' + scale + ')';
+    body.style.width           = (100 / scale) + '%';
+  }
+})();
+</script>
+</body>
+</html>

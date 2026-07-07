@@ -28,17 +28,193 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DBSession
 
-from api.deps import CurrentUser, get_current_user
-from backend.services.db import ENGINE, ApplicationRow, JobRow, ProfileInterviewRow
+from backend.api.deps import CurrentUser, get_current_user, standard_rate_limit
+from backend.services.db import (
+    ENGINE,
+    ApplicationRow,
+    EvidenceRecordRow,
+    JobRow,
+    MasterProfileRow,
+    ProfileEntityRow,
+    ProfileInterviewRow,
+    RecruiterReplyDraftRow,
+)
 from backend.services.active_user import set_active_user_id
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(standard_rate_limit)])
 
 # Paths used by the legacy single-user profile store
 _PROJECT_ROOT   = Path(__file__).resolve().parents[3]   # repo root
 _LEGACY_PROFILE = _PROJECT_ROOT / "backend" / "data" / "master_profile.json"
 _USERS_DIR      = _PROJECT_ROOT / "backend" / "data" / "users"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/auth/sync-user — provider-agnostic identity sync & account linking
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Why this exists
+# ───────────────
+# Supabase links a Google OAuth sign-in to an existing email/password user
+# automatically ONLY when automatic identity linking applies (same verified
+# email). When it instead mints a NEW auth user (a different JWT `sub`), all
+# local rows keyed by the old user_id become invisible to the person who owns
+# them — they look like a brand-new user.
+#
+# This endpoint closes that gap on our side. Called by the frontend right
+# after every login:
+#   1. Upserts the caller's master_profiles row and records their VERIFIED
+#      email (lower-cased) from the JWT — never from the request body.
+#   2. If the caller owns no data yet but a master_profiles row with the SAME
+#      email exists under a DIFFERENT user_id, re-links every table's rows
+#      (jobs, applications, interviews, profile entities, evidence, reply
+#      drafts) and the on-disk profile file to the caller's user_id.
+#
+# Security
+# ────────
+# • The email used for matching comes exclusively from the verified Supabase
+#   JWT (get_current_user) — a caller can never supply an arbitrary email to
+#   steal another account's data.
+# • Standard rate limit applies at the router level.
+# • Idempotent: once linked (or when nothing matches), subsequent calls only
+#   refresh the email field.
+
+class SyncUserResult(BaseModel):
+    status:        str    # "ok" | "linked" | "created"
+    # True when the user's master profile already holds real data (CV imported
+    # or onboarding finished). The frontend uses this to backfill the
+    # profile_completed flag in Supabase user metadata for accounts created
+    # before Phase 8.
+    profile_completed: bool = False
+    linked_from:   str = ""
+    jobs:          int = 0
+    applications:  int = 0
+    interviews:    int = 0
+    entities:      int = 0
+    evidence:      int = 0
+    reply_drafts:  int = 0
+    profile_file:  bool = False
+
+
+def _profile_is_completed(row: "MasterProfileRow | None") -> bool:
+    """True when the master profile holds real data (CV imported or onboarded)."""
+    if row is None:
+        return False
+    mp = row.master_profile or {}
+    return bool(mp.get("cv_data")) or row.onboarding_status in ("complete", "completed")
+
+
+def _relink_rows(db: DBSession, old_uid: str, new_uid: str) -> dict:
+    """Re-point every user-owned table from old_uid to new_uid."""
+    counts = {}
+    for label, model in (
+        ("jobs",         JobRow),
+        ("applications", ApplicationRow),
+        ("interviews",   ProfileInterviewRow),
+        ("entities",     ProfileEntityRow),
+        ("evidence",     EvidenceRecordRow),
+        ("reply_drafts", RecruiterReplyDraftRow),
+    ):
+        counts[label] = (
+            db.query(model)
+            .filter(model.user_id == old_uid)
+            .update({"user_id": new_uid}, synchronize_session="fetch")
+        )
+    return counts
+
+
+@router.post("/sync-user", response_model=SyncUserResult)
+async def sync_user(user: CurrentUser = Depends(get_current_user)) -> SyncUserResult:
+    """
+    Ensure a master_profiles row exists for the caller (any auth provider) and
+    link data owned by a previous identity with the same verified email.
+    """
+    uid   = user.user_id
+    email = (user.email or "").strip().lower()
+
+    with DBSession(ENGINE) as db:
+        own_row = db.get(MasterProfileRow, uid)
+
+        # ── Account linking: same verified email, different user_id ──────────
+        # Only link INTO a blank identity: either no row yet, or a barebones
+        # row a previous sync call created. A caller who already accumulated
+        # their own profile data is never overwritten by an email match.
+        own_is_blank = own_row is None or (
+            not (own_row.master_profile or {})
+            and own_row.onboarding_status == "incomplete"
+        )
+        legacy_row = None
+        if email and own_is_blank:
+            legacy_row = (
+                db.query(MasterProfileRow)
+                .filter(
+                    MasterProfileRow.email == email,
+                    MasterProfileRow.user_id != uid,
+                )
+                .order_by(MasterProfileRow.updated_at.desc())
+                .first()
+            )
+
+        if legacy_row is not None:
+            old_uid = legacy_row.user_id
+            counts  = _relink_rows(db, old_uid, uid)
+
+            # Adopt the old master profile under the new user_id (drop the
+            # blank placeholder row first to avoid a primary-key collision).
+            if own_row is not None:
+                db.delete(own_row)
+                db.flush()
+            legacy_row.user_id = uid
+            legacy_row.email   = email
+            db.commit()
+
+            # Move the on-disk profile file to the new identity's directory.
+            profile_moved = False
+            old_dir = _USERS_DIR / old_uid / "profile.json"
+            new_dir = _USERS_DIR / uid / "profile.json"
+            if old_dir.exists() and not new_dir.exists():
+                try:
+                    new_dir.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(old_dir, new_dir)
+                    profile_moved = True
+                except Exception as exc:
+                    logger.warning("[auth/sync] profile file copy failed: %s", exc)
+
+            set_active_user_id(uid)
+            logger.info(
+                "[auth/sync] LINKED %s → %s (email=%s): %s",
+                old_uid, uid, email, counts,
+            )
+            return SyncUserResult(
+                status            = "linked",
+                profile_completed = _profile_is_completed(legacy_row),
+                linked_from       = old_uid,
+                profile_file      = profile_moved,
+                **counts,
+            )
+
+        # ── No linking needed: upsert the caller's own row ────────────────────
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        if own_row is None:
+            db.add(MasterProfileRow(
+                user_id           = uid,
+                email             = email or None,
+                onboarding_status = "incomplete",
+                master_profile    = {},
+                created_at        = now,
+                updated_at        = now,
+            ))
+            db.commit()
+            logger.info("[auth/sync] created master_profiles row for user=%s", uid)
+            return SyncUserResult(status="created")
+
+        if email and own_row.email != email:
+            own_row.email      = email
+            own_row.updated_at = now
+            db.commit()
+        return SyncUserResult(status="ok", profile_completed=_profile_is_completed(own_row))
 
 
 # ── Response model ────────────────────────────────────────────────────────────

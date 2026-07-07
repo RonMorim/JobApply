@@ -39,7 +39,6 @@ from typing import Optional
 import anthropic
 from dotenv import load_dotenv
 
-from backend.services.user_profile import USER_PROFILE
 import backend.services.job_store as job_store
 from backend.services.db import ENGINE, JobRow
 from sqlalchemy.orm import Session
@@ -94,12 +93,14 @@ Extract all ATS keywords from the JD and classify them as present or missing.
 
 # ── Profile snapshot builder ──────────────────────────────────────────────────
 
-def _build_profile_snapshot() -> dict[str, str]:
-    """Flatten USER_PROFILE into compact strings for keyword comparison."""
-    skills = ", ".join(USER_PROFILE.get("skills") or [])
+def _build_profile_snapshot(user_id: str) -> dict[str, str]:
+    """Flatten the user's profile into compact strings for keyword comparison."""
+    from backend.services.user_profile import get_profile
+    profile = get_profile(user_id)
+    skills = ", ".join(profile.get("skills") or [])
 
     roles: list[str] = []
-    for exp in USER_PROFILE.get("experience", []):
+    for exp in profile.get("experience", []):
         if "roles" in exp:
             for r in exp["roles"]:
                 roles.append(f"{r['title']} at {exp.get('company', '')}")
@@ -109,7 +110,7 @@ def _build_profile_snapshot() -> dict[str, str]:
             roles.append(f"{role} at {company}")
 
     edu: list[str] = []
-    for e in USER_PROFILE.get("education", []):
+    for e in profile.get("education", []):
         degree = e.get("degree") or e.get("certification", "")
         school = e.get("school") or e.get("provider", "")
         edu.append(f"{degree} from {school}")
@@ -137,7 +138,7 @@ def _extract_json(raw: str) -> dict:
 
 # ── Main extraction function ──────────────────────────────────────────────────
 
-def extract_ats_keywords(job_id: str) -> dict:
+def extract_ats_keywords(job_id: str, user_id: str) -> dict:
     """
     Extract ATS keywords for a job and return a {present, missing, jd_keywords} dict.
 
@@ -145,7 +146,7 @@ def extract_ats_keywords(job_id: str) -> dict:
     Raises ValueError if the job has no JD text.
     """
     # ── Check cache first ─────────────────────────────────────────────────────
-    cached_blob = job_store.get_tailored_cv(job_id)
+    cached_blob = job_store.get_tailored_cv(job_id, user_id)
     if cached_blob and "ats_keywords" in cached_blob:
         logger.info("[AtsKeywordService] Cache hit for job_id=%s", job_id)
         return cached_blob["ats_keywords"]
@@ -153,7 +154,7 @@ def extract_ats_keywords(job_id: str) -> dict:
     # ── Fetch job from DB ─────────────────────────────────────────────────────
     with Session(ENGINE) as session:
         row = session.get(JobRow, job_id)
-        if not row:
+        if not row or row.user_id != user_id:
             raise ValueError(f"Job {job_id!r} not found")
         jd_text  = (row.jd_text or "").strip()
         job_title = row.title or ""
@@ -166,7 +167,7 @@ def extract_ats_keywords(job_id: str) -> dict:
         )
 
     # ── Build prompt ──────────────────────────────────────────────────────────
-    snapshot    = _build_profile_snapshot()
+    snapshot    = _build_profile_snapshot(user_id)
     user_prompt = _USER_TMPL.format(
         jd_text   = jd_text[:3000],  # cap to avoid token overrun
         skills    = snapshot["skills"],

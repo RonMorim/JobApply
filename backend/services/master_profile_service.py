@@ -76,73 +76,116 @@ def _empty_profile() -> dict:
         "role_preferences": {
             "target_titles":       [],
             "preferred_locations": [],
-            "work_type":           "any",
+            "work_type":           "any",   # "remote" | "hybrid" | "onsite" | "any"
             "salary_min_usd":      None,
+            # Languages the candidate can work in — evaluated by the ATS Match
+            # Engine's knockout layer against JD language requirements.
+            "languages":           [],      # e.g. ["hebrew", "english"]
         },
         # Populated by ResearcherAgent — keyed by entity name (lowercase)
         "enriched_entities": {},
     }
 
 
-# ── Core persistence ──────────────────────────────────────────────────────────
+# ── Core persistence — per-user, DB-backed (multi-tenant) ─────────────────────
+#
+# The metrics/supplemental document lives in master_profiles.master_profile
+# under the dedicated "metrics_doc" key, so it never collides with the
+# onboarding profile fields that ariel_tools maintains in the same JSON column.
+#
+# The legacy single-user file (data/master_profile.json) is a ONE-TIME SEED
+# for user_id='default' only: imported into the row on first load, never
+# written again.
 
-def load() -> dict:
-    """
-    Load the profile from disk.  Returns a fresh scaffold (and creates the
-    file) if the profile is missing or corrupt.
+def _get_or_create_profile_row(user_id: str, session):
+    """Return the MasterProfileRow for user_id, creating an empty one if absent."""
+    from backend.services.db import MasterProfileRow
+    row = session.get(MasterProfileRow, user_id)
+    if row is None:
+        row = MasterProfileRow(
+            user_id           = user_id,
+            onboarding_status = "incomplete",
+            master_profile    = {},
+            created_at        = _now_iso(),
+            updated_at        = _now_iso(),
+        )
+        session.add(row)
+    return row
 
-    Also syncs any stored phone/location back into USER_PROFILE so the PDF
-    builder always has the latest contact info even after a process restart.
-    """
-    if _PROFILE_PATH.exists():
-        try:
-            profile = json.loads(_PROFILE_PATH.read_text(encoding="utf-8"))
-            if isinstance(profile, dict) and profile.get("version"):
-                _sync_personal_to_user_profile(profile)
-                return profile
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning(
-                "[master_profile] Could not load %s (%s) — starting fresh",
-                _PROFILE_PATH, exc,
-            )
 
-    # File missing or corrupt — create a clean one
-    profile = _empty_profile()
+def _read_legacy_file() -> dict | None:
+    """Read the legacy single-user JSON file, or None if absent/corrupt."""
+    if not _PROFILE_PATH.exists():
+        return None
     try:
-        save(profile)
-        logger.info("[master_profile] Created new profile at %s", _PROFILE_PATH)
-    except Exception as exc:
-        logger.warning("[master_profile] Could not write new profile: %s", exc)
+        profile = json.loads(_PROFILE_PATH.read_text(encoding="utf-8"))
+        if isinstance(profile, dict) and profile.get("version"):
+            return profile
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("[master_profile] Could not read legacy %s: %s", _PROFILE_PATH, exc)
+    return None
 
-    return profile
 
-
-def save(profile: dict) -> None:
+def load(user_id: str) -> dict:
     """
-    Atomically write profile to disk via tempfile + os.replace.
+    Load the metrics/supplemental document for user_id from master_profiles.
+
+    Returns a fresh scaffold when the user has none. For user_id='default'
+    only, seeds once from the legacy data/master_profile.json file, and syncs
+    phone/location into the legacy USER_PROFILE singleton (default-only shim).
+    """
+    from sqlalchemy.orm import Session
+    from backend.services.db import ENGINE
+
+    try:
+        with Session(ENGINE) as session:
+            row = _get_or_create_profile_row(user_id, session)
+            doc = (row.master_profile or {}).get("metrics_doc")
+            if isinstance(doc, dict) and doc.get("version"):
+                if user_id == "default":
+                    _sync_personal_to_user_profile(doc)
+                return doc
+
+            # No doc yet — seed from legacy file ('default' only) or scaffold.
+            seeded = _read_legacy_file() if user_id == "default" else None
+            doc = seeded if seeded is not None else _empty_profile()
+            merged = dict(row.master_profile or {})
+            merged["metrics_doc"] = doc
+            row.master_profile = merged
+            row.updated_at     = _now_iso()
+            session.commit()
+            if seeded is not None:
+                logger.info("[master_profile] Seeded 'default' metrics_doc from legacy %s", _PROFILE_PATH)
+                _sync_personal_to_user_profile(doc)
+            return doc
+    except Exception as exc:
+        logger.error("[master_profile] load failed for user=%s: %s", user_id, exc)
+        return _empty_profile()
+
+
+def save(profile: dict, user_id: str) -> None:
+    """
+    Persist the metrics document for user_id into master_profiles.
     Updates last_updated timestamp before writing.
     """
-    profile["last_updated"] = _now_iso()
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    from sqlalchemy.orm import Session
+    from backend.services.db import ENGINE
 
-    fd, tmp_path = tempfile.mkstemp(dir=_DATA_DIR, suffix=".json.tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(profile, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, _PROFILE_PATH)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    profile["last_updated"] = _now_iso()
+    with Session(ENGINE) as session:
+        row = _get_or_create_profile_row(user_id, session)
+        merged = dict(row.master_profile or {})
+        merged["metrics_doc"] = profile
+        row.master_profile = merged
+        row.updated_at     = _now_iso()
+        session.commit()
 
 
 # ── Answer cache ──────────────────────────────────────────────────────────────
 
-def get_cached_answer(question_id: str) -> str | None:
+def get_cached_answer(question_id: str, user_id: str) -> str | None:
     """
-    Return the stored answer for question_id, or None if not present.
+    Return the stored answer for question_id for this user, or None.
 
     MVP: answers are returned regardless of confidence level.
     P2: low-confidence answers (updated_at > 180 days) should be surfaced
@@ -151,7 +194,7 @@ def get_cached_answer(question_id: str) -> str | None:
     if not question_id:
         return None
     try:
-        profile = load()
+        profile = load(user_id)
         entry = profile.get("metrics", {}).get(question_id)
         if entry and isinstance(entry, dict):
             value = str(entry.get("value", "")).strip()
@@ -162,7 +205,7 @@ def get_cached_answer(question_id: str) -> str | None:
     return None
 
 
-def merge_answers(answers: dict[str, str]) -> int:
+def merge_answers(answers: dict[str, str], user_id: str) -> int:
     """
     Write new question_id -> answer pairs into profile["metrics"].
 
@@ -182,7 +225,7 @@ def merge_answers(answers: dict[str, str]) -> int:
 
     newly_written = 0
     try:
-        profile = load()
+        profile = load(user_id)
         metrics = profile.setdefault("metrics", {})
 
         for qid, raw_answer in answers.items():
@@ -205,7 +248,7 @@ def merge_answers(answers: dict[str, str]) -> int:
                 }
                 newly_written += 1
 
-        save(profile)
+        save(profile, user_id)
 
         logger.info(
             "[master_profile] merge_answers: %d new / %d updated (total metrics: %d)",
@@ -251,7 +294,31 @@ _SKILL_KEY_STOP_WORDS: frozenset[str] = frozenset({
 })
 
 
-def get_skill_proficiencies() -> dict[str, str]:
+def get_knockout_prefs(user_id: str) -> dict:
+    """
+    Return the hard-constraint preferences consumed by the ATS Match Engine's
+    knockout layer (ats_match_engine.evaluate_knockouts).
+
+    Shape:
+        {
+          "work_model": "remote_only" | None,   # None = flexible → never knocks out
+          "languages":  ["hebrew", "english", ...],
+        }
+
+    "remote_only" is set ONLY when work_type is explicitly "remote" — "any",
+    "hybrid", and "onsite" all map to None so the on-site-only knockout can
+    never fire against a flexible candidate.
+    """
+    profile = load(user_id)
+    prefs   = profile.get("role_preferences", {}) or {}
+    work    = str(prefs.get("work_type", "any")).lower()
+    return {
+        "work_model": "remote_only" if work == "remote" else None,
+        "languages":  [str(l).lower() for l in prefs.get("languages", []) if str(l).strip()],
+    }
+
+
+def get_skill_proficiencies(user_id: str) -> dict[str, str]:
     """
     Return {skill_name: proficiency_level} extracted from verify_* entries
     in master_profile["metrics"].
@@ -267,7 +334,7 @@ def get_skill_proficiencies() -> dict[str, str]:
       "verify_machine_learning_context" → "machine learning"
     """
     try:
-        profile = load()
+        profile = load(user_id)
         metrics = profile.get("metrics", {})
         result: dict[str, str] = {}
 
@@ -314,6 +381,7 @@ async def update_profile_from_interaction(
     history: list[dict],
     verdict: str,
     summary: str,
+    user_id: str,
 ) -> int:
     """
     Parse a verify/chat Q&A transcript and persist factual corrections the
@@ -377,7 +445,7 @@ async def update_profile_from_interaction(
             return 0
 
         prefixed = {f"verify_{k}": str(v) for k, v in facts.items() if k and v}
-        count = merge_answers(prefixed)
+        count = merge_answers(prefixed, user_id)
         logger.info("[master_profile] update_profile_from_interaction: %d fact(s) stored", count)
         return count
 
@@ -388,12 +456,13 @@ async def update_profile_from_interaction(
 
 # ── Bootstrap migration ───────────────────────────────────────────────────────
 
-def bootstrap_from_supplemental() -> int:
+def bootstrap_from_supplemental(user_id: str) -> int:
     """
     One-time migration: import all entries from the flat supplemental_answers.json
-    into master_profile.json["metrics"], skipping keys already present.
+    into the user's metrics document, skipping keys already present.
 
-    Idempotent — safe to call on every application startup.
+    Idempotent — safe to call on every application startup. The supplemental
+    file is legacy single-user data, so callers should pass 'default'.
     Returns the count of entries imported.
     """
     try:
@@ -407,7 +476,7 @@ def bootstrap_from_supplemental() -> int:
         return 0
 
     try:
-        profile = load()
+        profile = load(user_id)
         metrics = profile.setdefault("metrics", {})
         imported = 0
         now = _now_iso()
@@ -429,7 +498,7 @@ def bootstrap_from_supplemental() -> int:
             imported += 1
 
         if imported:
-            save(profile)
+            save(profile, user_id)
             logger.info(
                 "[master_profile] bootstrap: imported %d answer(s) from supplemental store",
                 imported,
@@ -443,7 +512,7 @@ def bootstrap_from_supplemental() -> int:
 
 # ── Enriched entities (Researcher Agent output) ───────────────────────────────
 
-def save_enriched_entities(entities: list[dict]) -> None:
+def save_enriched_entities(entities: list[dict], user_id: str) -> None:
     """
     Persist the list of EnrichedEntity dicts (from ResearcherAgent) into
     profile["enriched_entities"], keyed by lowercased entity name.
@@ -453,13 +522,13 @@ def save_enriched_entities(entities: list[dict]) -> None:
     if not entities:
         return
     try:
-        profile = load()
+        profile = load(user_id)
         bucket: dict = profile.setdefault("enriched_entities", {})
         for entity in entities:
             name = str(entity.get("name", "")).strip()
             if name:
                 bucket[name.lower()] = entity
-        save(profile)
+        save(profile, user_id)
         logger.info(
             "[master_profile] save_enriched_entities: stored %d entity/entities",
             len(entities),
@@ -468,10 +537,10 @@ def save_enriched_entities(entities: list[dict]) -> None:
         logger.error("[master_profile] save_enriched_entities failed: %s", exc)
 
 
-def get_enriched_entities() -> list[dict]:
-    """Return all enriched entities as a list, sorted by name. Never raises."""
+def get_enriched_entities(user_id: str) -> list[dict]:
+    """Return all enriched entities for user_id as a list, sorted by name. Never raises."""
     try:
-        profile = load()
+        profile = load(user_id)
         return sorted(
             profile.get("enriched_entities", {}).values(),
             key=lambda e: str(e.get("name", "")),
@@ -481,10 +550,10 @@ def get_enriched_entities() -> list[dict]:
         return []
 
 
-def get_enriched_entity(name: str) -> dict | None:
+def get_enriched_entity(name: str, user_id: str) -> dict | None:
     """Return the enriched entity for a given name (case-insensitive), or None."""
     try:
-        profile = load()
+        profile = load(user_id)
         return profile.get("enriched_entities", {}).get(name.lower())
     except Exception:
         return None
@@ -507,3 +576,175 @@ def _sync_personal_to_user_profile(profile: dict) -> None:
                 save_personal_field(field, value)
             except Exception:
                 pass  # never let a sync failure break profile loading
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# User Persona extraction — implicit profile from Ariel interaction history
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Distinct from the explicit master profile (facts the user stated): the persona
+# captures HOW the user operates — strengths they keep returning to, their
+# communication style, and their action-orientation — inferred from their own
+# messages in Ariel conversations (chat_sessions table).
+#
+# Used by the CV tailoring pipeline for tone and framing decisions ONLY. Like
+# CompanyProfile, the persona never becomes a factual claim on the CV: it steers
+# which VerifiedFacts lead and how bullets are phrased, and every bullet still
+# passes the cv_assembly_engine validation gate.
+
+_PERSONA_MODEL       = "claude-opus-4-8"
+_PERSONA_TTL_DAYS    = 7
+_PERSONA_MAX_CHARS   = 8000    # cap on user-message corpus sent to the LLM
+_PERSONA_MAX_SESSIONS = 12
+
+_PERSONA_SYSTEM = """\
+You infer a professional persona from a job seeker's own chat messages with
+their career agent. Work ONLY from what the user actually wrote — their word
+choices, what they emphasise, what they push back on. Do not flatter and do
+not invent: if the corpus is too thin to support a field, use an empty string
+or empty list.
+
+Respond with ONLY a JSON object (no markdown fences, no prose):
+{
+  "strengths": ["<recurring strength the user demonstrably leans on>", "..."],
+  "communication_style": "<1-2 sentences: direct/narrative, data-first/story-first, formal/casual>",
+  "action_orientation": "<1 sentence: builder/optimizer/strategist/firefighter etc., with the evidence pattern>",
+  "notes_for_cv_tone": "<1 sentence of guidance for phrasing their CV in a voice that sounds like them>"
+}"""
+
+
+def _collect_user_corpus(user_id: str) -> str:
+    """Concatenate the user's OWN messages from recent Ariel chat sessions."""
+    from sqlalchemy import text as _text
+    from backend.services.db import ENGINE
+
+    stmt = _text("""
+        SELECT messages_json FROM chat_sessions
+        WHERE user_id = :uid
+        ORDER BY updated_at DESC
+        LIMIT :lim
+    """)
+    chunks: list[str] = []
+    total = 0
+    try:
+        with ENGINE.connect() as conn:
+            rows = conn.execute(stmt, {"uid": user_id, "lim": _PERSONA_MAX_SESSIONS}).fetchall()
+    except Exception as exc:
+        logger.warning("[persona] chat_sessions unavailable (%s)", exc)
+        return ""
+
+    for (messages_json,) in rows:
+        try:
+            messages = json.loads(messages_json or "[]")
+        except json.JSONDecodeError:
+            continue
+        for m in messages:
+            if m.get("role") != "user":
+                continue
+            content = str(m.get("content", "")).strip()
+            if not content:
+                continue
+            chunks.append(content)
+            total += len(content)
+            if total >= _PERSONA_MAX_CHARS:
+                return "\n---\n".join(chunks)[:_PERSONA_MAX_CHARS]
+    return "\n---\n".join(chunks)
+
+
+def _load_cached_persona(user_id: str) -> dict | None:
+    """Return the cached persona from master_profiles if fresh (< TTL)."""
+    from sqlalchemy.orm import Session
+    from backend.services.db import ENGINE, MasterProfileRow
+
+    with Session(ENGINE) as s:
+        row = s.get(MasterProfileRow, user_id)
+        persona = (row.master_profile or {}).get("user_persona") if row else None
+    if not isinstance(persona, dict) or not persona.get("extracted_at"):
+        return None
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(persona["extracted_at"])
+    except ValueError:
+        return None
+    return persona if age.days < _PERSONA_TTL_DAYS else None
+
+
+def _save_persona(user_id: str, persona: dict) -> None:
+    import copy as _copy
+    from sqlalchemy.orm import Session
+    from backend.services.db import ENGINE, MasterProfileRow
+
+    with Session(ENGINE) as s:
+        row = s.get(MasterProfileRow, user_id)
+        if row is None:
+            return   # no master profile row yet — persona is cache-only, skip
+        profile = _copy.deepcopy(row.master_profile or {})
+        profile["user_persona"] = persona
+        row.master_profile = profile
+        s.commit()
+
+
+async def extract_user_persona(user_id: str, force_refresh: bool = False) -> dict | None:
+    """
+    Extract (or return cached) the user's persona from their Ariel history.
+
+    Returns a dict with strengths / communication_style / action_orientation /
+    notes_for_cv_tone / extracted_at, or None when there is no usable history
+    or extraction fails. Callers must treat None as "tailor without persona".
+    """
+    if not force_refresh:
+        cached = _load_cached_persona(user_id)
+        if cached:
+            return cached
+
+    corpus = _collect_user_corpus(user_id)
+    if len(corpus) < 200:   # too thin to say anything defensible
+        logger.info("[persona] insufficient chat history for user=%s (%d chars)", user_id, len(corpus))
+        return None
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+
+    import re as _re
+    import anthropic as _anthropic
+
+    try:
+        client = _anthropic.AsyncAnthropic(api_key=api_key)
+        response = await client.messages.create(
+            model      = _PERSONA_MODEL,
+            max_tokens = 800,
+            system     = _PERSONA_SYSTEM,
+            messages   = [{"role": "user", "content": f"USER'S MESSAGES (newest sessions first):\n\n{corpus}"}],
+        )
+        raw  = "".join(b.text for b in response.content if b.type == "text")
+        text = _re.sub(r"```(?:json)?", "", raw).strip()
+        start, end = text.find("{"), text.rfind("}")
+        data = json.loads(text[start:end + 1]) if (start != -1 and end > start) else json.loads(text)
+
+        persona = {
+            "strengths":           [str(x)[:200] for x in data.get("strengths", [])][:6],
+            "communication_style": str(data.get("communication_style", ""))[:400],
+            "action_orientation":  str(data.get("action_orientation", ""))[:400],
+            "notes_for_cv_tone":   str(data.get("notes_for_cv_tone", ""))[:400],
+            "extracted_at":        datetime.now(timezone.utc).isoformat(),
+        }
+        _save_persona(user_id, persona)
+        logger.info("[persona] extracted for user=%s: %d strengths", user_id, len(persona["strengths"]))
+        return persona
+    except Exception as exc:
+        logger.warning("[persona] extraction failed for user=%s: %s", user_id, exc)
+        return None
+
+
+def format_persona_for_prompt(persona: dict) -> str:
+    """Render the persona as a compact prompt block for the tailoring LLM."""
+    lines = []
+    if persona.get("strengths"):
+        lines.append("Recurring strengths: " + "; ".join(persona["strengths"]))
+    if persona.get("communication_style"):
+        lines.append(f"Communication style: {persona['communication_style']}")
+    if persona.get("action_orientation"):
+        lines.append(f"Action orientation: {persona['action_orientation']}")
+    if persona.get("notes_for_cv_tone"):
+        lines.append(f"CV tone guidance: {persona['notes_for_cv_tone']}")
+    return "\n".join(lines)

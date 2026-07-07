@@ -57,7 +57,8 @@ class ApplierAgent:
     Eligible = score >= threshold AND not yet applied.
     """
 
-    def __init__(self, threshold: float = _APPLY_THRESHOLD) -> None:
+    def __init__(self, user_id: str, threshold: float = _APPLY_THRESHOLD) -> None:
+        self.user_id   = user_id
         self.threshold = threshold
 
     def run_cycle(self) -> list[Application]:
@@ -65,7 +66,7 @@ class ApplierAgent:
         Process all currently eligible jobs.
         Returns the list of Application records created in this cycle.
         """
-        eligible = job_store.get_eligible_for_apply(self.threshold)
+        eligible = job_store.get_eligible_for_apply(self.threshold, self.user_id)
         if not eligible:
             logger.info("[applier] No eligible jobs above %.1f score threshold.", self.threshold)
             return []
@@ -88,7 +89,7 @@ class ApplierAgent:
         """
         Apply to one specific job by ID. Returns None if not found or already applied.
         """
-        jobs = job_store.get_all()
+        jobs = job_store.get_all(self.user_id)
         job  = next((j for j in jobs if j.job_id == job_id), None)
         if job is None:
             logger.warning("[applier] Job %s not found.", job_id)
@@ -124,7 +125,7 @@ class ApplierAgent:
         )
 
         app_store.save(app)
-        job_store.mark_applied(job.job_id, submitted_at)
+        job_store.mark_applied(job.job_id, submitted_at, self.user_id)
 
         logger.info(
             "[applier] ✓ Saved application %s — %s @ %s",

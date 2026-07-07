@@ -115,7 +115,7 @@ async def backfill_jd_text(
                 # flip it to 'new' as soon as structuring succeeds so it surfaces
                 # in the feed without waiting for the end-of-batch rescore.
                 if structured_ok and job.status == "analysing":
-                    job_store.update_status(job.job_id, "new")
+                    job_store.update_status(job.job_id, user_id, "new")
                     logger.info(
                         "[jd_backfill] Flipped job %s → 'new' after structuring", job.job_id
                     )

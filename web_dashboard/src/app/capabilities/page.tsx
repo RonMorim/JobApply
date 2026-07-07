@@ -58,7 +58,7 @@ export default function CapabilitiesPage() {
   if (loading || !user) return null
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] flex flex-col">
+    <div className="min-h-screen bg-ja-bg flex flex-col">
       {/* Global nav — sticky, matches all other pages */}
       <Header />
 
@@ -72,7 +72,7 @@ export default function CapabilitiesPage() {
               <h1 className="text-[24px] font-bold text-slate-900 tracking-tight leading-none">
                 Capabilities
               </h1>
-              <p className="text-[13px] text-slate-400 mt-1.5">
+              <p className="text-[13px] text-slate-500 mt-1.5">
                 Every verified and unverified skill, trait, and domain in your profile
               </p>
             </div>

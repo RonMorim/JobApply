@@ -31,7 +31,7 @@ import {
 } from 'react'
 import Link from 'next/link'
 import { TOKENS } from '@/lib/tokens'
-import { getAuthHeaders, setAuthToken } from '@/lib/api'
+import { ensureFreshToken, getAuthHeaders, setAuthToken } from '@/lib/api'
 import { supabase } from '@/lib/supabase'
 import type {
   TrustScoreResponse, TrustProfileEntity, TrustEvidenceEntry, EntityType,
@@ -330,19 +330,29 @@ function ProgressBar({ score, verificationLevel }: {
 
   return (
     <div className="w-full flex items-center gap-2.5 min-w-0">
-      <div className="flex-1 h-[4px] rounded-full bg-slate-100 overflow-hidden">
+      {/* Prominent numeric score — anchors the row's visual hierarchy */}
+      <span className="shrink-0 w-9 text-right text-[13px] font-bold tabular-nums leading-none" style={{ color: to }}>
+        {pct.toFixed(0)}
+        <span className="text-[9px] font-semibold align-top ml-px">%</span>
+      </span>
+      {/* Track — inset shadow for depth; taller rounded rail with a gradient fill */}
+      <div
+        className="flex-1 h-[7px] rounded-full bg-slate-100 overflow-hidden"
+        style={{ boxShadow: 'inset 0 1px 2px rgba(15,23,42,0.08)' }}
+      >
         <div
           className="h-full rounded-full"
           style={{
             width:      `${pct}%`,
             background: `linear-gradient(90deg, ${from}, ${to})`,
+            boxShadow:  `0 0 8px color-mix(in oklab, ${to} 45%, transparent)`,
             transition: 'width 600ms cubic-bezier(0.22,1,0.36,1)',
           }}
         />
       </div>
-      <div className="flex items-start gap-1 shrink-0 max-w-[120px]">
+      <div className="flex items-center gap-1 shrink-0 max-w-[120px]">
         <span
-          className="w-[6px] h-[6px] rounded-full shrink-0 mt-[3px]"
+          className="w-[6px] h-[6px] rounded-full shrink-0"
           style={{ background: label.dot }}
         />
         <span
@@ -563,14 +573,14 @@ function EntityTrustRow({
 
   return (
     <div
-      className={`rounded-xl border transition-all ${
-        needsFlag ? 'border-amber-200' : 'border-slate-100'
-      }`}
+      className={`group/row rounded-xl border bg-white transition-all duration-200 ease-out ${
+        needsFlag ? 'border-amber-200' : 'border-slate-100 hover:border-slate-200'
+      } ${open ? '' : 'hover:-translate-y-0.5'}`}
       style={{
         boxShadow: open
-          ? '0 2px 8px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.04)'
-          : '0 1px 3px rgba(15,23,42,0.04)',
-        transition: 'box-shadow 200ms ease, border-color 150ms ease',
+          ? '0 2px 8px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)'
+          : '0 1px 3px rgba(15,23,42,0.05)',
+        transition: 'box-shadow 200ms ease, border-color 150ms ease, transform 200ms ease',
       }}
     >
       {/* Amber accent bar for flagged entities */}
@@ -768,10 +778,10 @@ function ManualReviewModal({ entity, onClose, onDone }: ManualReviewModalProps) 
   useEffect(() => {
     let cancelled = false
     setLoadingAudit(true)
-    fetch(`/api/ariel/audit/${entity.entity_id}`, {
+    ensureFreshToken().then(() => fetch(`/api/ariel/audit/${entity.entity_id}`, {
       headers: getAuthHeaders(),
       cache:   'no-store',
-    })
+    }))
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then(data => { if (!cancelled) { setAudit(data as AuditResponse); setLoadingAudit(false) } })
       .catch(e  => { if (!cancelled) { setAuditError(e.message); setLoadingAudit(false) } })
@@ -785,6 +795,7 @@ function ManualReviewModal({ entity, onClose, onDone }: ManualReviewModalProps) 
       const form = new FormData()
       form.append('file',     file)
       form.append('entity_id', entity.entity_id)
+      await ensureFreshToken()
       const res = await fetch('/api/profile/cv-upload', {
         method:  'POST',
         headers: getAuthHeaders(),
@@ -1023,6 +1034,7 @@ export function ProbeModal({ probe: initialProbe, onClose, onDone }: ProbeModalP
       : text
     setAttachment(null)
     try {
+      await ensureFreshToken()
       const res = await fetch('/api/ariel/probe/respond', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -1299,7 +1311,9 @@ export function ProbeModal({ probe: initialProbe, onClose, onDone }: ProbeModalP
                   </div>
                   <button
                     onClick={() => setAttachment(null)}
-                    className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-white/60 transition text-[13px]"
+                    aria-label={`Remove attachment ${attachment.name}`}
+                    title="Remove attachment"
+                    className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-white/60 focus-visible:text-slate-700 transition text-[13px]"
                   >×</button>
                 </div>
               )}
@@ -1321,6 +1335,7 @@ export function ProbeModal({ probe: initialProbe, onClose, onDone }: ProbeModalP
                   <button
                     onClick={() => fileRef.current?.click()}
                     title="Attach a file or screenshot as evidence"
+                    aria-label="Attach a file or screenshot as evidence"
                     className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
                   >
                     <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -1584,6 +1599,7 @@ function UploadZone({ userId, onUploaded }: UploadZoneProps) {
       const form = new FormData()
       allowed.forEach(f => form.append('files', f))
 
+      await ensureFreshToken()
       const res = await fetch('/api/profile/cv-upload', {
         method:  'POST',
         headers: getAuthHeaders(),
@@ -1764,9 +1780,13 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
   const showVerify     = vl === 'UNVERIFIED'
   const showStrengthen = vl === 'ORCHESTRATION_ONLY' && !entity.manual_review_required && entity.confidence_score < 70
 
-  const barColor = vl === 'VERIFIED_MANUAL'    ? '#10B981'
-                 : vl === 'ORCHESTRATION_ONLY' ? '#3B82F6'
-                 :                               '#F59E0B'
+  // Semantic design-system tokens (globals.css):
+  //   VERIFIED_MANUAL    → success (emerald-600)
+  //   ORCHESTRATION_ONLY → primary (teal-600) — brand-aligned "in progress via AI"
+  //   UNVERIFIED         → warn (amber-600)
+  const barColor = vl === 'VERIFIED_MANUAL'    ? 'var(--ja-success)'
+                 : vl === 'ORCHESTRATION_ONLY' ? 'var(--ja-primary)'
+                 :                               'var(--ja-warn)'
 
   const categoryLabel = (entity.entity_type ?? 'skill').toUpperCase()
 
@@ -1779,10 +1799,10 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
 
   return (
     <div
-      className="grid items-center gap-x-4 px-5 py-3.5 rounded-xl bg-white border border-slate-100 hover:bg-slate-50/60 transition-colors group"
+      className="grid items-center gap-x-4 px-5 py-3.5 rounded-xl bg-white border border-slate-100 hover:border-slate-200 hover:-translate-y-0.5 transition-all duration-200 ease-out group"
       style={{
         gridTemplateColumns: 'minmax(180px, 2fr) minmax(100px, 1fr) 90px 16px minmax(120px, 1fr) minmax(100px, 1fr)',
-        boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
+        boxShadow: '0 1px 3px rgba(15,23,42,0.05)',
       }}
     >
       {/* ① Name + type (+ optional rank number) ───────────────────── */}
@@ -1802,12 +1822,20 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
         </div>
       </div>
 
-      {/* ② Progress bar ─────────────────────────────────────────────── */}
+      {/* ② Progress bar — premium rounded rail with gradient fill + glow ─ */}
       <div className="hidden sm:flex items-center w-full">
-        <div className="w-full h-[3px] rounded-full bg-slate-100 overflow-hidden">
+        <div
+          className="w-full h-[7px] rounded-full bg-slate-100 overflow-hidden"
+          style={{ boxShadow: 'inset 0 1px 2px rgba(15,23,42,0.08)' }}
+        >
           <div
             className="h-full rounded-full"
-            style={{ width: `${pct}%`, background: barColor, transition: 'width 500ms cubic-bezier(0.22,1,0.36,1)' }}
+            style={{
+              width:      `${pct}%`,
+              background: `linear-gradient(90deg, color-mix(in oklab, ${barColor} 65%, white), ${barColor})`,
+              boxShadow:  `0 0 8px color-mix(in oklab, ${barColor} 45%, transparent)`,
+              transition: 'width 500ms cubic-bezier(0.22,1,0.36,1)',
+            }}
           />
         </div>
       </div>
@@ -1817,12 +1845,13 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
         <span className="text-[13px] font-bold tabular-nums text-slate-700">{score}</span>
         <span className="text-[10.5px] text-slate-400">/100</span>
         <span
-          className="relative group/tip inline-flex items-center justify-center w-[15px] h-[15px] rounded-full border border-slate-200 text-[9px] font-bold text-slate-400 cursor-default select-none hover:border-teal-400 hover:text-teal-500 transition-colors"
+          tabIndex={0}
+          className="relative group/tip inline-flex items-center justify-center w-[15px] h-[15px] rounded-full border border-slate-200 text-[9px] font-bold text-slate-400 cursor-default select-none hover:border-teal-400 hover:text-teal-500 focus-visible:border-teal-400 focus-visible:text-teal-500 transition-colors"
           aria-label={`Confidence Weight: x${(entity.evidence_multiplier ?? 0.5).toFixed(1)} — Based on ${entity.evidence_count ?? 0} Ariel-verified challenges`}
         >
           i
           <span
-            className="pointer-events-none absolute z-20 bottom-full right-0 mb-1.5 w-max max-w-[210px] rounded-lg px-2.5 py-2 text-[11px] leading-snug text-white opacity-0 group-hover/tip:opacity-100 transition-opacity"
+            className="pointer-events-none absolute z-20 bottom-full right-0 mb-1.5 w-max max-w-[210px] rounded-lg px-2.5 py-2 text-[11px] leading-snug text-white opacity-0 group-hover/tip:opacity-100 group-focus-within/tip:opacity-100 transition-opacity"
             style={{ background: 'oklch(0.20 0.03 250)', boxShadow: '0 4px 12px rgba(0,0,0,0.25)' }}
           >
             Confidence Weight: ×{(entity.evidence_multiplier ?? 0.5).toFixed(1)}
@@ -1856,14 +1885,13 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
         ) : null}
       </div>
 
-      {/* ⑥ Actions — fade in on hover ────────────────────────────────── */}
-      <div className="flex items-center gap-2 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* ⑥ Actions — fade in on hover AND keyboard focus ─────────────── */}
+      <div className="flex items-center gap-2 justify-end opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
         {showVerify && (
           <button
             onClick={() => onProbe(entity)}
             disabled={probing}
-            className="h-8 px-3.5 rounded-lg text-[12px] font-semibold text-white transition active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-            style={{ background: '#0D9488', boxShadow: '0 1px 4px rgba(13,148,136,0.30)' }}
+            className="h-8 px-3.5 rounded-lg text-[12px] font-semibold text-white bg-ja-primary hover:bg-ja-primaryHover transition active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
             {probing ? <SpinnerIcon s={12} /> : 'Verify Mastery'}
           </button>
@@ -1920,6 +1948,9 @@ function WhiteboardChallengeModal({ entity, session, loading, onClose }: Whitebo
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Whiteboard Challenge: ${entity.name}`}
         className="w-full max-w-lg rounded-2xl overflow-hidden"
         style={{ boxShadow: '0 32px 80px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.06)' }}
       >
@@ -1951,7 +1982,9 @@ function WhiteboardChallengeModal({ entity, session, loading, onClose }: Whitebo
           </div>
           <button
             onClick={onClose}
-            className="h-7 w-7 flex items-center justify-center rounded-lg text-[16px] transition hover:bg-white/10"
+            aria-label="Close challenge dialog"
+            title="Close"
+            className="h-7 w-7 flex items-center justify-center rounded-lg text-[16px] transition hover:bg-white/10 focus-visible:bg-white/10"
             style={{ color: 'oklch(0.55 0.04 250)' }}
           >×</button>
         </div>
@@ -2020,7 +2053,9 @@ function WhiteboardChallengeModal({ entity, session, loading, onClose }: Whitebo
                     <span className="text-[11px] text-slate-600 truncate">{attachment.name}</span>
                     <button
                       onClick={() => setAttachment(null)}
-                      className="shrink-0 text-[13px] text-slate-400 hover:text-slate-700 transition"
+                      aria-label={`Remove attachment ${attachment.name}`}
+                      title="Remove attachment"
+                      className="shrink-0 text-[13px] text-slate-400 hover:text-slate-700 focus-visible:text-slate-700 transition"
                     >×</button>
                   </div>
                 )}
@@ -2122,6 +2157,7 @@ export function CapabilitiesList({ userId, className = '' }: { userId: string; c
     setProbeTarget(null)
     setProbingId(entity.entity_id)
     try {
+      await ensureFreshToken()
       const res = await fetch('/api/ariel/probe/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -2141,6 +2177,7 @@ export function CapabilitiesList({ userId, className = '' }: { userId: string; c
   const handleManualVerify = useCallback(async (entity: TrustProfileEntity) => {
     setManualTarget(entity); setManualLoading(true)
     try {
+      await ensureFreshToken()
       const res = await fetch('/api/ariel/manual-verify/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -2282,10 +2319,21 @@ interface TrustDashboardProps {
   userId:         string
   showAuthWall?:  boolean   // pass true when the LinkedIn feed is auth_wall status
   className?:     string
+  /** Fired with the backend's overall_trust_score every time fetchData resolves —
+   *  lets a parent (e.g. Overview's System Confidence Score card) mirror the
+   *  same number without firing a second /trust-score request of its own. */
+  onScoreChange?: (score: number) => void
+  /** Bump this (e.g. ChatContext's profileVersion) to force a silent re-fetch —
+   *  used when Ariel updates the Master Profile mid-session so the score
+   *  reflects it without the user reloading the page. Only the initial
+   *  mount-time fetch shows the loading skeleton; refetches triggered by a
+   *  version bump update in place so the UI never flashes back to a
+   *  skeleton mid-session. */
+  profileVersion?: number
 }
 
 export function TrustDashboard({
-  userId, showAuthWall = false, className = '',
+  userId, showAuthWall = false, className = '', onScoreChange, profileVersion,
 }: TrustDashboardProps) {
   const [data,      setData]      = useState<TrustScoreResponse | null>(null)
   const [radarData, setRadarData] = useState<ConfidenceRadarDatum[]>([])
@@ -2305,12 +2353,28 @@ export function TrustDashboard({
   const [manualSession, setManualSession] = useState<{session_id: string; first_prompt: string} | null>(null)
   const [manualLoading, setManualLoading] = useState(false)
 
+  // Ref so fetchData's identity (and its [userId] dep array) doesn't have to
+  // change every time the parent passes a fresh onScoreChange closure.
+  const onScoreChangeRef = useRef(onScoreChange)
+  useEffect(() => { onScoreChangeRef.current = onScoreChange }, [onScoreChange])
+
+  // Guards the loading skeleton so only the very first fetch shows it —
+  // subsequent refetches (triggered by profileVersion) update `data` in
+  // place without ever flashing the dashboard back to a skeleton.
+  const hasLoadedOnceRef = useRef(false)
+
   // ── Fetch ────────────────────────────────────────────────────────────────
 
   const fetchData = useCallback(async () => {
-    setLoading(true)
+    if (!hasLoadedOnceRef.current) setLoading(true)
     setError(null)
     try {
+      // Ensure the auth token is populated before these mount-time fetches —
+      // both /trust-score and /confidence-matrix fire on first render, before
+      // AuthContext may have called setAuthToken(). An empty Authorization
+      // header 401s and trips the global sign-out (the auto-logout loop).
+      await ensureFreshToken()
+
       // Fetch entity list + evidence (drives accordion rows and avg score)
       const res = await fetch(`/api/profile/${userId}/trust-score`, {
         headers: getAuthHeaders(),
@@ -2319,6 +2383,7 @@ export function TrustDashboard({
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = (await res.json()) as TrustScoreResponse
       setData(json)
+      onScoreChangeRef.current?.(json.overall_trust_score ?? 0)
 
       // Fetch four-category radar data independently (non-fatal if it fails)
       try {
@@ -2343,10 +2408,14 @@ export function TrustDashboard({
       setError(err instanceof Error ? err.message : 'Failed to load trust scores')
     } finally {
       setLoading(false)
+      hasLoadedOnceRef.current = true
     }
   }, [userId])
 
-  useEffect(() => { fetchData() }, [fetchData])
+  // Re-fires whenever profileVersion is bumped (Ariel chat updated the
+  // profile) in addition to the initial mount-time fetch — see fetchData's
+  // hasLoadedOnceRef guard for why this doesn't re-show the skeleton.
+  useEffect(() => { fetchData() }, [fetchData, profileVersion])
 
   // ── Start probe ──────────────────────────────────────────────────────────
 
@@ -2355,6 +2424,7 @@ export function TrustDashboard({
     setProbeTarget(null)
     setProbingId(entity.entity_id)
     try {
+      await ensureFreshToken()
       const res = await fetch('/api/ariel/probe/start', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -2405,6 +2475,7 @@ export function TrustDashboard({
     setManualTarget(entity)
     setManualLoading(true)
     try {
+      await ensureFreshToken()
       const res = await fetch(`/api/profile/${userId}/manual-verify/start`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },

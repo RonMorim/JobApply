@@ -80,6 +80,8 @@ class JobRow(Base):
     # Incremented each time s2 LLM enrichment returns a non-substantive result.
     # UI uses this to show a hard-failure state after 3 failed attempts.
     enrichment_failures   = Column(Integer, nullable=False, default=0)
+    # Phase 3 — generated hiring-manager outreach message; persists across reloads.
+    outreach_text         = Column(Text,    nullable=True)
 
 
 class ProfileInterviewRow(Base):
@@ -154,6 +156,28 @@ class ApplicationRow(Base):
     reason         = Column(Text,   nullable=True)
 
 
+class RecruiterReplyDraftRow(Base):
+    """
+    Phase 6 — AI-drafted reply to an inbound recruiter email.
+
+    One row per drafted reply, linked to the owning user and the job whose
+    application the recruiter email referred to. Drafts are never sent
+    automatically — the user reviews them in the dashboard first.
+
+    Table is created by Base.metadata.create_all() in init_db() on startup.
+    """
+    __tablename__ = "recruiter_reply_drafts"
+
+    draft_id      = Column(String, primary_key=True)
+    user_id       = Column(String, nullable=False, index=True)
+    job_id        = Column(String, nullable=False, index=True)
+    # Sanitized excerpt of the inbound email the draft responds to (audit trail)
+    email_excerpt = Column(Text,   nullable=False, default="")
+    draft_text    = Column(Text,   nullable=False, default="")
+    status        = Column(String, nullable=False, default="draft")  # draft | sent | discarded
+    created_at    = Column(String, nullable=False, default="")
+
+
 def _migrate() -> None:
     """Add columns introduced after the initial schema without dropping data."""
 
@@ -187,6 +211,26 @@ def _migrate() -> None:
                 "ON applications (user_id)"
             ))
             conn.commit()
+
+    # ── master_profiles — add is_admin (Phase 2 admin foundation) ────────────
+    with ENGINE.connect() as conn:
+        tables = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
+        if "master_profiles" in tables:
+            existing_mp = {row[1] for row in conn.execute(text("PRAGMA table_info(master_profiles)"))}
+            if "is_admin" not in existing_mp:
+                conn.execute(text(
+                    "ALTER TABLE master_profiles ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"
+                ))
+                conn.commit()
+            if "email" not in existing_mp:
+                conn.execute(text(
+                    "ALTER TABLE master_profiles ADD COLUMN email TEXT"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_master_profiles_email "
+                    "ON master_profiles (email)"
+                ))
+                conn.commit()
 
     # ── master_profiles — create if not yet present (safe on existing DBs) ──────
     with ENGINE.connect() as conn:
@@ -222,6 +266,7 @@ def _migrate() -> None:
         ("dedup_key",            "TEXT"),
         ("jd_structured",        "TEXT"),
         ("enrichment_failures",  "INTEGER NOT NULL DEFAULT 0"),
+        ("outreach_text",        "TEXT"),   # Phase 3 — persisted outreach message
     ]
     with ENGINE.connect() as conn:
         result  = conn.execute(text("PRAGMA table_info(jobs)"))
@@ -283,8 +328,16 @@ class MasterProfileRow(Base):
     __tablename__ = "master_profiles"
 
     user_id            = Column(String, primary_key=True)
+    # Verified email from the Supabase JWT — lower-cased. Used by
+    # POST /api/auth/sync-user to link accounts across auth providers
+    # (email login vs Google OAuth) when Supabase issues a different `sub`
+    # for the same person.
+    email              = Column(String, nullable=True, index=True)
     onboarding_status  = Column(String, nullable=False, default="incomplete")
     master_profile     = Column(JSON,   nullable=False, default=dict)
+    # Admin-dashboard foundation (Phase 2) — flipped manually in the DB for
+    # now; require_admin (api/deps.py) is the only consumer.
+    is_admin           = Column(Boolean, nullable=False, default=False)
     created_at         = Column(String, nullable=True)
     updated_at         = Column(String, nullable=True)
 
@@ -307,7 +360,11 @@ class ProfileEntityRow(Base):
     # Set to 1 by ingest_negative_flag when score < MANUAL_REVIEW_THRESHOLD.
     # Cleared to 0 whenever a positive evidence ingest pushes score back above threshold.
     # Stored as INTEGER (0/1) to avoid SQLite CHECK constraint issues with a new string value.
-    manual_review_required = Column(Integer, nullable=False, default=0)
+    # server_default matters: ProfileUpdateService writes with raw SQL INSERTs
+    # that omit this column, so a fresh create_all() DB needs an SQL-level
+    # DEFAULT (Python-side `default=` is invisible to raw SQL) — otherwise
+    # every CV ingest fails with a NOT NULL IntegrityError.
+    manual_review_required = Column(Integer, nullable=False, default=0, server_default="0")
     # Hierarchical skill tier — set during evidence ingest by ProfileUpdateService.
     # Core_Mastery:       direct hands-on proficiency, no AI assistance.
     # System_Orchestration: understands architecture; uses AI for boilerplate.
@@ -317,9 +374,9 @@ class ProfileEntityRow(Base):
     # architecture_confidence: score from portfolio / STAR / CV evidence.
     # syntax_confidence:       score from manual_assessment evidence only.
     # verification_level:      VERIFIED_MANUAL | ORCHESTRATION_ONLY | UNVERIFIED
-    architecture_confidence = Column(Float,  nullable=False, default=0.0)
-    syntax_confidence       = Column(Float,  nullable=False, default=0.0)
-    verification_level      = Column(String, nullable=False, default="UNVERIFIED")
+    architecture_confidence = Column(Float,  nullable=False, default=0.0, server_default="0.0")
+    syntax_confidence       = Column(Float,  nullable=False, default=0.0, server_default="0.0")
+    verification_level      = Column(String, nullable=False, default="UNVERIFIED", server_default="UNVERIFIED")
     last_evidence_at       = Column(String,  nullable=True)
     created_at             = Column(String,  nullable=False)
     updated_at             = Column(String,  nullable=False)
@@ -342,7 +399,47 @@ class EvidenceRecordRow(Base):
     extra_metadata  = Column(Text,    nullable=True)   # JSON blob — 'metadata' is reserved by SQLAlchemy
     # True when the candidate used AI to generate boilerplate but understood
     # the architecture.  Triggers AI_AUGMENTATION_PENALTY (×0.6) in scoring.
-    is_ai_assisted  = Column(Integer, nullable=False, default=0)
+    # server_default for the same reason as profile_entities: evidence rows are
+    # written via raw SQL INSERTs that omit this column.
+    is_ai_assisted  = Column(Integer, nullable=False, default=0, server_default="0")
+
+
+class ShadowScoreRow(Base):
+    """
+    Shadow-mode calibration log for the ATS Match Engine.
+
+    One row per scored job: the production composite the user actually saw,
+    alongside the new engine's score and full component breakdown. Append-only;
+    consumed later by the weight-calibration analysis. Safe to truncate after
+    calibration.
+    """
+    __tablename__ = "shadow_match_scores"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    user_id        = Column(String,  nullable=False, index=True)
+    job_title      = Column(String,  nullable=True)
+    company        = Column(String,  nullable=True)
+    existing_score = Column(Float,   nullable=False)   # what the frontend received
+    ats_score      = Column(Float,   nullable=False)   # new engine's final_score
+    breakdown_json = Column(Text,    nullable=False, default="{}")  # AtsMatchResult dump
+    created_at     = Column(String,  nullable=False)
+
+
+class CompanyIntelRow(Base):
+    """
+    Cached CompanyProfile from the Company Intelligence Agent.
+
+    One row per normalized company name. Profiles older than the service's
+    staleness window (30 days) are served stale-while-revalidate: returned
+    immediately while a background refresh re-researches recent news
+    (layoffs, acquisitions, pivots).
+    """
+    __tablename__ = "company_intel"
+
+    company_key   = Column(String, primary_key=True)              # normalized lowercase name
+    display_name  = Column(String, nullable=False)
+    profile_json  = Column(Text,   nullable=False, default="{}")  # CompanyProfile dump
+    researched_at = Column(String, nullable=False)                # ISO 8601 UTC
 
 
 class ArielSessionRow(Base):

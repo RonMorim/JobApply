@@ -7,8 +7,8 @@ import re
 
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel, Field
 
 from backend.services import job_store
 from backend.agents.resume import ResumeAgent
@@ -17,18 +17,21 @@ from backend.agents.gatekeeper import RevisionGatekeeper
 from backend.agents.copilot import CopilotAgent
 from backend.services.pdf_builder import build_pdf, TEMPLATE_REGISTRY
 from backend.services.supplemental_store import save as save_supplemental
-from backend.services.user_profile import USER_PROFILE, save_personal_field
+from backend.services.user_profile import get_profile, save_personal_field
 from backend.services.match_score_service import (
     compute_match_score_async,
     _cv_experience_text,
     _is_experience_backed,
 )
+from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, standard_rate_limit
 from backend.services.master_profile_service import get_cached_answer, merge_answers
 from backend.services.job_store import get_tailored_cv, save_tailored_cv
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+# Standard budget on every resumes route; the LLM-generation endpoints below
+# additionally carry the strict llm_rate_limit.
+router = APIRouter(dependencies=[Depends(standard_rate_limit)])
 
 # Accepted MIME types and their human-readable labels
 _ALLOWED_FILE_TYPES: dict[str, str] = {
@@ -60,11 +63,12 @@ class ResumeGenerateResponse(BaseModel):
     layout_variant: str
 
 
-@router.post("/generate", response_model=ResumeGenerateResponse)
+@router.post("/generate", response_model=ResumeGenerateResponse, dependencies=[Depends(llm_rate_limit)])
 async def generate_resume(
     job_id: str = Form(...),
     supplemental_answers_json: str = Form(default="{}"),
     reference_file: Optional[UploadFile] = File(default=None),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Generate a tailored HTML resume for a job.
@@ -75,7 +79,7 @@ async def generate_resume(
       layout the agent will analyse and mimic.
     """
     # ── Load job ──────────────────────────────────────────────────────────────
-    all_jobs = job_store.get_all()
+    all_jobs = job_store.get_all(user.user_id)
     job      = next((j for j in all_jobs if j.job_id == job_id), None)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
@@ -453,8 +457,8 @@ def _build_match_proxy(job) -> str:
     return proxy
 
 
-@router.post("/tailor", response_model=TailorResponse)
-async def tailor_resume(req: TailorRequest):
+@router.post("/tailor", response_model=TailorResponse, dependencies=[Depends(llm_rate_limit)])
+async def tailor_resume(req: TailorRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Run TailorAgent for a job.
 
@@ -466,14 +470,14 @@ async def tailor_resume(req: TailorRequest):
                               the user.  Call this endpoint again with
                               supplemental_answers to complete generation.
     """
-    all_jobs = job_store.get_all()
+    all_jobs = job_store.get_all(user.user_id)
     job      = next((j for j in all_jobs if j.job_id == req.job_id), None)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
 
     # ── Return cached CV if available and force=False ─────────────────────────
     if not req.force and not req.supplemental_answers:
-        cached = get_tailored_cv(req.job_id)
+        cached = get_tailored_cv(req.job_id, user.user_id)
         if cached and cached.get("cv_data"):
             logger.info(
                 "[resumes/tailor] Cache hit for job %s — returning persisted CV", req.job_id
@@ -544,7 +548,7 @@ async def tailor_resume(req: TailorRequest):
             qid = str(item.get("id", "")).strip()
             if not qid or qid.startswith("core_"):
                 continue
-            cached = get_cached_answer(qid)
+            cached = get_cached_answer(qid, user.user_id)
             if cached:
                 auto_filled[qid] = cached
 
@@ -585,7 +589,7 @@ async def tailor_resume(req: TailorRequest):
     all_answers = {**jd_answers, **auto_filled}
     if all_answers:
         try:
-            merge_answers(all_answers)
+            merge_answers(all_answers, user.user_id)
         except Exception as exc:
             logger.warning("[resumes/tailor] merge_answers failed (non-fatal): %s", exc)
 
@@ -611,7 +615,7 @@ async def tailor_resume(req: TailorRequest):
             len(jd_proxy),
             sum(len(e.get("bullets", [])) for e in cv_data.get("experience", [])),
         )
-        score_result = await compute_match_score_async(cv_data, jd_proxy, run_llm_validation=False)
+        score_result = await compute_match_score_async(cv_data, jd_proxy, run_llm_validation=False, user_id=user.user_id)
         match_score_dict = score_result.as_dict()
         logger.info(
             "[resumes/tailor] Score: total=%d  kw=%.0f/40  skills=%.0f/35  seniority=%.0f/25  "
@@ -653,7 +657,7 @@ async def tailor_resume(req: TailorRequest):
                 jd_context       = jd_proxy,
             )
             refined_score = await compute_match_score_async(
-                refined_data, jd_proxy, run_llm_validation=False
+                refined_data, jd_proxy, run_llm_validation=False, user_id=user.user_id
             )
             logger.info(
                 "[resumes/tailor] Refinement result: total=%d  (was %d  delta=%+d)",
@@ -685,7 +689,7 @@ async def tailor_resume(req: TailorRequest):
 
     # ── Persist generated CV so future requests are served from cache ─────────
     try:
-        save_tailored_cv(req.job_id, cv_data, match_score_dict)
+        save_tailored_cv(req.job_id, user.user_id, cv_data, match_score_dict)
         logger.info("[resumes/tailor] Cached tailored CV for job %s", req.job_id)
     except Exception as exc:
         logger.warning("[resumes/tailor] Failed to cache CV (non-fatal): %s", exc)
@@ -705,12 +709,12 @@ from fastapi.responses import Response as _FastAPIResponse
 
 
 @router.get("/cached/{job_id}")
-async def get_cached_resume(job_id: str):
+async def get_cached_resume(job_id: str, user: CurrentUser = Depends(get_current_user)):
     """
     Return the cached tailored CV for a job without calling the LLM.
     Returns 204 No Content if no CV has been generated yet.
     """
-    cached = get_tailored_cv(job_id)
+    cached = get_tailored_cv(job_id, user.user_id)
     if not cached or not cached.get("cv_data"):
         return _FastAPIResponse(status_code=204)
 
@@ -736,20 +740,21 @@ async def get_cached_resume(job_id: str):
 class CopilotRequest(BaseModel):
     job_id:       str
     cv_data:      dict
-    user_prompt:  str
+    user_prompt:  str = Field(..., max_length=10_000)
     chat_history: Optional[list[dict]] = None
 
 
 class CopilotResponse(BaseModel):
-    status:      str
-    message:     Optional[str]  = None   # explanation for warning / rejected
-    cv_data:     Optional[dict] = None
-    pdf_b64:     Optional[str]  = None
-    match_score: Optional[dict] = None
+    status:          str
+    message:         Optional[str]  = None   # explanation for warning / rejected
+    changes_summary: Optional[str]  = None   # what was added/removed/edited (success only)
+    cv_data:         Optional[dict] = None
+    pdf_b64:         Optional[str]  = None
+    match_score:     Optional[dict] = None
 
 
-@router.post("/copilot", response_model=CopilotResponse)
-async def copilot_edit(req: CopilotRequest):
+@router.post("/copilot", response_model=CopilotResponse, dependencies=[Depends(llm_rate_limit)])
+async def copilot_edit(req: CopilotRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Apply a targeted, plain-English editing instruction to an existing cv_data.
 
@@ -763,7 +768,7 @@ async def copilot_edit(req: CopilotRequest):
     if not req.cv_data:
         raise HTTPException(status_code=422, detail="cv_data must not be empty.")
 
-    all_jobs = job_store.get_all()
+    all_jobs = job_store.get_all(user.user_id)
     job      = next((j for j in all_jobs if j.job_id == req.job_id), None)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
@@ -773,7 +778,7 @@ async def copilot_edit(req: CopilotRequest):
         result = await agent.edit(
             cv_data        = req.cv_data,
             user_prompt    = req.user_prompt,
-            master_profile = USER_PROFILE,
+            master_profile = get_profile(user.user_id),
             chat_history   = req.chat_history,
         )
     except Exception as exc:
@@ -787,19 +792,22 @@ async def copilot_edit(req: CopilotRequest):
             result["status"], req.job_id, (result.get("message") or "")[:100],
         )
         return CopilotResponse(
-            status  = result["status"],
-            message = result.get("message"),
+            status          = result["status"],
+            message         = result.get("message"),
+            changes_summary = None,
         )
 
     # ── success: rebuild PDF, recompute score, save to cache ─────────────────
     cv_data = result["cv_data"]
 
     # Re-inject canonical static sections (education, military, skills) from
-    # USER_PROFILE after every Copilot edit.  This guarantees the military
-    # block is never silently dropped when the LLM omits it, and ensures the
-    # canonical profile dates/unit/role are always present regardless of what
-    # the model returned.
-    cv_data = _inject_static_sections(cv_data)
+    # USER_PROFILE after every Copilot edit.  This guarantees these sections
+    # are never silently dropped when the LLM merely forgets to include them,
+    # and ensures the canonical profile dates/unit/role are always present in
+    # that case. respect_deletions=True means an explicit null/[] the
+    # CopilotAgent wrote for one of these keys (an intentional user deletion)
+    # is honored instead of being overwritten from the Master Profile.
+    cv_data = _inject_static_sections(cv_data, respect_deletions=True)
 
     try:
         pdf_bytes = await build_pdf(cv_data, template_id="t2_modern")
@@ -811,7 +819,7 @@ async def copilot_edit(req: CopilotRequest):
     score_result = None
     jd_proxy = _build_match_proxy(job)
     try:
-        score_result     = await compute_match_score_async(cv_data, jd_proxy, run_llm_validation=False)
+        score_result     = await compute_match_score_async(cv_data, jd_proxy, run_llm_validation=False, user_id=user.user_id)
         match_score_dict = score_result.as_dict()
         logger.info(
             "[resumes/copilot] Score after edit: total=%d  kw=%.0f/40  skills=%.0f/35  "
@@ -884,7 +892,7 @@ async def copilot_edit(req: CopilotRequest):
                 jd_context       = jd_proxy,
             )
             refined_score = await compute_match_score_async(
-                refined_data, jd_proxy, run_llm_validation=False
+                refined_data, jd_proxy, run_llm_validation=False, user_id=user.user_id
             )
             logger.info(
                 "[resumes/copilot] Refinement result: total=%d  (was %d  delta=%+d)",
@@ -950,7 +958,7 @@ async def copilot_edit(req: CopilotRequest):
             # delta should be negligible, but we want the cache to be exact.
             try:
                 score_result     = await compute_match_score_async(
-                    cv_data, jd_proxy, run_llm_validation=False
+                    cv_data, jd_proxy, run_llm_validation=False, user_id=user.user_id
                 )
                 match_score_dict = score_result.as_dict()
             except Exception as score_exc:
@@ -960,24 +968,57 @@ async def copilot_edit(req: CopilotRequest):
     except Exception as exc:
         logger.warning("[resumes/copilot] Skills pruning step failed (non-fatal): %s", exc)
 
-    try:
-        save_tailored_cv(req.job_id, cv_data, match_score_dict)
-    except Exception as exc:
-        logger.warning("[resumes/copilot] Cache save failed (non-fatal): %s", exc)
-
+    # ── Draft mode ─────────────────────────────────────────────────────────────
+    # Copilot edits are session-scoped by design: they must NOT be written to
+    # the persistent cache here. The frontend holds this response's cv_data as
+    # a local draft; it only becomes durable if the user explicitly calls
+    # POST /save-cv ("Save Changes to Base Profile"). If the modal is closed
+    # without saving, the next /cached/{job_id} read returns the last
+    # explicitly-persisted state (from /tailor or a prior /save-cv), not this
+    # edit — this is what makes Copilot edits temporary/undoable across
+    # sessions instead of silently permanent.
     return CopilotResponse(
-        status      = "success",
-        cv_data     = cv_data,
-        pdf_b64     = base64.b64encode(pdf_bytes).decode(),
-        match_score = match_score_dict,
+        status          = "success",
+        changes_summary = result.get("changes_summary"),
+        cv_data         = cv_data,
+        pdf_b64         = base64.b64encode(pdf_bytes).decode(),
+        match_score     = match_score_dict,
     )
+
+
+# ── Explicit draft save ───────────────────────────────────────────────────────
+
+class SaveCvRequest(BaseModel):
+    job_id:      str
+    cv_data:     dict
+    match_score: Optional[dict] = None
+
+
+@router.post("/save-cv")
+async def save_cv(req: SaveCvRequest, user: CurrentUser = Depends(get_current_user)):
+    """
+    Explicitly persist the caller-supplied cv_data (+ match_score) as the
+    saved base state for this job — the "Save Changes to Base Profile" action.
+
+    This is the ONLY way Copilot/LiveEditor edits become durable. /tailor
+    still auto-persists its own freshly-generated output (that's the base
+    profile CV, not a draft edit); /copilot no longer does.
+    """
+    all_jobs = job_store.get_all(user.user_id)
+    job      = next((j for j in all_jobs if j.job_id == req.job_id), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
+
+    save_tailored_cv(req.job_id, user.user_id, req.cv_data, req.match_score)
+    logger.info("[resumes/save-cv] Explicitly saved draft CV for job %s", req.job_id)
+    return {"status": "ok"}
 
 
 # ── Gatekeeper revision ───────────────────────────────────────────────────────
 
 class ReviseRequest(BaseModel):
     job_id:        str
-    revision_text: str
+    revision_text: str = Field(..., max_length=10_000)
     cv_data:       dict
 
 
@@ -988,8 +1029,8 @@ class ReviseResponse(BaseModel):
     pdf_b64: Optional[str]      # base64 PDF (if approved)
 
 
-@router.post("/revise", response_model=ReviseResponse)
-async def revise_resume(req: ReviseRequest):
+@router.post("/revise", response_model=ReviseResponse, dependencies=[Depends(llm_rate_limit)])
+async def revise_resume(req: ReviseRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Submit a revision request for a tailored CV.
 
@@ -1003,7 +1044,7 @@ async def revise_resume(req: ReviseRequest):
     if not req.cv_data:
         raise HTTPException(status_code=422, detail="cv_data must not be empty.")
 
-    all_jobs = job_store.get_all()
+    all_jobs = job_store.get_all(user.user_id)
     job      = next((j for j in all_jobs if j.job_id == req.job_id), None)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
@@ -1034,7 +1075,7 @@ async def revise_resume(req: ReviseRequest):
 # ── Templates list ────────────────────────────────────────────────────────────
 
 @router.get("/templates")
-async def list_templates():
+async def list_templates(user: CurrentUser = Depends(get_current_user)):
     """Return the static list of available CV templates."""
     return {"templates": TEMPLATE_REGISTRY}
 
@@ -1047,7 +1088,7 @@ class RenderPdfRequest(BaseModel):
 
 
 @router.post("/render-pdf")
-async def render_pdf(req: RenderPdfRequest):
+async def render_pdf(req: RenderPdfRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Render cv_data with the chosen template and return a base64 PDF.
     No LLM call — pure rendering only. Used by the Live Editor for
@@ -1083,13 +1124,13 @@ class MatchScoreResponse(BaseModel):
     llm_validated:       bool      = False
 
 
-@router.post("/match-score", response_model=MatchScoreResponse)
-async def match_score(req: MatchScoreRequest):
+@router.post("/match-score", response_model=MatchScoreResponse, dependencies=[Depends(llm_rate_limit)])
+async def match_score(req: MatchScoreRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Compute a 0-100 ATS match score between cv_data and the stored job.
     Set llm_validation=False for instant re-score from the Live Editor.
     """
-    all_jobs = job_store.get_all()
+    all_jobs = job_store.get_all(user.user_id)
     job      = next((j for j in all_jobs if j.job_id == req.job_id), None)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
@@ -1098,7 +1139,7 @@ async def match_score(req: MatchScoreRequest):
 
     try:
         result = await compute_match_score_async(
-            req.cv_data, jd_proxy, run_llm_validation=req.llm_validation
+            req.cv_data, jd_proxy, run_llm_validation=req.llm_validation, user_id=user.user_id
         )
     except Exception as exc:
         logger.exception("[resumes/match-score] Scoring failed for job %s", req.job_id)

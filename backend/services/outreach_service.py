@@ -33,6 +33,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from backend.services.user_profile import USER_PROFILE, build_full_text
+from backend.services.llm_validation import harden_system_prompt, sanitize_text
 import backend.services.job_store as job_store
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
@@ -144,6 +145,7 @@ def generate_outreach_message(
     target_company: str,
     context:        str = "",
     job_id:         str | None = None,
+    user_id:        str,
 ) -> str:
     """
     Generate a LinkedIn outreach message of the requested type.
@@ -162,12 +164,12 @@ def generate_outreach_message(
     str — the ready-to-send message text.
     """
     client  = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-    profile = build_full_text()
+    profile = build_full_text(user_id)
 
     # Build job context for escalation messages
     job_context = ""
     if job_id:
-        cached = job_store.get_tailored_cv(job_id)
+        cached = job_store.get_tailored_cv(job_id, user_id)
         if cached:
             job_context = f"Role: {cached.get('job_title', '')} at {cached.get('company', '')}"
         # Try fetching raw job metadata
@@ -176,11 +178,11 @@ def generate_outreach_message(
             from sqlalchemy.orm import Session
             with Session(ENGINE) as s:
                 row = s.get(JobRow, job_id)
-                if row:
+                if row and row.user_id == user_id:
                     job_context = (
                         f"Role: {row.title} at {row.company}\n"
                         f"Location: {row.location or 'Israel'}\n"
-                        f"JD snippet: {(row.jd_text or '')[:400]}"
+                        f"JD snippet: {sanitize_text((row.jd_text or '')[:400])}"
                     )
         except Exception:
             pass
@@ -214,7 +216,7 @@ def generate_outreach_message(
     response = client.messages.create(
         model      = _MODEL,
         max_tokens = _MAX_TOKENS,
-        system     = _SYSTEM,
+        system     = harden_system_prompt(_SYSTEM),
         messages   = [{"role": "user", "content": user_prompt}],
     )
 
@@ -222,5 +224,113 @@ def generate_outreach_message(
     logger.info(
         "[OutreachService] Generated %s message for %s @ %s (%d chars)",
         message_type, target_name, target_company, len(message),
+    )
+    return message
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 3 — job-anchored outreach (tailored-CV-aware, persisted per job)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_OUTREACH_SYSTEM = """\
+You write a single, concise outreach message from a job candidate to the hiring \
+manager for one specific role. Natural, confident, peer-level voice.
+
+ABSOLUTE RULES:
+• Ground EVERY claim ONLY in CANDIDATE_MATERIAL below — never invent employers, \
+  titles, metrics, or skills. If the material does not support a claim, omit it.
+• Directly map the candidate's real experience to the specific requirements in \
+  JOB_DESCRIPTION — name the overlap, don't speak in generalities.
+• ≤ 150 words. First person. No subject line.
+• Output ONLY the raw message text — no markdown, no preamble, no sign-off block, \
+  no "here is your message" wrapper, no options.
+• Ban hollow phrases: "I hope this finds you well", "I am reaching out because", \
+  "I would love to connect", "perfect fit", "passionate".
+"""
+
+_OUTREACH_USER_TMPL = """\
+JOB:
+  Title:   {title}
+  Company: {company}
+  Location:{location}
+
+JOB_DESCRIPTION:
+{jd_text}
+
+CANDIDATE_MATERIAL (tailored for THIS role where available — the source of truth \
+for every claim you may make):
+{candidate_material}
+
+TASK — Write one outreach message to the hiring manager for this role that maps \
+the candidate's strongest, genuinely-relevant experience to this job's stated \
+requirements. Concise, specific, professional.
+"""
+
+
+def _candidate_material(job_id: str, user_id: str) -> str:
+    """
+    Assemble the grounding material for the outreach, preferring the CV tailored
+    to THIS job and falling back to the user's master profile narrative.
+    """
+    cached = job_store.get_tailored_cv(job_id, user_id)
+    brief  = (cached or {}).get("tailor_brief") if isinstance(cached, dict) else None
+    if isinstance(brief, dict):
+        parts: list[str] = []
+        if brief.get("positioning_summary"):
+            parts.append(f"Positioning: {brief['positioning_summary']}")
+        for sec in brief.get("tailored_sections", []):
+            role    = f"{sec.get('role', '')} at {sec.get('company', '')} ({sec.get('dates', '')})".strip()
+            bullets = "; ".join(str(b) for b in sec.get("bullets", []))
+            parts.append(f"{role}: {bullets}")
+        if parts:
+            return "TAILORED CV FOR THIS ROLE:\n" + "\n".join(parts)
+    # Fallback — master profile narrative (per-user, Phase 2 accessor).
+    return "MASTER PROFILE:\n" + build_full_text(user_id)
+
+
+def generate_outreach(job_id: str, user_id: str) -> str:
+    """
+    Generate — and persist — a hiring-manager outreach message for one job.
+
+    Tenancy: every read/write is scoped to user_id. Raises ValueError when the
+    job does not exist for this user (the route maps that to HTTP 404).
+
+    Returns the message text (also saved to jobs.outreach_text).
+    """
+    job = job_store.get_by_id(job_id, user_id)
+    if job is None:
+        raise ValueError(f"Job {job_id!r} not found.")
+
+    jd_text = (getattr(job, "jd_text", "") or "").strip()
+    if not jd_text:
+        jd_text = f"(No full description stored — role: {job.title} at {job.company}.)"
+
+    # Sanitize untrusted text (JD + assembled CV material) before it enters the prompt.
+    user_prompt = _OUTREACH_USER_TMPL.format(
+        title              = job.title,
+        company            = job.company,
+        location           = job.location or "Israel",
+        jd_text            = sanitize_text(jd_text[:4000]),
+        candidate_material = sanitize_text(_candidate_material(job_id, user_id)),
+    )
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+
+    client   = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model      = _MODEL,
+        max_tokens = _MAX_TOKENS,
+        system     = harden_system_prompt(_OUTREACH_SYSTEM),
+        messages   = [{"role": "user", "content": user_prompt}],
+    )
+    message = response.content[0].text.strip()
+
+    # Persist before returning so it survives reloads (tenancy-scoped write).
+    job_store.save_outreach_text(job_id, user_id, message)
+    logger.info(
+        "[OutreachService] generate_outreach job=%s user=%s (%d chars, persisted)",
+        job_id, user_id, len(message),
     )
     return message

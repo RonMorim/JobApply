@@ -90,7 +90,12 @@ def _parse_dt(value) -> datetime:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value
-    dt = datetime.fromisoformat(str(value))
+    s = str(value)
+    if s.endswith("Z"):
+        # Python < 3.11's datetime.fromisoformat() rejects the 'Z' UTC
+        # suffix; seeded/legacy rows use it, so normalize before parsing.
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
@@ -379,6 +384,73 @@ class ProfileUpdateService:
             user_id, len(entity_ids),
         )
         return entity_ids
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public: Self-assertion (unverified claim made directly in conversation)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def ingest_self_assertion(
+        self,
+        user_id:     str,
+        entity_type: str,
+        name:        str,
+        raw_content: str = "",
+    ) -> str:
+        """
+        Record one entity as a self-asserted, unverified claim — the weakest
+        positive evidence tier (BASE_WEIGHTS['self_assertion'], lowest of all
+        positive source types). Used for profile facts a user states directly
+        in an Ariel chat (e.g. via the update_experience/update_skills tools)
+        that haven't been through CV parsing, a certification, or a STAR
+        behavioral probe. 'self_assertion' has been a defined evidence
+        source_type since the original schema (see confidence_math.py and the
+        DB CHECK constraint) but had no caller until now.
+
+        Parameters
+        ----------
+        user_id, entity_type, name
+            Standard entity identifiers. entity_type must be one of
+            'skill' | 'trait' | 'domain' | 'experience'.
+        raw_content
+            The chat-derived text backing this claim (e.g. "Senior PM at Acme").
+
+        Returns
+        -------
+        str   entity_id
+        """
+        now = _now_iso()
+        with self._engine.begin() as conn:
+            entity_id = self._upsert_entity(conn, user_id, entity_type, name)
+            ev_id = _uid()
+            conn.execute(
+                text("""
+                    INSERT INTO evidence_records
+                        (evidence_id, entity_id, user_id, source_type,
+                         base_weight, raw_content, verified_at)
+                    VALUES
+                        (:evid, :eid, :uid, 'self_assertion', :w, :raw, :now)
+                """),
+                {
+                    "evid": ev_id,
+                    "eid":  entity_id,
+                    "uid":  user_id,
+                    "w":    BASE_WEIGHTS["self_assertion"],
+                    "raw":  raw_content,
+                    "now":  now,
+                },
+            )
+            self._recompute_and_persist(
+                conn, entity_id, user_id,
+                trigger_source="self_assertion",
+                new_evidence_id=ev_id,
+                note=f"Chat self-assertion: {name}",
+            )
+
+        logger.info(
+            "ingest_self_assertion: user=%s entity_type=%s name=%r",
+            user_id, entity_type, name,
+        )
+        return entity_id
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public: Certification / Portfolio

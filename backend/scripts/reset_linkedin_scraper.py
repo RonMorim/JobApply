@@ -1,27 +1,41 @@
 """
 LinkedIn Scraper Reset Utility
 ================================
-Run this after a bot-detection block to clear the BLOCKED state and stale
-browser profile so the scraper can boot cleanly on the next scheduled run.
+Clears the BLOCKED state and stale browser profile so the scraper can boot
+cleanly — but keeps the enrichment loop suppressed until you explicitly resume
+it with a fresh cookie.
+
+WORKFLOW
+--------
+Step 1 (run this):
+    venv/bin/python -m backend.scripts.reset_linkedin_scraper --pause
+
+    Clears BLOCKED + error counters, deletes stale browser profile, and sets
+    linkedin_scraper_paused=1 so the enrichment loop stays halted even though
+    the BLOCKED flag is gone.  The UI banner will now say "Paused" instead of
+    "Connection Blocked".
+
+Step 2 (manual):
+    Update LINKEDIN_LI_AT in backend/.env with a fresh li_at cookie from
+    linkedin.com (DevTools → Application → Cookies → li_at).
+
+Step 3 (run this):
+    venv/bin/python -m backend.scripts.reset_linkedin_scraper --resume
+
+    Clears linkedin_scraper_paused and lets the enrichment loop attempt
+    LinkedIn scraping with the new cookie.
 
 Usage:
-    venv/bin/python -m backend.scripts.reset_linkedin_scraper
-
-What it does:
-  1. Clears linkedin_scraper_status, linkedin_redirect_error_count, and
-     linkedin_scraper_blocked_at from the SQLite KV store.
-  2. Deletes the stale Playwright browser profile at data/linkedin_browser_profile/
-     so Playwright creates a fresh profile on the next launch.
-  3. Checks that LINKEDIN_LI_AT is set in backend/.env and warns if it is
-     missing or looks stale (unchanged from the last run that got blocked).
-
-You MUST update LINKEDIN_LI_AT in backend/.env before restarting the scraper.
-See backend/config.py line ~105 for the cookie-extraction steps.
+    --pause     Clear BLOCKED state + set pause gate (use before cookie update)
+    --resume    Clear pause gate (use after cookie update — loop restarts)
+    --status    Print current KV state without changing anything
 """
 from __future__ import annotations
 
+import argparse
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,86 +44,150 @@ sys.path.insert(0, str(ROOT))
 from backend.services.db import ENGINE, KVRow
 from sqlalchemy.orm import Session
 
-_KV_KEYS_TO_CLEAR = [
+_ALL_SCRAPER_KEYS = [
     "linkedin_scraper_status",
     "linkedin_redirect_error_count",
     "linkedin_scraper_blocked_at",
     "linkedin_cookie_status",
+    "linkedin_scraper_paused",
 ]
 
 BROWSER_PROFILE = ROOT / "backend" / "data" / "linkedin_browser_profile"
 ENV_FILE        = ROOT / "backend" / ".env"
 
 
-def _clear_kv() -> None:
-    print("\n── Step 1: Clear KV store ─────────────────────────────────────────────")
+def _print_kv_state() -> None:
+    print("\n── Current KV state ───────────────────────────────────────────────────")
     with Session(ENGINE) as db:
-        for key in _KV_KEYS_TO_CLEAR:
+        for key in _ALL_SCRAPER_KEYS:
+            row = db.get(KVRow, key)
+            value = row.value if row else "(not set)"
+            print(f"  {key:<45s} = {value!r}")
+
+
+def do_pause() -> None:
+    """Clear BLOCKED + error counters; set pause gate; delete browser profile."""
+    print("\n── Step 1: Clear BLOCKED state + set pause gate ───────────────────────")
+    now = datetime.now(timezone.utc).isoformat()
+    keys_to_delete = [
+        "linkedin_scraper_status",
+        "linkedin_redirect_error_count",
+        "linkedin_scraper_blocked_at",
+        "linkedin_cookie_status",
+    ]
+    with Session(ENGINE) as db:
+        for key in keys_to_delete:
             row = db.get(KVRow, key)
             if row:
-                print(f"  Deleting  {key!r:45s} (was: {row.value!r})")
+                print(f"  Deleted   {key:<45s} (was: {row.value!r})")
                 db.delete(row)
             else:
-                print(f"  Not found {key!r:45s} (already clean)")
+                print(f"  (absent)  {key}")
+
+        # Set pause gate — kept for future use; cleared by --resume.
+        paused_row = db.get(KVRow, "linkedin_scraper_paused")
+        if paused_row:
+            paused_row.value      = "1"
+            paused_row.updated_at = now
+        else:
+            db.add(KVRow(key="linkedin_scraper_paused", value="1", updated_at=now))
+        print(f"  Set       linkedin_scraper_paused             = '1'  (loop halted)")
         db.commit()
-    print("  KV store cleared.")
 
-
-def _clear_browser_profile() -> None:
     print("\n── Step 2: Delete browser profile ────────────────────────────────────")
     if BROWSER_PROFILE.exists():
         shutil.rmtree(BROWSER_PROFILE)
         print(f"  Deleted   {BROWSER_PROFILE}")
     else:
-        print(f"  Not found {BROWSER_PROFILE}  (already clean)")
+        print(f"  (absent)  {BROWSER_PROFILE}")
+
+    _check_env()
+
+    print("""
+── Next step ──────────────────────────────────────────────────────────
+  The enrichment loop is now PAUSED (not BLOCKED).
+  1. Grab a fresh li_at cookie from linkedin.com
+     → DevTools → Application → Cookies → https://www.linkedin.com → li_at
+  2. Paste it into  backend/.env  as:
+       LINKEDIN_LI_AT=<paste here>
+  3. Run:
+       venv/bin/python -m backend.scripts.reset_linkedin_scraper --resume
+  The loop will then restart with the new cookie.
+""")
 
 
-def _check_env() -> None:
-    print("\n── Step 3: Check LINKEDIN_LI_AT in backend/.env ──────────────────────")
+def do_resume() -> None:
+    """Clear the pause gate AND all block-related keys so the loop can restart clean."""
+    print("\n── Clearing pause gate + all block-related keys ───────────────────────")
+    _check_env(warn_if_unchanged=True)
+
+    keys_to_clear = [
+        "linkedin_scraper_paused",
+        "linkedin_scraper_status",
+        "linkedin_redirect_error_count",
+        "linkedin_scraper_blocked_at",
+        "linkedin_cookie_status",
+    ]
+    with Session(ENGINE) as db:
+        for key in keys_to_clear:
+            row = db.get(KVRow, key)
+            if row:
+                print(f"  Deleted   {key:<45s} (was: {row.value!r})")
+                db.delete(row)
+            else:
+                print(f"  (absent)  {key}")
+        db.commit()
+
+    _print_kv_state()
+    print("\n  The enrichment loop will attempt LinkedIn scraping on its next cycle.")
+    print("  Monitor backend logs for redirect errors to confirm the new cookie works.")
+
+
+def _check_env(warn_if_unchanged: bool = False) -> None:
+    print("\n── Check LINKEDIN_LI_AT in backend/.env ──────────────────────────────")
     if not ENV_FILE.exists():
         print(f"  WARNING: {ENV_FILE} not found.")
-        _print_cookie_reminder()
         return
 
     li_at = None
     for line in ENV_FILE.read_text().splitlines():
-        if line.startswith("LINKEDIN_LI_AT"):
-            parts = line.split("=", 1)
+        stripped = line.strip()
+        if stripped.startswith("LINKEDIN_LI_AT"):
+            parts = stripped.split("=", 1)
             li_at = parts[1].strip().strip('"').strip("'") if len(parts) == 2 else ""
             break
 
     if not li_at:
-        print("  ⚠ LINKEDIN_LI_AT is NOT set in backend/.env")
-        _print_cookie_reminder()
+        print("  ⚠ LINKEDIN_LI_AT is NOT set in backend/.env — scraper cannot run.")
     else:
-        # Show only a safe prefix so the value is recognisable but not fully exposed
         preview = li_at[:8] + "…" + li_at[-4:] if len(li_at) > 16 else li_at[:4] + "…"
         print(f"  LINKEDIN_LI_AT is set  ({preview})")
-        print("  Ensure this is the FRESH cookie value — NOT the one that triggered the block.")
-        print("  If it is the same cookie, update it before restarting the scraper.")
+        if warn_if_unchanged:
+            print("  ⚠ Ensure this is a FRESH cookie — not the one that caused the block.")
 
 
-def _print_cookie_reminder() -> None:
-    print("""
-  How to get a fresh li_at cookie:
-    1. Log into linkedin.com in Chrome/Firefox.
-    2. Open DevTools → Application → Cookies → https://www.linkedin.com
-    3. Find the cookie named  li_at  and copy its value.
-    4. Paste it into  backend/.env  as:
-         LINKEDIN_LI_AT=<paste value here>
-    5. Re-run this script to verify, then restart the backend.
-""")
+def do_status() -> None:
+    _print_kv_state()
+    _check_env()
 
 
 def main() -> None:
-    print("LinkedIn Scraper Reset")
-    print("=" * 70)
-    _clear_kv()
-    _clear_browser_profile()
-    _check_env()
-    print("\n── Done ───────────────────────────────────────────────────────────────")
-    print("  The scraper BLOCKED state has been cleared.")
-    print("  Restart the backend after updating LINKEDIN_LI_AT to resume scraping.")
+    parser = argparse.ArgumentParser(description="LinkedIn scraper KV reset tool.")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--pause",  action="store_true",
+                       help="Clear BLOCKED state, set pause gate, delete browser profile")
+    group.add_argument("--resume", action="store_true",
+                       help="Clear pause gate to let the loop restart (run after cookie update)")
+    group.add_argument("--status", action="store_true",
+                       help="Print KV state without changing anything")
+    args = parser.parse_args()
+
+    if args.pause:
+        do_pause()
+    elif args.resume:
+        do_resume()
+    elif args.status:
+        do_status()
 
 
 if __name__ == "__main__":

@@ -76,10 +76,62 @@ function ExecutiveThumb({ selected }: { selected: boolean }) {
   )
 }
 
+function MinimalistThumb({ selected }: { selected: boolean }) {
+  const ink = selected ? '#fff' : '#18181B'
+  const bg = selected ? '#18181B' : '#fff'
+  const faint = selected ? 'rgba(255,255,255,0.4)' : '#A1A1AA'
+  return (
+    <svg width={48} height={62} viewBox="0 0 48 62" style={{ borderRadius: 3 }}
+      fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width={48} height={62} fill={bg} />
+      {/* thin name + underline, no color block */}
+      <rect x={6} y={7} width={26} height={3} rx={0.5} fill={ink} opacity={0.9} />
+      <rect x={6} y={12.5} width={16} height={1.2} rx={0.4} fill={faint} />
+      <rect x={6} y={17} width={36} height={0.6} fill={ink} opacity={0.8} />
+      {/* wide-tracked section label */}
+      <rect x={6} y={22} width={10} height={1.2} rx={0.4} fill={ink} opacity={0.7} />
+      {/* body lines, airy spacing */}
+      {[27,31.5,36,42,46.5,51].map((y, i) => (
+        <rect key={i} x={6} y={y} width={i % 3 === 2 ? 22 : 36} height={1} rx={0.4} fill={faint} />
+      ))}
+    </svg>
+  )
+}
+
+function TechModernThumb({ selected }: { selected: boolean }) {
+  const accent = '#14B8A6'
+  const sideBg = '#0F172A'
+  return (
+    <svg width={48} height={62} viewBox="0 0 48 62" style={{ borderRadius: 3 }}
+      fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width={48} height={62} fill="#fff" />
+      {/* dark sidebar */}
+      <rect x={0} y={0} width={17} height={62} fill={sideBg} />
+      <rect x={3} y={6} width={11} height={2.5} rx={0.5} fill="#fff" opacity={0.95} />
+      <rect x={3} y={11} width={8} height={1.2} rx={0.4} fill={accent} />
+      <rect x={3} y={18} width={6} height={1} rx={0.4} fill="#fff" opacity={0.35} />
+      <rect x={3} y={21} width={9} height={1} rx={0.4} fill="#fff" opacity={0.35} />
+      <rect x={3} y={30} width={7} height={1.2} rx={0.4} fill={accent} opacity={0.8} />
+      {[34,37,40].map((y, i) => (
+        <rect key={i} x={3} y={y} width={9} height={0.9} rx={0.3} fill="#fff" opacity={0.3} />
+      ))}
+      {/* main column */}
+      <rect x={21} y={7} width={11} height={1.4} rx={0.4} fill={accent} />
+      <rect x={21} y={10.5} width={24} height={0.8} fill={accent} opacity={0.6} />
+      {[15,19,23,29,33,37,43,47,51].map((y, i) => (
+        <rect key={i} x={21} y={y} width={i % 3 === 2 ? 16 : 24} height={1} rx={0.4}
+          fill={selected ? accent : '#475569'} opacity={0.3} />
+      ))}
+    </svg>
+  )
+}
+
 const THUMBS: Record<string, (p: { selected: boolean }) => JSX.Element> = {
-  t1_classic:   ClassicThumb,
-  t2_modern:    ModernThumb,
-  t3_executive: ExecutiveThumb,
+  t1_classic:    ClassicThumb,
+  t2_modern:     ModernThumb,
+  t3_executive:  ExecutiveThumb,
+  t4_minimalist: MinimalistThumb,
+  t5_techmodern: TechModernThumb,
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -102,7 +154,7 @@ export function TemplateSelectorBar({
       }}>
         Template
       </p>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {templates.map(t => {
           const Thumb = THUMBS[t.id]
           const active = t.id === selectedId
@@ -113,7 +165,7 @@ export function TemplateSelectorBar({
               disabled={isLoading}
               title={t.description}
               style={{
-                flex: 1,
+                flex: '1 1 60px',
                 display: 'flex', flexDirection: 'column', alignItems: 'center',
                 gap: 5, padding: '7px 4px 6px',
                 borderRadius: 10,

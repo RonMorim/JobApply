@@ -1,5 +1,6 @@
 import type { ApiAgentStatus, ApiJobMatch, AnalyzeRequest, AnalyzeResponse, MatchScoreResult, ApiFeedJob, RefreshResponse, BackfillResponse, FetchJdResponse, JobStatus, VerifyChatEntry, VerifyChatResponse, TailorBriefResponse, OutreachRequest, OutreachResponse, HeadhunterRequest, AtsKeywordsResponse, InterviewSession, VerificationResult, CrmBoard, MarkAppliedResponse, JobAnalysisState } from './apiTypes'
 import type { Job } from './data'
+import { supabase } from './supabase'
 
 // Empty base → all requests are relative (/api/...) and are proxied to
 // FastAPI by the rewrites rule in next.config.mjs. Set NEXT_PUBLIC_API_URL
@@ -24,6 +25,58 @@ export function getAuthHeaders(): Record<string, string> {
   return _authHeaders()
 }
 
+/**
+ * Global token-refresh guard — called at the start of every fetch wrapper.
+ *
+ * WHY THIS EXISTS
+ * ───────────────
+ * _authToken is a module-level variable set by AuthContext one async tick
+ * after the app mounts.  Parallel layout components (Overview stats, agent
+ * status, notifications, JobFeed) all fire their initial GET requests
+ * simultaneously at mount time, before AuthContext has had a chance to call
+ * setAuthToken().  Any one of those parallel requests going out with an empty
+ * Authorization header receives a 401, which triggers _onAuthError() →
+ * localStorage.clear() + hard-evict to /login, wiping the saved tab and
+ * producing the "redirect to overview" symptom.
+ *
+ * This function is the single fix point: if _authToken is absent, it makes one
+ * synchronous-ish Supabase session call to populate it before the request goes
+ * out.  The result is cached back into _authToken so subsequent parallel calls
+ * that land here within the same event-loop turn benefit too.
+ */
+async function _ensureFreshToken(): Promise<void> {
+  if (_authToken) return  // fast path — already have a token
+  if (!supabase) return
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session?.access_token) {
+      _authToken = session.access_token
+    }
+  } catch {
+    // Non-fatal — request will proceed without a token and may 401,
+    // but at least we tried; the error is the backend's to surface.
+  }
+}
+
+/**
+ * Public token-freshness guard for components that call fetch() directly
+ * instead of going through the get/post/patch wrappers.
+ *
+ * The internal wrappers already await _ensureFreshToken() before every
+ * request. Direct-fetch call sites (e.g. the Confidence Matrix and
+ * Trust Score fetches in TrustDashboard) must do the same, or they will
+ * send an empty Authorization header on the first mount-time request —
+ * before AuthContext has called setAuthToken() — receive a 401, and trip
+ * the global _onAuthError() sign-out (the auto-logout loop).
+ *
+ * Usage:
+ *   await ensureFreshToken()
+ *   const res = await fetch(url, { headers: getAuthHeaders() })
+ */
+export async function ensureFreshToken(): Promise<void> {
+  return _ensureFreshToken()
+}
+
 // ── Auth error handler ────────────────────────────────────────────────────────
 // AuthContext wires this up so any 401 or 503 from the backend triggers an
 // immediate sign-out and clears the stale session from local storage.
@@ -35,34 +88,56 @@ export function setAuthErrorHandler(handler: () => void): void {
   _onAuthError = handler
 }
 
-/** Call on every non-ok response; fires the sign-out callback for auth errors. */
-function _handleHttpError(res: Response, path: string): never {
-  if (res.status === 401 || res.status === 503) {
+/**
+ * Call on every non-ok response; fires the sign-out callback for auth errors.
+ *
+ * Reads the JSON body's `detail` field when present — FastAPI's HTTPException
+ * puts the actual failure reason there (e.g. "Scrape Failed: page returned no
+ * job description text"), which is far more useful to surface to the user
+ * than a bare "422 Unprocessable Entity".
+ */
+async function _handleHttpError(res: Response, path: string): Promise<never> {
+  // Only 401 signals a possibly-dead session. 503 means the BACKEND is
+  // unavailable/misconfigured (e.g. LLM key missing) — treating it as an auth
+  // failure hard-evicted logged-in users the moment any degraded endpoint was
+  // hit (notably right after onboarding, when Ariel auto-opens and the chat
+  // endpoints are called for the first time).
+  if (res.status === 401) {
     _onAuthError?.()
   }
-  throw new Error(`${res.status} ${res.statusText} — ${path}`)
+  let detail: string | undefined
+  try {
+    const body = await res.json()
+    detail = typeof body?.detail === 'string' ? body.detail : undefined
+  } catch {
+    // Non-JSON or empty body — fall back to status text below.
+  }
+  throw new Error(detail || `${res.status} ${res.statusText} — ${path}`)
 }
 
 async function get<T>(path: string): Promise<T> {
+  await _ensureFreshToken()
   const res = await fetch(`${BASE}${path}`, {
     cache:   'no-store',
     headers: _authHeaders(),
   })
-  if (!res.ok) _handleHttpError(res, path)
+  if (!res.ok) await _handleHttpError(res, path)
   return res.json() as Promise<T>
 }
 
 /** POST with no request body — for endpoints that take only query params. */
 async function postEmpty<TRes>(path: string): Promise<TRes> {
+  await _ensureFreshToken()
   const res = await fetch(`${BASE}${path}`, {
     method:  'POST',
     headers: _authHeaders(),
   })
-  if (!res.ok) _handleHttpError(res, path)
+  if (!res.ok) await _handleHttpError(res, path)
   return res.json() as Promise<TRes>
 }
 
 async function post<TBody, TRes>(path: string, body: TBody, timeoutMs?: number): Promise<TRes> {
+  await _ensureFreshToken()
   const controller = timeoutMs ? new AbortController() : undefined
   const timer = controller
     ? setTimeout(() => controller.abort(), timeoutMs)
@@ -75,7 +150,7 @@ async function post<TBody, TRes>(path: string, body: TBody, timeoutMs?: number):
       body:    JSON.stringify(body),
       signal:  controller?.signal,
     })
-    if (!res.ok) _handleHttpError(res, path)
+    if (!res.ok) await _handleHttpError(res, path)
     return res.json() as Promise<TRes>
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
@@ -88,12 +163,13 @@ async function post<TBody, TRes>(path: string, body: TBody, timeoutMs?: number):
 }
 
 async function patch<TBody, TRes>(path: string, body: TBody): Promise<TRes> {
+  await _ensureFreshToken()
   const res = await fetch(`${BASE}${path}`, {
     method:  'PATCH',
     headers: { 'Content-Type': 'application/json', ..._authHeaders() },
     body:    JSON.stringify(body),
   })
-  if (!res.ok) _handleHttpError(res, path)
+  if (!res.ok) await _handleHttpError(res, path)
   return res.json() as Promise<TRes>
 }
 
@@ -154,9 +230,29 @@ export interface TailorOkResponse {
 }
 
 export async function fetchCachedCV(jobId: string): Promise<TailorOkResponse | null> {
-  const res = await fetch(`${BASE}/api/resumes/cached/${jobId}`, { cache: 'no-store' })
+  await _ensureFreshToken()
+  const res = await fetch(`${BASE}/api/resumes/cached/${jobId}`, {
+    headers: _authHeaders(),
+    cache:   'no-store',
+  })
   if (res.status === 204 || !res.ok) return null
   return res.json() as Promise<TailorOkResponse>
+}
+
+/**
+ * Explicitly persist the given cv_data (+ match_score) as the saved base
+ * state for this job. This is the ONLY way Copilot/LiveEditor draft edits
+ * become durable — until this is called, edits live only in local React
+ * state and are discarded if the modal is closed/reopened.
+ */
+export async function saveCv(
+  jobId: string,
+  cvData: Record<string, unknown>,
+  matchScore: Record<string, unknown> | null,
+): Promise<void> {
+  await post('/api/resumes/save-cv', {
+    job_id: jobId, cv_data: cvData, match_score: matchScore,
+  })
 }
 
 export async function fetchMatchScore(
@@ -225,6 +321,7 @@ export async function fetchJobJd(jobId: string): Promise<FetchJdResponse> {
 }
 
 export async function backfillJdText(minScore = 50.0): Promise<BackfillResponse> {
+  await _ensureFreshToken()
   const url = `${BASE}/api/jobs/feed/backfill-jd?min_score=${minScore}`
   console.log('[backfillJdText] POST', url, '— no body, no Content-Type')
 
@@ -342,6 +439,7 @@ export async function uploadVerificationDocument(
   docType:   string,
   file:      File,
 ): Promise<{ verification: VerificationResult; session_id: string }> {
+  await _ensureFreshToken()
   const fd = new FormData()
   fd.append('claim',    claim)
   fd.append('doc_type', docType)
@@ -351,8 +449,46 @@ export async function uploadVerificationDocument(
     headers: _authHeaders(),
     body:    fd,
   })
-  if (!res.ok) _handleHttpError(res, `/api/profile/interview/${sessionId}/upload`)
+  if (!res.ok) await _handleHttpError(res, `/api/profile/interview/${sessionId}/upload`)
   return res.json()
+}
+
+// ── Onboarding role/seniority preferences ─────────────────────────────────────
+
+export type SeniorityLevel = 'junior' | 'entry' | 'mid' | 'senior' | 'lead' | 'director' | 'executive'
+
+export interface RoleSeniorityItem {
+  role:      string
+  seniority: SeniorityLevel
+}
+
+export interface RolePreferences {
+  roles: RoleSeniorityItem[]
+}
+
+/** Persist onboarding target roles, each with its own seniority (used by job matching). */
+export async function saveRolePreferences(prefs: RolePreferences): Promise<void> {
+  await post<RolePreferences, { status: string }>('/api/profile/preferences', prefs)
+}
+
+/** Fetch the saved role/seniority preferences (empty arrays when unset). */
+export async function fetchRolePreferences(): Promise<RolePreferences> {
+  const data = await get<{ roles: RoleSeniorityItem[] }>('/api/profile/preferences')
+  return { roles: data.roles ?? [] }
+}
+
+export interface LinkedInImportResponse {
+  status:   string
+  imported: boolean
+  message:  string
+}
+
+/** Stub LinkedIn import — stores the URL server-side; no scraping yet. */
+export async function importLinkedInProfile(linkedinUrl: string): Promise<LinkedInImportResponse> {
+  return post<{ linkedin_url: string }, LinkedInImportResponse>(
+    '/api/profile/linkedin-import',
+    { linkedin_url: linkedinUrl },
+  )
 }
 
 // ── CV upload & aggregation ───────────────────────────────────────────────────
@@ -377,16 +513,25 @@ export interface CvUploadResponse {
  * to the user's profile so Jonathan can use them during gap-analysis.
  */
 export async function uploadCvFiles(files: File[]): Promise<CvUploadResponse> {
+  await _ensureFreshToken()
   const fd = new FormData()
   for (const file of files) {
     fd.append('files', file)
   }
-  const res = await fetch(`${BASE}/api/profile/cv-upload`, {
-    method:  'POST',
-    headers: _authHeaders(),
-    body:    fd,
-  })
-  if (!res.ok) _handleHttpError(res, '/api/profile/cv-upload')
+  let res: Response
+  try {
+    res = await fetch(`${BASE}/api/profile/cv-upload`, {
+      method:  'POST',
+      headers: _authHeaders(),
+      body:    fd,
+    })
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new Error('Could not reach the server — is the backend running? (network error)')
+    }
+    throw err
+  }
+  if (!res.ok) await _handleHttpError(res, "/api/profile/cv-upload")
   return res.json()
 }
 
@@ -398,6 +543,26 @@ export async function generateOutreachMessage(req: OutreachRequest): Promise<Out
 
 export async function generateHeadhunterMessage(req: HeadhunterRequest): Promise<OutreachResponse> {
   return post<HeadhunterRequest, OutreachResponse>('/api/outreach/headhunter', req)
+}
+
+// ── Phase 3: job-anchored outreach (generate + persist + fetch) ───────────────
+// Both go through the internal get/post helpers, which already await
+// _ensureFreshToken() before attaching auth — no token race.
+
+export interface JobOutreachResponse {
+  job_id:        string
+  outreach_text: string | null
+  word_count:    number
+}
+
+/** POST — generate + persist the hiring-manager outreach message for a job. */
+export async function generateJobOutreach(jobId: string): Promise<JobOutreachResponse> {
+  return postEmpty<JobOutreachResponse>(`/api/outreach/generate/${jobId}`)
+}
+
+/** GET — the persisted outreach message for a job (outreach_text=null if none). */
+export async function fetchJobOutreach(jobId: string): Promise<JobOutreachResponse> {
+  return get<JobOutreachResponse>(`/api/outreach/${jobId}`)
 }
 
 // ── CRM Kanban ────────────────────────────────────────────────────────────────
@@ -457,6 +622,41 @@ export async function fetchAnalyticsSummary(): Promise<AnalyticsSummary> {
   return get<AnalyticsSummary>('/api/analytics/summary')
 }
 
+// ── Analytics overview (Overview dashboard daily KPIs) ────────────────────────
+// Daily activity snapshot — the two "today" counters reset at UTC midnight;
+// average_match_score is the stable lifetime quality signal.
+
+export interface AnalyticsOverview {
+  jobs_scanned_today:  number
+  actions_taken_today: number
+  average_match_score: number
+}
+
+/** Thrown on HTTP 429 so callers can render a "busy" state instead of an error. */
+export class RateLimitError extends Error {
+  constructor() {
+    super('Rate limit exceeded')
+    this.name = 'RateLimitError'
+  }
+}
+
+/**
+ * GET /api/analytics/overview — direct fetch (not the get<> wrapper) so a 429
+ * can be surfaced as RateLimitError without tripping the global auth-error
+ * sign-out. ensureFreshToken() runs first to avoid the mount-time empty-token
+ * race (see _ensureFreshToken docs above).
+ */
+export async function fetchAnalyticsOverview(): Promise<AnalyticsOverview> {
+  await ensureFreshToken()
+  const res = await fetch(`${BASE}/api/analytics/overview`, {
+    headers: getAuthHeaders(),
+    cache:   'no-store',
+  })
+  if (res.status === 429) throw new RateLimitError()
+  if (!res.ok) throw new Error(`analytics/overview HTTP ${res.status}`)
+  return res.json() as Promise<AnalyticsOverview>
+}
+
 // ── ATS keyword extraction ────────────────────────────────────────────────────
 
 export async function fetchAtsKeywords(jobId: string): Promise<AtsKeywordsResponse> {
@@ -466,12 +666,13 @@ export async function fetchAtsKeywords(jobId: string): Promise<AtsKeywordsRespon
 // ── LinkedIn scraper status ───────────────────────────────────────────────────
 
 export interface ScraperStatus {
-  status:        'ok' | 'suspicious' | 'BLOCKED'
+  status:        'ok' | 'suspicious' | 'BLOCKED' | 'PAUSED'
   blocked_at:    string | null
   cookie_status: string | null
 }
 
 export async function fetchScraperStatus(): Promise<ScraperStatus> {
+  await _ensureFreshToken()
   const res = await fetch(`${BASE}/api/settings/scraper-status`, {
     headers: getAuthHeaders(),
     cache:   'no-store',

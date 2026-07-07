@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { TOKENS } from '@/lib/tokens'
 import type { Job } from '@/lib/data'
 import type { ApiFeedJob, MatchScoreResult, TemplateInfo } from '@/lib/apiTypes'
-import { fetchTemplates, renderPdf, fetchMatchScore, fetchCachedCV, markJobApplied, getAuthHeaders } from '@/lib/api'
+import { fetchTemplates, renderPdf, fetchMatchScore, fetchCachedCV, markJobApplied, ensureFreshToken, getAuthHeaders, saveCv } from '@/lib/api'
 import { MatchScorePanel } from './MatchScorePanel'
 import { TemplateSelectorBar } from './TemplateSelectorBar'
 import { LiveEditor } from './LiveEditor'
@@ -351,6 +351,11 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
   const [isDirty,          setIsDirty]          = useState(false)
   const [isSaving,         setIsSaving]         = useState(false)
   const [isScoreLoading,   setIsScoreLoading]   = useState(false)
+  // Draft mode — Copilot/LiveEditor edits only ever touch local state above.
+  // hasUnsavedDraft tracks whether that local state has diverged from what's
+  // actually persisted server-side; only handleSaveDraft() closes the gap.
+  const [hasUnsavedDraft,  setHasUnsavedDraft]  = useState(false)
+  const [isSavingDraft,    setIsSavingDraft]    = useState(false)
   // Copilot state
   const [copilotPrompt,    setCopilotPrompt]    = useState('')
   // Ref mirrors copilotPrompt so handleCopilotSubmit always reads the latest
@@ -378,25 +383,6 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
     const id = setInterval(() => setLoadingStatusIdx(i => (i + 1) % LOADING_STATUSES.length), 1500)
     return () => clearInterval(id)
   }, [isLoading])
-
-  // ── Simulated high-confidence tailored score ──────────────────────────────
-  // The tailored score is always displayed as significantly better than the
-  // baseline to prove the CV improvement. Sub-dimensions are calibrated to
-  // reflect a 90%+ optimized document.
-  const simulatedMatchScore: typeof matchScore = matchScore ? (() => {
-    const targetTotal = Math.round((job.score + (100 - job.score) * 0.8) * 10) / 10
-    const kwOverlap   = 36
-    const senMatch    = Math.min(25, Math.round(targetTotal * 0.22))
-    const skillsAlign = Math.min(35, Math.max(0, Math.round(targetTotal - kwOverlap - senMatch)))
-    return {
-      ...matchScore,
-      total:               targetTotal,
-      keyword_overlap:     kwOverlap,
-      skills_alignment:    skillsAlign,
-      seniority_alignment: senMatch,
-      llm_validated:       true,
-    }
-  })() : null
 
   // ── Fetch templates on mount ──────────────────────────────────────────────
   useEffect(() => {
@@ -431,6 +417,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
       const timeoutId  = setTimeout(() => controller.abort(), 90_000)
       let res: Response
       try {
+        await ensureFreshToken()
         res = await fetch('/api/resumes/tailor', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -464,6 +451,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
       setOriginalCvData(snapshot)
       setIsDirty(false)
       setIsEditMode(false)
+      setHasUnsavedDraft(false)   // /tailor persists its own output — this IS the saved baseline
       if (data.match_score)        setMatchScore(data.match_score)
       if (data.preferred_template) setSelectedTemplate(data.preferred_template)
       setMissingReqs([])
@@ -544,12 +532,24 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
       setCvState({ cvData: editedCvData as Record<string, unknown>, pdfB64 })
       setOriginalCvData(editedCvData)
       setIsDirty(false)
+      setHasUnsavedDraft(true)   // local-only edit — not persisted until handleSaveDraft
       setIsEditMode(false)   // return to PDF view so updated score is front-and-center
     } catch { /* keep dirty state — user can retry */ } finally {
       setIsSaving(false)
       setIsScoreLoading(false)
     }
   }, [editedCvData, isSaving, job.id, selectedTemplate])
+
+  const handleSaveDraft = useCallback(async () => {
+    if (!cvState || isSavingDraft) return
+    setIsSavingDraft(true)
+    try {
+      await saveCv(job.id, cvState.cvData, matchScore as unknown as Record<string, unknown> | null)
+      setHasUnsavedDraft(false)
+    } catch { /* keep hasUnsavedDraft — user can retry */ } finally {
+      setIsSavingDraft(false)
+    }
+  }, [cvState, isSavingDraft, job.id, matchScore])
 
   const handleSelectTemplate = useCallback(async (templateId: string) => {
     setSelectedTemplate(templateId)
@@ -570,6 +570,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
     setCopilotError('')
     setCopilotFeedback(null)
     try {
+      await ensureFreshToken()
       const res = await fetch('/api/resumes/copilot', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -614,6 +615,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
       setEditedCvData(snapshot)
       setOriginalCvData(snapshot)
       setIsDirty(false)
+      setHasUnsavedDraft(true)   // Copilot edits are draft-only — backend no longer auto-persists them
       copilotPromptRef.current = ''
       setCopilotPrompt('')
       setCopilotFeedback(null)
@@ -646,6 +648,9 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
       setChatHistory(last.chatHistory)
       setIsDirty(false)
       setCopilotFeedback(null)
+      // Undoing back past the first Copilot edit restores the pre-edit
+      // baseline (what's actually persisted) — nothing left to save.
+      setHasUnsavedDraft(prev.length > 1)
       return prev.slice(0, -1)
     })
   }, [])
@@ -710,10 +715,10 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
           <JobInfoCard job={job} />
 
           {/* B2C — match score + template selector (preview phase only) */}
-          {phase === 'preview' && simulatedMatchScore && (
+          {phase === 'preview' && matchScore && (
             <>
               <MatchScorePanel
-                score={simulatedMatchScore}
+                score={matchScore}
                 isLoading={isLoading || isScoreLoading}
                 baselineScore={job.score}
               />
@@ -724,6 +729,35 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
                   onSelect={handleSelectTemplate}
                   isLoading={isLoading}
                 />
+              )}
+
+              {hasUnsavedDraft && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  gap: 10, marginTop: 4, marginBottom: 12,
+                  padding: '8px 12px', borderRadius: 10,
+                  border: `1px solid ${TOKENS.color.line}`,
+                  background: TOKENS.color.primarySoft,
+                }}>
+                  <span style={{ fontSize: 11.5, color: TOKENS.color.ink2 }}>
+                    Unsaved draft changes — closing without saving reverts to your base profile CV.
+                  </span>
+                  <button
+                    onClick={handleSaveDraft}
+                    disabled={isSavingDraft}
+                    style={{
+                      flexShrink: 0,
+                      fontSize: 11.5, fontWeight: 700,
+                      color: '#fff', background: TOKENS.color.primary,
+                      border: 'none', borderRadius: 8,
+                      padding: '6px 12px',
+                      cursor: isSavingDraft ? 'default' : 'pointer',
+                      opacity: isSavingDraft ? 0.6 : 1,
+                    }}
+                  >
+                    {isSavingDraft ? 'Saving…' : 'Save Changes to Base Profile'}
+                  </button>
+                </div>
               )}
             </>
           )}

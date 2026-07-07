@@ -165,9 +165,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     // ── Layer 3: global API error interceptor ───────────────────────────────
-    // Wires up api.ts so any 401 / 503 from the backend triggers an immediate
-    // hard-evict, regardless of which component made the request.
-    setAuthErrorHandler(() => { void _hardEvict() })
+    // A 401 no longer evicts blindly: requests racing a token refresh (or the
+    // USER_UPDATED window after updateUserMeta) can 401 while the session is
+    // perfectly valid. Confirm with the Supabase SDK first — evict only when
+    // the session is actually gone; otherwise refresh the auth header and let
+    // the caller retry.
+    const sb = supabase   // narrowed non-null reference for the async closure
+    setAuthErrorHandler(() => {
+      void (async () => {
+        try {
+          const { data } = await sb.auth.getSession()
+          if (data.session) {
+            setAuthToken(data.session.access_token)   // transient 401 — header was stale
+            return
+          }
+        } catch { /* fall through to evict */ }
+        await _hardEvict()
+      })()
+    })
 
     // ── Layer 2: async session validation ───────────────────────────────────
     // The Supabase SDK restores any session persisted in localStorage.
@@ -190,13 +205,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Keep in sync with sign-in, sign-out, and silent token-refresh events.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, s) => {
+      (event, s) => {
         // Guard onAuthStateChange too: a SIGNED_IN event for a mock user
         // (e.g. from a cached refresh token) should never reach the app.
         if (s && _isSuspectSession(s)) {
           void _hardEvict()
           return
         }
+        // CRITICAL: only an explicit SIGNED_OUT may null the session.
+        // Supabase can emit transiently-null sessions around USER_UPDATED /
+        // TOKEN_REFRESHED (e.g. while updateUser() holds the auth lock during
+        // the onboarding → dashboard transition). Blindly applying that null
+        // logged the user out: user became null for one render, AuthGuard's
+        // effect fired router.push('/login'), and the session was dropped.
+        if (!s && event !== 'SIGNED_OUT') return
         _applySession(s)
       },
     )
@@ -273,8 +295,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ── User metadata update ───────────────────────────────────────────────────
   const updateUserMeta = useCallback(async (data: Record<string, unknown>) => {
     if (!supabase) return
-    const { error } = await supabase.auth.updateUser({ data })
+    const { data: updated, error } = await supabase.auth.updateUser({ data })
     if (error) throw error
+    // Eagerly reflect the new metadata in local state so gated UI (e.g. the
+    // profile_completed check) updates in the same tick — no dependence on
+    // the USER_UPDATED event timing, no flash after router.push.
+    if (updated.user) setUser(updated.user)
   }, [])
 
   const signInWithGoogle = useCallback(async (redirectTo?: string) => {

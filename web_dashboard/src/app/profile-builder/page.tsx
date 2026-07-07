@@ -2,8 +2,12 @@
 import { useCallback, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import AuthGuard from '@/components/AuthGuard'
-import { Header } from '@/components/Header'
-import { uploadCvFiles } from '@/lib/api'
+import { OnboardingHeader } from '@/components/OnboardingHeader'
+import { useAuth } from '@/contexts/AuthContext'
+import { useOnboarding } from '@/contexts/OnboardingContext'
+import { resolveDisplayName } from '@/lib/nameUtils'
+import { fetchRolePreferences, uploadCvFiles } from '@/lib/api'
+import { armArielWelcome } from '@/lib/onboardingFlags'
 import { TOKENS } from '@/lib/tokens'
 
 // ── Upload states ──────────────────────────────────────────────────────────
@@ -102,7 +106,7 @@ function UploadingState() {
           Uploading and analyzing…
         </p>
         <p className="text-[13px] text-slate-400">
-          Claude is parsing your experience, skills, and education
+          Our AI is analyzing your experience, skills, and education…
         </p>
       </div>
     </div>
@@ -127,7 +131,7 @@ function DoneState({ skillCount, expCount }: { skillCount: number; expCount: num
         <p className="text-[15px] font-semibold text-slate-800">Profile imported!</p>
         <p className="text-[13px] text-slate-400">
           Found {expCount} role{expCount !== 1 ? 's' : ''} and {skillCount} skill{skillCount !== 1 ? 's' : ''}.
-          Redirecting to your matches…
+          Taking you to your dashboard…
         </p>
       </div>
     </div>
@@ -138,6 +142,8 @@ function DoneState({ skillCount, expCount }: { skillCount: number; expCount: num
 
 function ProfileBuilderContent() {
   const router = useRouter()
+  const { user, updateUserMeta } = useAuth()
+  const { set: setOnboarding }   = useOnboarding()
   const [state,      setState]      = useState<UploadState>('idle')
   const [errorMsg,   setErrorMsg]   = useState('')
   const [skillCount, setSkillCount] = useState(0)
@@ -153,15 +159,44 @@ function ProfileBuilderContent() {
       setSkillCount(skills)
       setExpCount(exps)
       setState('done')
-      setTimeout(() => router.push('/discover'), 1800)
+
+      // ── Onboarding completion handoff ────────────────────────────────────
+      // 1. Seed the greeting data Ariel personalises her welcome with —
+      //    including the saved role/seniority preferences (live fetch).
+      // 2. Mark the profile complete (unlocks Ariel globally) BEFORE routing
+      //    so the dashboard renders in the completed state with no flash.
+      // 3. Arm the one-shot auto-open flag, then SOFT-navigate with
+      //    router.push — no window.location.assign (the hard reload caused
+      //    ChunkLoadError and wiped local React state).
+      const meta  = user?.user_metadata as Record<string, unknown> | null
+      const prefs = await fetchRolePreferences().catch(() => ({ roles: [] }))
+      setOnboarding({
+        fullName:    resolveDisplayName(user?.email, meta),
+        careerStage: typeof meta?.career_stage === 'string' ? meta.career_stage : '',
+        roles:       prefs.roles,
+      })
+      try { await updateUserMeta({ profile_completed: true }) } catch { /* backfilled by sync-user */ }
+      armArielWelcome()
+      setTimeout(() => router.push('/?tab=overview'), 1400)
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Upload failed. Please try again.')
       setState('error')
     }
-  }, [router])
+  }, [user, updateUserMeta, setOnboarding, router])
 
   return (
     <div className="flex flex-col items-center justify-center flex-1 px-4 py-12">
+      {/* Back to the onboarding steps */}
+      <div className="w-full max-w-lg mx-auto mb-4">
+        <button
+          onClick={() => router.push('/onboarding')}
+          disabled={state === 'uploading'}
+          className="text-[13px] text-slate-400 hover:text-slate-700 flex items-center gap-1 transition disabled:opacity-40"
+        >
+          ← Back
+        </button>
+      </div>
+
       {/* Header copy */}
       <div className="text-center mb-10 space-y-2 max-w-md">
         <h1 className="text-[28px] font-bold text-slate-900 tracking-tight">
@@ -212,7 +247,7 @@ export default function ProfileBuilderPage() {
   return (
     <AuthGuard>
       <div className="flex flex-col h-screen bg-[#FBFBFA] overflow-hidden">
-        <Header />
+        <OnboardingHeader />
         <main className="flex flex-1 overflow-hidden min-h-0">
           <div className="flex-1 min-w-0 overflow-y-auto">
             <ProfileBuilderContent />
