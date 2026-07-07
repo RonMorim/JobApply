@@ -491,6 +491,52 @@ class TestComputeProfileTrustScore:
         plus = svc.compute_profile_trust_score(uid_plus, profile=_complete_profile())
         assert plus > base   # extra volume raised breadth, no penalty
 
+    # -----------------------------------------------------------------------
+    # compute_profile_familiarity — the pillar breakdown feeding the UI
+    # -----------------------------------------------------------------------
+
+    def test_familiarity_breakdown_pillars_sum_to_overall(self):
+        """
+        The breakdown method returns the same overall value the scalar method
+        does, and its three pillars sum to it (within rounding) and respect
+        their individual maxes (40 / 40 / 20).
+        """
+        uid = "test-breakdown-" + _uid()
+        with _TEST_ENGINE.begin() as conn:
+            for i in range(12):
+                _insert_entity(conn, user_id=uid, entity_type="skill",
+                               name=f"S{i}", confidence_score=50.0,
+                               verification_status="verified",
+                               proficiency_level=("expert" if i < 3 else None))
+            _insert_entity(conn, user_id=uid, entity_type="experience",
+                           name="Lead", confidence_score=50.0,
+                           verification_status="verified")
+            _insert_entity(conn, user_id=uid, entity_type="domain",
+                           name="FinTech", confidence_score=50.0,
+                           verification_status="unverified")
+
+        svc = self._service()
+        br = svc.compute_profile_familiarity(uid, profile=_complete_profile())
+
+        assert set(br.keys()) == {"overall", "breadth", "depth", "context"}
+        assert 0.0 <= br["breadth"] <= 40.0
+        assert 0.0 <= br["depth"]   <= 40.0
+        assert 0.0 <= br["context"] <= 20.0
+        # Pillars sum to the overall (allow 0.1 for independent rounding).
+        assert br["breadth"] + br["depth"] + br["context"] == pytest.approx(
+            br["overall"], abs=0.1
+        )
+        # And the scalar method agrees with the breakdown's overall.
+        scalar = svc.compute_profile_trust_score(uid, profile=_complete_profile())
+        assert scalar == br["overall"]
+
+    def test_familiarity_breakdown_empty_profile_all_zero(self):
+        """A user with no entities gets an all-zero breakdown, never a crash."""
+        svc = self._service()
+        br = svc.compute_profile_familiarity("empty-" + _uid(),
+                                             profile=_complete_profile())
+        assert br == {"overall": 0.0, "breadth": 0.0, "depth": 0.0, "context": 0.0}
+
 
 # ---------------------------------------------------------------------------
 # HTTP integration tests: GET /api/profile/{user_id}/trust-score
@@ -583,6 +629,18 @@ class TestTrustScoreEndpoint:
         assert "category_averages" in body
         assert "entities" in body
         assert "fetched_at" in body
+
+        # ── score_breakdown: the three Holistic Familiarity pillars (Phase 32).
+        assert "score_breakdown" in body
+        sb = body["score_breakdown"]
+        assert set(sb.keys()) == {"breadth", "depth", "context"}
+        assert 0.0 <= sb["breadth"] <= 40.0
+        assert 0.0 <= sb["depth"]   <= 40.0
+        assert 0.0 <= sb["context"] <= 20.0
+        # Pillars reconstruct the overall (within rounding).
+        assert sb["breadth"] + sb["depth"] + sb["context"] == pytest.approx(
+            body["overall_trust_score"], abs=0.2
+        )
 
         # ── overall_trust_score: Phase 31 Holistic Familiarity.
         #    A thin, 2-entity profile (1 verified + 1 unverified skill, one

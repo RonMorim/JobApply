@@ -1286,7 +1286,38 @@ class ProfileUpdateService:
         -------
         float   Familiarity score in [0.0, 100.0], 1 decimal place.
                 Monotonically non-decreasing as the system learns more.
+
+        See also
+        --------
+        compute_profile_familiarity : returns the same overall value plus its
+        three-pillar breakdown (breadth / depth / context) for the UI.
         """
+        return self.compute_profile_familiarity(user_id, profile)["overall"]
+
+    def compute_profile_familiarity(
+        self, user_id: str, profile: Optional[dict] = None
+    ) -> dict:
+        """
+        Compute the Holistic Familiarity score AND its three-pillar breakdown.
+
+        This is the source of truth for compute_profile_trust_score (which just
+        returns ``["overall"]``) and for the profile/trust-score endpoint, which
+        surfaces the pillars so the UI can show WHY the score is what it is
+        instead of a single black-box number.
+
+        Returns
+        -------
+        dict with 1-decimal floats:
+            {
+              "overall": 0-100,   # breadth + depth + context, clamped
+              "breadth": 0-BREADTH_MAX,   # volume of known entities
+              "depth":   0-DEPTH_MAX,     # graded verification + honest levels
+              "context": 0-20,            # coverage + identity + engagement
+            }
+        An empty profile returns all-zero pillars.
+        """
+        empty = {"overall": 0.0, "breadth": 0.0, "depth": 0.0, "context": 0.0}
+
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text("""
@@ -1298,7 +1329,7 @@ class ProfileUpdateService:
             ).fetchall()
 
         if not rows:
-            return 0.0
+            return dict(empty)
 
         # ── Tally the counts each pillar consumes ────────────────────────────
         n_entities        = len(rows)              # breadth volume (every entity)
@@ -1354,8 +1385,13 @@ class ProfileUpdateService:
         context = coverage + identity + proficiency_engagement
 
         # ── Sum the pillars, clamp, round ────────────────────────────────────
-        total = breadth + depth + context
-        return round(min(max(total, 0.0), 100.0), 1)
+        total = min(max(breadth + depth + context, 0.0), 100.0)
+        return {
+            "overall": round(total, 1),
+            "breadth": round(breadth, 1),
+            "depth":   round(depth, 1),
+            "context": round(context, 1),
+        }
 
     # ─────────────────────────────────────────────────────────────────────────
     # Chat-driven entity UPDATE (proficiency / confidence correction)

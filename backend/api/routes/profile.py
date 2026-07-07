@@ -805,18 +805,29 @@ async def get_trust_score(
             "experience": _avg(category_scores["experience"]),
         }
 
-        # ── 4. Weighted overall score via ProfileUpdateService ────────────────
+        # ── 4. Holistic Familiarity score + three-pillar breakdown ────────────
         svc = ProfileUpdateService(ENGINE)
-        overall_trust_score = svc.compute_profile_trust_score(user_id)
+        familiarity = svc.compute_profile_familiarity(user_id)
+        overall_trust_score = familiarity["overall"]
 
         logger.info(
-            "[profile/trust-score] user=%s  entities=%d  overall=%.1f",
+            "[profile/trust-score] user=%s  entities=%d  overall=%.1f "
+            "(breadth=%.1f depth=%.1f context=%.1f)",
             user_id, len(result_entities), overall_trust_score,
+            familiarity["breadth"], familiarity["depth"], familiarity["context"],
         )
 
         return {
             "user_id":             user_id,
             "overall_trust_score": overall_trust_score,
+            # Three-pillar breakdown of the Holistic Familiarity score so the UI
+            # can show WHY the score is what it is (Phase 32). Maxes: breadth 40,
+            # depth 40, context 20.
+            "score_breakdown": {
+                "breadth": familiarity["breadth"],
+                "depth":   familiarity["depth"],
+                "context": familiarity["context"],
+            },
             "entities":            result_entities,
             "category_averages":   category_averages,
             "fetched_at":          now_iso,
