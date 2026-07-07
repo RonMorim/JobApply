@@ -450,7 +450,10 @@ const PILLAR_META = [
 ]
 
 // One elegant progress rail per pillar: icon + label + value/max + fill + copy.
-function PillarRail({ label, value, max, color, Icon, caption, hint }: {
+// `loading` (the whole card is still fetching) drives the skeleton — NOT the
+// presence of `value`. That distinction is the Phase 33 fix: a payload that
+// arrives without a breakdown shows a muted "—", never an eternal skeleton.
+function PillarRail({ label, value, max, color, Icon, caption, hint, loading }: {
   label:   string
   value:   number | null
   max:     number
@@ -458,6 +461,7 @@ function PillarRail({ label, value, max, color, Icon, caption, hint }: {
   Icon:    ({ s }: { s?: number }) => JSX.Element
   caption: string
   hint:    string
+  loading: boolean
 }) {
   const pct = value !== null ? Math.min(100, Math.max(0, (value / max) * 100)) : 0
   return (
@@ -467,8 +471,10 @@ function PillarRail({ label, value, max, color, Icon, caption, hint }: {
           <span className="inline-flex" style={{ color }}><Icon s={12} /></span>
           {label}
         </span>
-        {value === null ? (
+        {loading ? (
           <Skeleton className="h-3 w-8 rounded" />
+        ) : value === null ? (
+          <span className="text-[11px] font-medium text-slate-300">—</span>
         ) : (
           <span className="text-[11px] font-bold tabular-nums text-slate-900">
             {Math.round(value)}
@@ -501,6 +507,10 @@ function ConfidenceScoreCard({ score, breakdown, onImprove }: {
 }) {
   const pct  = score !== null ? Math.round(Math.min(100, Math.max(0, score))) : null
   const tier = pct !== null ? confidenceTier(pct) : null
+  // Loading is defined by the OVERALL score not yet being in — not by whether
+  // the breakdown happens to be present. This keeps the pillars from being
+  // trapped in a skeleton if a response ever omits score_breakdown.
+  const loading = score === null
 
   return (
     <section
@@ -572,6 +582,7 @@ function ConfidenceScoreCard({ score, breakdown, onImprove }: {
             Icon={p.Icon}
             caption={p.caption}
             hint={p.hint}
+            loading={loading}
           />
         ))}
       </div>
