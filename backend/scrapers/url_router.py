@@ -1,7 +1,7 @@
 """
 URL Router — maps a job posting URL to the correct scraper.
 
-Two public entry points:
+Public entry points:
 
 1.  scrape_jd_text(url: str) -> str
     Fetches and returns the full JD text for a single job URL.
@@ -14,6 +14,14 @@ Two public entry points:
 2.  get_scraper_for_url(url: str) -> Optional[BaseScraper]
     Returns a BaseScraper instance capable of calling fetch_jobs() for
     the host found in `url`.  Returns None for unknown hosts.
+
+3.  scrape_linkedin_job(url: str) -> ScrapedJob
+    Single-request LinkedIn fetch returning JD text plus best-effort
+    title/company (from the same JSON-LD block used for the description).
+    Raises LinkedInAuthWallError / LinkedInRedirectError /
+    LinkedInChallengeError / ValueError — callers (e.g. POST /api/jobs/analyze)
+    should catch these explicitly to surface a precise, human-readable error
+    instead of a generic scrape failure.
 
 Domain routing table
 --------------------
@@ -241,19 +249,17 @@ def _extract_jd_from_soup(soup: BeautifulSoup, url: str) -> Optional[str]:
 
 # ── LinkedIn public scraper ───────────────────────────────────────────────────
 
-def _linkedin_scrape(url: str) -> str:
+def _linkedin_fetch_soup(url: str) -> BeautifulSoup:
     """
-    Fetch a LinkedIn /jobs/view/ page with unauthenticated requests.
-
-    No cookie, no session, no browser.  Public job-view pages embed a
-    JSON-LD block in their static HTML that contains the full JD text.
+    Fetch a LinkedIn /jobs/view/ page with unauthenticated requests and return
+    the parsed HTML. Shared by _linkedin_scrape() and scrape_linkedin_job() so
+    the network/redirect/challenge handling lives in exactly one place.
 
     Raises
     ------
     LinkedInRedirectError   Redirected to a challenge/checkpoint URL.
     LinkedInChallengeError  2xx but body contains bot-check signals.
-    LinkedInAuthWallError   Page is a login wall.
-    ValueError              No extractable content or request failure.
+    ValueError              Request failed outright (network error).
     """
     _linkedin_rate_wait()
 
@@ -291,7 +297,24 @@ def _linkedin_scrape(url: str) -> str:
             raw_html=raw_html,
         )
 
-    soup = BeautifulSoup(raw_html, "html.parser")
+    return BeautifulSoup(raw_html, "html.parser")
+
+
+def _linkedin_scrape(url: str) -> str:
+    """
+    Fetch a LinkedIn /jobs/view/ page with unauthenticated requests.
+
+    No cookie, no session, no browser.  Public job-view pages embed a
+    JSON-LD block in their static HTML that contains the full JD text.
+
+    Raises
+    ------
+    LinkedInRedirectError   Redirected to a challenge/checkpoint URL.
+    LinkedInChallengeError  2xx but body contains bot-check signals.
+    LinkedInAuthWallError   Page is a login wall.
+    ValueError              No extractable content or request failure.
+    """
+    soup = _linkedin_fetch_soup(url)
     text = _extract_jd_from_soup(soup, url)
     if text:
         return text
@@ -302,10 +325,66 @@ def _linkedin_scrape(url: str) -> str:
         )
 
     raise ValueError(
-        f"LinkedIn scraper: no extractable JD on {url} "
-        f"(body={len(raw_html)} chars, status={resp.status_code}). "
+        f"LinkedIn scraper: no extractable JD on {url}. "
         "Posting may be expired or removed."
     )
+
+
+def _extract_linkedin_meta(soup: BeautifulSoup) -> tuple[str, str]:
+    """
+    Best-effort (title, company) from a LinkedIn JobPosting JSON-LD block —
+    the same <script type="application/ld+json"> element _extract_jd_from_soup()
+    already reads for the description field.  Returns ("", "") if absent.
+    """
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        candidates = data if isinstance(data, list) else [data]
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            org = item.get("hiringOrganization")
+            company = ""
+            if isinstance(org, dict):
+                company = str(org.get("name") or "").strip()
+            if title or company:
+                return title, company
+    return "", ""
+
+
+def scrape_linkedin_job(url: str):
+    """
+    Fetch a LinkedIn job posting in a single request and return its JD text
+    plus best-effort title/company metadata, sourced from the same JSON-LD
+    block — avoids a second round-trip to LinkedIn just to get a title.
+
+    Raises
+    ------
+    LinkedInAuthWallError   Page is a login wall — caller should surface a
+                            precise "login wall" error, not a generic 422.
+    LinkedInRedirectError   Redirected to a challenge/checkpoint URL.
+    LinkedInChallengeError  2xx but body contains bot-check signals.
+    ValueError              No extractable content or request failure.
+    """
+    from backend.url_scraper import ScrapedJob  # local import avoids a cycle at module load
+
+    soup = _linkedin_fetch_soup(url)
+    text = _extract_jd_from_soup(soup, url)
+    if not text:
+        if _is_loginwall(soup.get_text(" ", strip=True)):
+            raise LinkedInAuthWallError(
+                f"LinkedIn login wall on {url}. Page requires authentication."
+            )
+        raise ValueError(
+            f"LinkedIn scraper: no extractable JD on {url}. "
+            "Posting may be expired or removed."
+        )
+
+    title, company = _extract_linkedin_meta(soup)
+    return ScrapedJob(title=title or "LinkedIn Job Posting", company=company, raw_text=text)
 
 
 # ── Generic scraper ───────────────────────────────────────────────────────────
