@@ -7,14 +7,21 @@ Nothing may be asserted about the candidate that is not present here.
 from __future__ import annotations
 
 USER_PROFILE: dict = {
+    # "personal" is legacy single-user scaffolding (see the multi-tenant note
+    # near get_profile() below) — placeholders only. Real values are loaded
+    # at import time from backend/personal_overrides.json (gitignored, never
+    # committed) via _load_personal_overrides()/_CORE_PERSONAL_FIELDS below,
+    # for whichever of name/dob/email/phone/linkedin/location you want to
+    # override locally. See backend/personal_overrides.json.example for the
+    # expected shape.
     "personal": {
-        "name":     "Ron Morim",
-        "dob":      "1998-08-20",
+        "name":     "Your Name",
+        "dob":      "",
         # Contact — these are the ONLY authoritative values.
         # pdf_builder reads directly from here; the LLM never generates contact info.
-        "email":    "ronmorim98@gmail.com",
+        "email":    "",
         "phone":    "",
-        "linkedin": "linkedin.com/in/ronmorim",
+        "linkedin": "",
         "location": "",
     },
 
@@ -572,17 +579,31 @@ TRAIT_CLUSTERS: dict[str, dict] = {
 
 # ── Personal field persistence ────────────────────────────────────────────────
 #
-# Core contact fields (phone, location) start as empty strings in USER_PROFILE.
-# When the user provides them via the missing-data wizard they are written here
-# and immediately patched into the in-memory USER_PROFILE so every subsequent
-# call (pdf_builder, build_full_text, core checks) sees the updated values.
+# All "personal" fields (name/dob/email/phone/linkedin/location) start as
+# placeholders in USER_PROFILE above. At import time, _load_personal_overrides()
+# reads backend/personal_overrides.json (gitignored — never committed) and
+# patches in whatever real values are present locally; see
+# backend/personal_overrides.json.example for the expected shape.
+#
+# Separately, core contact fields (phone, location only) can also be written
+# at runtime via the missing-data wizard, which calls save_personal_field()
+# below — that write path is unchanged by the broader load above.
 
 import json as _json
 from pathlib import Path as _Path
 
 _PERSONAL_OVERRIDES_PATH = _Path(__file__).resolve().parents[1] / "personal_overrides.json"
 
-# Allowed keys — never write arbitrary fields to USER_PROFILE["personal"]
+# Fields this file will load from personal_overrides.json at import time, to
+# seed the placeholder USER_PROFILE["personal"] dict above with real local
+# values without ever committing them to source. Broader than
+# _CORE_PERSONAL_FIELDS below on purpose — this only runs once at process
+# start from a gitignored local file, it isn't a runtime write path.
+_LOADABLE_PERSONAL_FIELDS = frozenset({"name", "dob", "email", "phone", "linkedin", "location"})
+
+# Fields writable at runtime via save_personal_field() (e.g. the missing-data
+# wizard in resumes.py) — intentionally narrower than the load set above so
+# this phase doesn't change what that existing write path is allowed to touch.
 _CORE_PERSONAL_FIELDS = frozenset({"phone", "location"})
 
 
@@ -594,7 +615,7 @@ def _load_personal_overrides() -> None:
         overrides = _json.loads(_PERSONAL_OVERRIDES_PATH.read_text(encoding="utf-8"))
         if isinstance(overrides, dict):
             for k, v in overrides.items():
-                if k in _CORE_PERSONAL_FIELDS:
+                if k in _LOADABLE_PERSONAL_FIELDS:
                     USER_PROFILE["personal"][k] = v
     except Exception:
         pass

@@ -70,7 +70,7 @@ from pydantic import BaseModel, Field, ValidationError
 logger = logging.getLogger(__name__)
 
 # ── Candidate anchor ──────────────────────────────────────────────────────────
-# Ron Morim's current seniority band — used as the reference point for all
+# The candidate's current seniority band — used as the reference point for all
 # seniority alignment calculations.  Update when the candidate's target level
 # changes (e.g., post-promotion pivot to senior IC or people-manager track).
 _CANDIDATE_SENIORITY_LEVEL = 4   # "manager" = mid-to-senior PM, see _SENIORITY_BANDS

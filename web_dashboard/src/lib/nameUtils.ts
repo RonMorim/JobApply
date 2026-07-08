@@ -9,26 +9,18 @@
  * ──────────────────────────────────────────
  *  1. user_metadata.full_name  (set automatically by Google / GitHub OAuth)
  *  2. user_metadata.name       (alternative metadata key used by some providers)
- *  3. KNOWN_EMAIL_NAMES        (explicit override for users who signed up via
- *                               email/password before their profile was enriched)
- *  4. email prefix             (last-resort fallback — cosmetic only; never shown
+ *  3. email prefix             (last-resort fallback — cosmetic only; never shown
  *                               in greetings because it may contain digits/numbers)
  *
  * Updating a user's real name
  * ───────────────────────────
- * The cleanest permanent fix is to write full_name into the user's Supabase
- * metadata once (e.g. via the profile-builder interview).  Until that happens
- * the KNOWN_EMAIL_NAMES map below provides an explicit override.  Remove the
- * entry once user_metadata.full_name is populated for that account.
+ * Write full_name into the user's Supabase metadata (e.g. via the
+ * profile-builder interview) so tier 1 resolves it. There is intentionally no
+ * hardcoded email→name override in this file — this module ships to every
+ * browser, so it must never embed real names/emails. If a per-account
+ * override is ever needed again, source it from an authenticated backend
+ * endpoint, not from browser-bundled code.
  */
-
-// ── Known email → full name overrides ────────────────────────────────────────
-// Used when user_metadata has not been populated yet (email/password sign-up
-// without a subsequent profile update).  Keys must be lower-cased.
-
-const KNOWN_EMAIL_NAMES: Record<string, string> = {
-  'ronmorim98@gmail.com': 'Ron Morim',
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -48,11 +40,7 @@ export function resolveDisplayName(
   const metaName = ((metadata?.full_name ?? metadata?.name) ?? '') as string
   if (metaName.trim()) return metaName.trim()
 
-  // 2. Explicit override for known accounts
-  const key = (email ?? '').toLowerCase()
-  if (key && KNOWN_EMAIL_NAMES[key]) return KNOWN_EMAIL_NAMES[key]
-
-  // 3. Raw email prefix — cosmetic fallback only
+  // 2. Raw email prefix — cosmetic fallback only
   if (email) return email.split('@')[0]
 
   return ''
@@ -61,10 +49,10 @@ export function resolveDisplayName(
 /**
  * Returns two-character initials from a resolved display name.
  *
- * "Ron Morim"   → "RM"  (first letter of first word + first letter of last word)
- * "Ron"         → "RO"  (single word — first two characters)
- * "ronmorim98"  → "RO"  (single token — first two characters)
- * ""            → "?"   (unknown user)
+ * "Jamie Smith"   → "JS"  (first letter of first word + first letter of last word)
+ * "Jamie"         → "JA"  (single word — first two characters)
+ * "jamiesmith98"  → "JA"  (single token — first two characters)
+ * ""              → "?"   (unknown user)
  */
 export function getInitials(displayName: string): string {
   const trimmed = displayName.trim()
@@ -72,11 +60,11 @@ export function getInitials(displayName: string): string {
 
   const words = trimmed.split(/\s+/).filter(Boolean)
   if (words.length >= 2) {
-    // "Ron Morim" → words[0][0]="R", words[last][0]="M" → "RM"
+    // "Jamie Smith" → words[0][0]="J", words[last][0]="S" → "JS"
     return (words[0][0] + words[words.length - 1][0]).toUpperCase()
   }
 
-  // Single word (includes email-prefix style like "ronmorim98")
+  // Single word (includes email-prefix style like "jamiesmith98")
   return trimmed.slice(0, 2).toUpperCase()
 }
 
@@ -86,12 +74,12 @@ export function getInitials(displayName: string): string {
  * Specifically, this function returns an empty string when the first token of
  * the display name contains a digit — which indicates an email prefix rather
  * than a real name.  Callers must render the greeting without a name in that
- * case (e.g. "Good morning" rather than "Good morning, ronmorim98").
+ * case (e.g. "Good morning" rather than "Good morning, jamiesmith98").
  *
- * "Ron Morim"   → "Ron"
- * "Ron"         → "Ron"
- * "ronmorim98"  → ""    (contains digit — omit from greeting)
- * ""            → ""
+ * "Jamie Smith"   → "Jamie"
+ * "Jamie"         → "Jamie"
+ * "jamiesmith98"  → ""    (contains digit — omit from greeting)
+ * ""              → ""
  */
 export function getGreetingName(displayName: string): string {
   if (!displayName.trim()) return ''

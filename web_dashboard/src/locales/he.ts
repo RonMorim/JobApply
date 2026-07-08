@@ -106,7 +106,7 @@ export const he = {
       redirecting:           'מפנה...',
       or:                    'או',
       full_name_label:       'שם מלא',
-      full_name_placeholder: 'לדוגמה: רון מורים',
+      full_name_placeholder: 'לדוגמה: ישראל ישראלי',
       email_label:           'אימייל',
       password_label:        'סיסמה',
       show_password:         'הצג סיסמה',

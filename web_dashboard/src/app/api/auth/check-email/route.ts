@@ -3,7 +3,16 @@ import { createClient }              from '@supabase/supabase-js'
 
 const LOG = '[JobApply-Debug][check-email]'
 
-const WHITELIST = new Set(['ronmorim98@gmail.com'])
+// Server-only — CHECK_EMAIL_ALLOWED_EMAILS is read here (a Route Handler,
+// which runs on the server) and must NEVER be renamed to NEXT_PUBLIC_*.
+// Comma-separated list of emails that always report as "exists" without a
+// Supabase lookup. See web_dashboard/.env.example.
+const WHITELIST = new Set(
+  (process.env.CHECK_EMAIL_ALLOWED_EMAILS ?? '')
+    .split(',')
+    .map(e => e.trim().toLowerCase())
+    .filter(Boolean)
+)
 
 function getAdminSupabase() {
   const url     = process.env.NEXT_PUBLIC_SUPABASE_URL  ?? ''
@@ -24,10 +33,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON.' }, { status: 400 })
   }
 
-  console.log(`${LOG} checking "${email}"`)
+  // Note: intentionally not logging the raw email address here — this is a
+  // user-identifying value and this endpoint is unauthenticated.
 
   if (WHITELIST.has(email)) {
-    console.log(`${LOG} "${email}" → exists (whitelist)`)
     return NextResponse.json({ exists: true })
   }
 
@@ -44,10 +53,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ exists: false })
     }
     const found = data.users.some(u => u.email?.toLowerCase() === email)
-    console.log(`${LOG} "${email}" → exists: ${found} (scanned ${data.users.length} users)`)
     return NextResponse.json({ exists: found })
-  } catch (err) {
-    console.error(`${LOG} unexpected error:`, err, '— failing open')
+  } catch {
+    console.error(`${LOG} unexpected error — failing open`)
     return NextResponse.json({ exists: false })
   }
 }

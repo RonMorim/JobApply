@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-import os
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -48,6 +47,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.api.deps import webhook_rate_limit
+from backend.config import EMAIL_WEBHOOK_SECRET
 from backend.services.db import ENGINE, ApplicationRow, KVRow
 from backend.services.email_parser import parse_recruiter_email
 from backend.services.llm_validation import sanitize_text
@@ -58,8 +58,9 @@ logger = logging.getLogger(__name__)
 # ── Shared-secret verification ────────────────────────────────────────────────
 # The email provider (forwarding worker / inbound-parse service) is configured
 # to send this token in the X-Webhook-Secret header on every delivery.
+# Value is read once, centrally, in backend/config.py.
 
-_WEBHOOK_SECRET = os.getenv("EMAIL_WEBHOOK_SECRET", "")
+_WEBHOOK_SECRET = EMAIL_WEBHOOK_SECRET
 
 if not _WEBHOOK_SECRET:
     logger.warning(
