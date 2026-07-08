@@ -170,9 +170,16 @@ ARIEL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "update_skills",
         "description": (
-            "Add or remove skills from the user's skills list. "
-            "Call this when the user mentions technologies, tools, methodologies, "
-            "or soft skills they possess or explicitly says they do not have."
+            "Add, remove, OR update skills on the user's profile. Three "
+            "independent actions, any combination per call:\n"
+            "  • add    — new skills the user mentions they possess.\n"
+            "  • remove — skills that are wrong or irrelevant to this profile.\n"
+            "  • update — adjust an EXISTING skill's proficiency level and/or "
+            "confidence score in place (no delete + re-add). Use this whenever "
+            "the user clarifies how strong they actually are at a skill — "
+            "especially when they admit they are LESS experienced than the "
+            "profile shows (e.g. 'my Python is only beginner level'). Do NOT "
+            "remove-and-re-add for this: removing loses the skill's history."
         ),
         "input_schema": {
             "type": "object",
@@ -187,6 +194,44 @@ ARIEL_TOOLS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Skills to remove (exact match, case-insensitive).",
+                },
+                "update": {
+                    "type": "array",
+                    "description": "Existing skills whose proficiency/confidence should be "
+                                   "adjusted in place. One object per skill.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "skill": {
+                                "type": "string",
+                                "description": "Name of the EXISTING skill to update "
+                                               "(case-insensitive match against the profile).",
+                            },
+                            "proficiency_level": {
+                                "type": "string",
+                                "enum": ["beginner", "novice", "intermediate",
+                                         "proficient", "advanced", "expert"],
+                                "description": "The user's self-reported proficiency. When set "
+                                               "without an explicit score, the confidence is "
+                                               "anchored DOWN to this level's honest ceiling "
+                                               "(e.g. 'beginner' caps it at ~30) — a self-claim "
+                                               "never inflates the score.",
+                            },
+                            "suggested_confidence_modifier": {
+                                "type": "number",
+                                "description": "Signed delta to apply to the current confidence "
+                                               "score (e.g. -20 to lower it). Use when you want a "
+                                               "relative adjustment rather than a level anchor.",
+                            },
+                            "new_confidence": {
+                                "type": "number",
+                                "description": "Explicit new confidence score (0-100). Overrides "
+                                               "proficiency_level and suggested_confidence_modifier "
+                                               "when you have a precise target in mind.",
+                            },
+                        },
+                        "required": ["skill"],
+                    },
                 },
             },
             "required": [],
@@ -455,16 +500,19 @@ def _handle_update_skills(
     session:    Session,
 ) -> str:
     """
-    Add and/or remove skills from master_profile["skills"].
+    Add, remove, and/or update skills.
 
-    Additions are deduplicated (case-insensitive).
-    Removals are matched case-insensitively.
+    add/remove mutate master_profile["skills"] (additions deduplicated,
+    removals matched case-insensitively). update adjusts an existing skill's
+    proficiency/confidence on the Confidence Matrix entity in place, via
+    ProfileUpdateService.apply_chat_proficiency_update.
     """
     to_add    = [str(s).strip() for s in (tool_input.get("add")    or []) if str(s).strip()]
     to_remove = [str(s).strip() for s in (tool_input.get("remove") or []) if str(s).strip()]
+    to_update = [u for u in (tool_input.get("update") or []) if isinstance(u, dict) and u.get("skill")]
 
-    if not to_add and not to_remove:
-        return "No skills to add or remove were specified."
+    if not to_add and not to_remove and not to_update:
+        return "No skills to add, remove, or update were specified."
 
     try:
         row     = _get_or_create_row(user_id, session)
@@ -503,14 +551,48 @@ def _handle_update_skills(
         # false." A genuine contradiction is handled by ingest_negative_flag
         # via the STAR-probe path, not by this best-effort CRUD tool.
 
+        # ── UPDATE: adjust proficiency / confidence of existing entities ──────
+        # Runs against the Confidence Matrix (profile_entities), a separate
+        # store from master_profile["skills"] handled above. This is the path
+        # for "my Python is only beginner level" — lower the score in place.
+        updated, update_failures = [], []
+        svc = ProfileUpdateService(ENGINE)
+        for item in to_update:
+            skill_name = str(item.get("skill") or "").strip()
+            if not skill_name:
+                continue
+            result = svc.apply_chat_proficiency_update(
+                user_id,
+                skill_name,
+                entity_type="skill",
+                proficiency_level=item.get("proficiency_level"),
+                new_confidence=item.get("new_confidence"),
+                confidence_modifier=item.get("suggested_confidence_modifier"),
+            )
+            if result.get("status") == "updated":
+                updated.append(
+                    f"{result['name']} → {result['old_score']}→{result['new_score']}"
+                    + (f" ({result['proficiency_level']})" if result.get("proficiency_level") else "")
+                )
+            elif result.get("status") == "not_found":
+                update_failures.append(
+                    f"{skill_name} (no existing skill entity to update — add it first)"
+                )
+            else:
+                update_failures.append(f"{skill_name} (update error)")
+
         logger.info(
-            "[ariel_tools] update_skills user=%s +%d -%d (skipped %d)",
-            user_id, len(added), len(removed), len(skipped),
+            "[ariel_tools] update_skills user=%s +%d -%d ~%d (skipped %d, failed %d)",
+            user_id, len(added), len(removed), len(updated), len(skipped),
+            len(update_failures),
         )
         parts = []
         if added:   parts.append(f"Added: {', '.join(added)}")
         if removed: parts.append(f"Removed: {', '.join(removed)}")
+        if updated: parts.append(f"Updated: {', '.join(updated)}")
         if skipped: parts.append(f"Already present (skipped): {', '.join(skipped)}")
+        if update_failures:
+            parts.append(f"Could not update: {', '.join(update_failures)}")
         return " | ".join(parts) or "No changes made."
 
     except Exception as exc:

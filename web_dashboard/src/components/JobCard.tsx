@@ -490,8 +490,8 @@ function AnalysisUnavailable() {
       <div className="flex-1 min-w-0">
         <p className="text-[12.5px] font-semibold text-slate-700 mb-0.5">Manual analysis required</p>
         <p className="text-[12px] text-slate-500 leading-relaxed">
-          The scraper couldn&apos;t hydrate this job after {ENRICHMENT_MAX_FAILURES} attempts —
-          likely a bot-block or expired posting. Open the original listing to review manually.
+          The scraper couldn&apos;t hydrate this job after {ENRICHMENT_MAX_FAILURES} attempts.
+          This is likely a bot-block or expired posting. Open the original listing to review manually.
         </p>
       </div>
     </div>
@@ -507,7 +507,7 @@ function AnalysisAuthWall() {
       <div className="flex-1 min-w-0">
         <p className="text-[12.5px] font-semibold text-slate-700 mb-0.5">LinkedIn session expired</p>
         <p className="text-[12px] text-slate-500 leading-relaxed">
-          The scraper hit a LinkedIn login wall — the <code className="font-mono text-[11px]">li_at</code> cookie
+          The scraper hit a LinkedIn login wall. The <code className="font-mono text-[11px]">li_at</code> cookie
           needs refreshing. Update <code className="font-mono text-[11px]">LINKEDIN_LI_AT</code> in{' '}
           <code className="font-mono text-[11px]">backend/.env</code>, delete the browser profile, and restart
           the server. This job will be retried automatically.
@@ -616,7 +616,7 @@ function ArielInsightButton({
       const match  = entities.find(e =>
         e.name.toLowerCase().includes(needle) || needle.includes(e.name.toLowerCase())
       )
-      if (!match) throw new Error(`No entity found for "${skillName}" — upload CV to add it.`)
+      if (!match) throw new Error(`No entity found for "${skillName}". Upload CV to add it.`)
       if (match.confidence_score >= 70) throw new Error(`"${match.name}" already has high confidence (${match.confidence_score.toFixed(0)}).`)
 
       // 2. Start the probe
@@ -658,7 +658,7 @@ function ArielInsightButton({
           title={`Strengthen your "${skillName}" evidence with Ariel`}
         >
           {loading ? <SpinnerTiny s={11} /> : <span aria-hidden="true">⚡</span>}
-          Ariel Insight — {skillName}
+          Ariel Insight: {skillName}
         </button>
         {error && (
           <span className="text-[11px] text-amber-600">{error}</span>

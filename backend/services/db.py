@@ -370,6 +370,12 @@ class ProfileEntityRow(Base):
     # System_Orchestration: understands architecture; uses AI for boilerplate.
     # NULL until enough evidence is available to classify.
     skill_tier             = Column(String,  nullable=True)
+    # Self-reported proficiency level, set when the user states their level in
+    # chat (e.g. 'Beginner'/'Intermediate'/'Advanced'/'Expert'). Adjusted by
+    # ProfileUpdateService.apply_chat_proficiency_update — NULL until the user
+    # explicitly clarifies their level. Independent of skill_tier (which is
+    # derived from evidence AI-assistance, not from the user's stated level).
+    proficiency_level      = Column(String,  nullable=True)
     # Truth-based decoupled scores — populated by compute_decoupled_score().
     # architecture_confidence: score from portfolio / STAR / CV evidence.
     # syntax_confidence:       score from manual_assessment evidence only.
@@ -724,6 +730,15 @@ def _migrate_confidence_matrix(conn) -> None:
             conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS idx_er_user "
                 "ON evidence_records (user_id, source_type)"
+            ))
+
+        # ── Migration 009: add proficiency_level to profile_entities ──────────
+        pe_cols = [r[1] for r in conn.execute(
+            text("PRAGMA table_info(profile_entities)")
+        ).fetchall()]
+        if "proficiency_level" not in pe_cols:
+            conn.execute(text(
+                "ALTER TABLE profile_entities ADD COLUMN proficiency_level TEXT"
             ))
 
     if "confidence_audit_log" not in tables:

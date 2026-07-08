@@ -368,7 +368,18 @@ export interface TrustScoreResponse {
   }
   /** Weighted composite 0-100 from ProfileUpdateService.compute_profile_trust_score. */
   overall_trust_score: number
+  /** Three-pillar breakdown of the Holistic Familiarity score (Phase 32).
+   *  Maxes: breadth 40, depth 40, context 20. Optional for backward-compat with
+   *  any cached/older response shape. */
+  score_breakdown?: ScoreBreakdown
   fetched_at: string
+}
+
+/** Holistic Familiarity sub-scores. breadth+depth+context ≈ overall_trust_score. */
+export interface ScoreBreakdown {
+  breadth: number   // 0-40  — volume of extracted landscape data
+  depth:   number   // 0-40  — verified claims + honest proficiency levels
+  context: number   // 0-20  — profile completeness + AI interaction
 }
 
 // ── Confidence Matrix (four semantic categories) ──────────────────────────────

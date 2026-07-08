@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
 from datetime import datetime, timezone
@@ -58,7 +59,6 @@ from backend.services.confidence_math import (
     compute_confidence_score,
     compute_decoupled_score,
     gap_severity,
-    geo_combine,
     verification_status,
 )
 
@@ -102,6 +102,36 @@ def _parse_dt(value) -> datetime:
     return dt
 
 
+def _base_profile_completeness_fraction(profile: Optional[dict]) -> float:
+    """
+    Return the fraction (0.0–1.0) of the three critical base-profile anchors the
+    system knows about the user: name, phone, and at least one stated career
+    preference (target title).
+
+    Used by the Holistic Familiarity score as a POSITIVE contributor — the more
+    of these the system knows, the more familiar it is with the user. It is
+    never a penalty: a missing field simply withholds a bonus, it does not
+    subtract from breadth/depth.
+
+    A missing profile (None / not a dict) yields 0.0. Matches the schema written
+    by user_profile_store.load(): personal.{full_name,phone} and
+    role_preferences.target_titles.
+    """
+    if not isinstance(profile, dict):
+        return 0.0
+    personal   = profile.get("personal", {})       or {}
+    role_prefs = profile.get("role_preferences", {}) or {}
+
+    present = 0
+    if str(personal.get("full_name", "")).strip():
+        present += 1
+    if str(personal.get("phone", "")).strip():
+        present += 1
+    if role_prefs.get("target_titles"):
+        present += 1
+    return present / 3.0
+
+
 # ── Service ───────────────────────────────────────────────────────────────────
 
 class ProfileUpdateService:
@@ -109,6 +139,57 @@ class ProfileUpdateService:
     Wraps a SQLAlchemy Engine (not Session) and uses raw SQL via conn.execute()
     to match the existing db.py pattern in this project.
     """
+
+    # ── Holistic Familiarity score constants (Phase 31) ──────────────────────
+    # The System Confidence Score measures how well the system KNOWS the user
+    # (breadth + depth of familiarity), not how skilled the user is. Three
+    # additive pillars sum to a max of 100; see compute_profile_trust_score.
+    #
+    # Pillar 1 — BREADTH: saturating in the raw count of known entities. Volume
+    # of parsed/known data = the system has mapped the user's landscape.
+    BREADTH_MAX:   float = 40.0
+    BREADTH_SCALE: float = 35.0   # entities at which breadth reaches ~63% of max
+    #
+    # Pillar 2 — DEPTH: saturating in the amount of VERIFIED knowledge (evidence
+    # tiers + chat-confirmed proficiencies). This is the path to 100.
+    DEPTH_MAX:   float = 40.0
+    DEPTH_SCALE: float = 8.0      # weighted-verified units for ~63% of max
+    #
+    # Pillar 3 — CONTEXT: additive positives, never penalties — category
+    # coverage, base-profile identity completeness, and proficiency engagement.
+    CONTEXT_COVERAGE_MAX:     float = 8.0   # spread across skill/trait/exp/domain
+    CONTEXT_IDENTITY_MAX:     float = 6.0   # name / phone / career-prefs known
+    CONTEXT_PROFICIENCY_MAX:  float = 6.0   # user-clarified proficiency levels
+    CONTEXT_PROFICIENCY_SCALE: float = 5.0
+
+    # Graded verification weight per entity for the DEPTH pillar. An entity the
+    # user has explicitly clarified (proficiency_level set) counts as at least
+    # half-verified even if its score is low — knowing a weakness IS knowledge.
+    VERIFICATION_WEIGHTS: dict[str, float] = {
+        "verified":       1.00,
+        "partial":        0.50,
+        "needs_evidence": 0.25,
+        "unverified":     0.00,
+    }
+    PROFICIENCY_MIN_VERIFICATION_WEIGHT: float = 0.50
+
+    # The four scored entity categories (unknown types still count toward
+    # breadth volume, but not toward category coverage).
+    _SCORED_CATEGORIES: frozenset = frozenset({"skill", "trait", "experience", "domain"})
+
+    # Honest confidence ceiling per self-reported proficiency level. When a user
+    # clarifies their level in chat and no explicit score/modifier is supplied,
+    # apply_chat_proficiency_update anchors the entity's confidence_score down to
+    # (never up past) the matching ceiling — a self-claim cannot inflate a score,
+    # but "I'm only a beginner" honestly lowers an over-optimistic parse.
+    PROFICIENCY_CEILINGS: dict[str, float] = {
+        "beginner":     30.0,
+        "novice":       30.0,
+        "intermediate": 55.0,
+        "proficient":   65.0,
+        "advanced":     75.0,
+        "expert":       90.0,
+    }
 
     def __init__(self, engine):
         """
@@ -1135,74 +1216,112 @@ class ProfileUpdateService:
     # Public: weighted overall trust score
     # ─────────────────────────────────────────────────────────────────────────
 
-    def compute_profile_trust_score(self, user_id: str) -> float:
+    def compute_profile_trust_score(
+        self, user_id: str, profile: Optional[dict] = None
+    ) -> float:
         """
-        Compute the overall confidence score across all profile entities.
+        Compute the System Confidence Score as a "Holistic Familiarity" metric.
 
-        Category weights
-        ----------------
-        The three groups below sum to 1.0 and are FIXED — never renormalised:
-          skill + trait  →  0.40   (professional competency signals)
-          experience     →  0.40   (role-history depth signals)
-          domain         →  0.20   (domain knowledge signals)
+        Philosophy (Phase 31)
+        ---------------------
+        This score does NOT measure "how skilled the user is." It measures how
+        well and how deeply the system KNOWS the user's true profile. The two
+        are deliberately decoupled: a user can be a self-declared beginner at
+        everything, and if the system knows that clearly and completely, its
+        confidence in its *understanding* is high.
 
-        Why this is a weighted geometric ("OR") combination, not an average
-        ---------------------------------------------------------------------
-        The previous implementation averaged confidence_score per category
-        (`sum(scores) / len(scores)`), then renormalised the three weights
-        across whichever categories had at least one entity. Both steps are
-        monotonicity bugs:
+        This replaces the Phase 29 "Core Profile average", which measured skill
+        (a mean of the strongest capped entities) and therefore dropped to ~33
+        for a heavily-parsed, lightly-verified profile — punishing exactly the
+        user the system knows the most about. The four governing rules:
 
-          1. A brand-new entity always starts near 0 (see _upsert_entity /
-             compute_decoupled_score — an unverified claim with one piece of
-             evidence and the 0.50 base evidence_multiplier scores well below
-             any established entity in the same category). Averaging it in
-             mathematically drags the category mean down the instant the user
-             adds it — i.e. engaging with Ariel and adding true, valid data
-             *lowered* the score. This is the "18 → 16" bug.
-          2. Renormalising weights when a category goes from empty to
-             non-empty shrinks every *other* category's effective weight
-             share in the same instant, which can lower the overall score
-             even when every individual entity score stayed the same or rose.
+        1. Breadth is the baseline. Volume of known entities maps the user's
+           landscape; a large parsed profile secures a solid baseline on its
+           own, regardless of how weak or unverified any single entity is.
+        2. Honesty is confidence. Low-proficiency or unverified entities are
+           NEVER penalties. A beginner skill adds to breadth like any other,
+           and a user CLARIFYING a weakness (proficiency_level set) adds to
+           depth — knowing a weakness is knowledge.
+        3. Depth is the path to 100. Verifying the user's claims (STAR probes,
+           whiteboard tests, chat confirmations) is what carries the score up
+           from the breadth baseline toward full confidence.
+        4. Monotonic growth. Every pillar is a non-decreasing function of the
+           counts it consumes, so adding data, correcting the system, or
+           verifying a claim can only raise (never lower) the score.
 
-        The fix: combine scores the same monotonic way confidence_math.py
-        already combines multiple evidence sources *within* one entity —
-        geometric ("noisy-OR") combination, via `geo_combine()`:
+        Architecture — three additive pillars, summed and clamped to [0, 100]
+        --------------------------------------------------------------------
+          BREADTH  (≤ BREADTH_MAX)   = BREADTH_MAX · (1 − e^(−N / BREADTH_SCALE))
+              N = total known entities (all types, all confidence levels).
 
-            group_score = 100 × (1 − ∏ᵢ (1 − scoreᵢ / 100))
+          DEPTH    (≤ DEPTH_MAX)     = DEPTH_MAX · (1 − e^(−V / DEPTH_SCALE))
+              V = Σ per-entity verification weight, where an entity scores
+              VERIFICATION_WEIGHTS[status], floored at
+              PROFICIENCY_MIN_VERIFICATION_WEIGHT (0.5) whenever the user has
+              clarified its proficiency_level. This is where honest correction
+              of a weak skill lifts the score.
 
-        This is non-decreasing in every scoreᵢ: adding a new entity, no
-        matter how low its starting confidence, can only raise (or, in the
-        zero-score limit, leave unchanged) its category's score — never
-        lower it.
+          CONTEXT  (≤ 20)           = coverage + identity + proficiency, all
+              strictly additive positives (never penalties):
+                coverage    = CONTEXT_COVERAGE_MAX · (distinct categories / 4)
+                identity    = CONTEXT_IDENTITY_MAX · (name/phone/prefs known / 3)
+                proficiency = CONTEXT_PROFICIENCY_MAX ·
+                              (1 − e^(−P / CONTEXT_PROFICIENCY_SCALE))
+              P = entities with a user-clarified proficiency_level.
 
-        Categories are then combined with the FIXED weights above as
-        exponents in a weighted geometric blend:
+        Note: raw confidence_score is intentionally NOT read here — it measures
+        skill, which this metric must not reflect. Familiarity comes from count
+        (breadth), verification (depth), and coverage/identity/engagement.
 
-            overall = 100 × (1 − ∏g (1 − group_scoreg / 100) ** weightg)
-
-        An empty category contributes group_score = 0, whose term becomes
-        (1 − 0) ** weightg == 1 — the multiplicative identity — so it has
-        zero effect on the product. That means a user's *first* entity in a
-        previously-empty category also cannot lower the overall score, since
-        no weight is ever taken away from a category that already had data.
+        Parameters
+        ----------
+        user_id : str
+            The user whose profile familiarity is scored.
+        profile : dict, optional
+            The user's base profile (as returned by user_profile_store.load).
+            Injectable for testing / to avoid a redundant disk read; when
+            omitted it is loaded from the per-user profile store.
 
         Returns
         -------
-        float   Overall trust score in [0.0, 100.0], rounded to 1 decimal place.
-                Monotonically non-decreasing as entities are added or any
-                individual entity's confidence_score increases.
+        float   Familiarity score in [0.0, 100.0], 1 decimal place.
+                Monotonically non-decreasing as the system learns more.
+
+        See also
+        --------
+        compute_profile_familiarity : returns the same overall value plus its
+        three-pillar breakdown (breadth / depth / context) for the UI.
         """
-        _WEIGHTS: dict[str, float] = {
-            "skill_trait": 0.40,
-            "experience":  0.40,
-            "domain":      0.20,
-        }
+        return self.compute_profile_familiarity(user_id, profile)["overall"]
+
+    def compute_profile_familiarity(
+        self, user_id: str, profile: Optional[dict] = None
+    ) -> dict:
+        """
+        Compute the Holistic Familiarity score AND its three-pillar breakdown.
+
+        This is the source of truth for compute_profile_trust_score (which just
+        returns ``["overall"]``) and for the profile/trust-score endpoint, which
+        surfaces the pillars so the UI can show WHY the score is what it is
+        instead of a single black-box number.
+
+        Returns
+        -------
+        dict with 1-decimal floats:
+            {
+              "overall": 0-100,   # breadth + depth + context, clamped
+              "breadth": 0-BREADTH_MAX,   # volume of known entities
+              "depth":   0-DEPTH_MAX,     # graded verification + honest levels
+              "context": 0-20,            # coverage + identity + engagement
+            }
+        An empty profile returns all-zero pillars.
+        """
+        empty = {"overall": 0.0, "breadth": 0.0, "depth": 0.0, "context": 0.0}
 
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text("""
-                    SELECT entity_type, confidence_score
+                    SELECT entity_type, verification_status, proficiency_level
                     FROM   profile_entities
                     WHERE  user_id = :uid
                 """),
@@ -1210,38 +1329,222 @@ class ProfileUpdateService:
             ).fetchall()
 
         if not rows:
-            return 0.0
+            return dict(empty)
 
-        # Bucket scores by group
-        buckets: dict[str, list[float]] = {
-            "skill_trait": [],
-            "experience":  [],
-            "domain":      [],
+        # ── Tally the counts each pillar consumes ────────────────────────────
+        n_entities        = len(rows)              # breadth volume (every entity)
+        verification_sum  = 0.0                    # depth (graded verification)
+        proficiency_count = 0                      # engagement (clarified levels)
+        categories_seen: set[str] = set()          # coverage
+
+        for entity_type, vstatus, proficiency in rows:
+            etype = str(entity_type or "").lower()
+            if etype in self._SCORED_CATEGORIES:
+                categories_seen.add(etype)
+
+            status_weight = self.VERIFICATION_WEIGHTS.get(
+                str(vstatus or "").lower(), 0.0
+            )
+            has_proficiency = bool(str(proficiency or "").strip())
+            if has_proficiency:
+                proficiency_count += 1
+                # A clarified weakness is still confirmed knowledge — floor the
+                # verification weight so honesty always builds depth.
+                status_weight = max(
+                    status_weight, self.PROFICIENCY_MIN_VERIFICATION_WEIGHT
+                )
+            verification_sum += status_weight
+
+        # ── Pillar 1: BREADTH ────────────────────────────────────────────────
+        breadth = self.BREADTH_MAX * (
+            1.0 - math.exp(-n_entities / self.BREADTH_SCALE)
+        )
+
+        # ── Pillar 2: DEPTH ──────────────────────────────────────────────────
+        depth = self.DEPTH_MAX * (
+            1.0 - math.exp(-verification_sum / self.DEPTH_SCALE)
+        )
+
+        # ── Pillar 3: CONTEXT (coverage + identity + proficiency engagement) ──
+        coverage = self.CONTEXT_COVERAGE_MAX * (
+            len(categories_seen) / len(self._SCORED_CATEGORIES)
+        )
+
+        if profile is None:
+            try:
+                from backend.services import user_profile_store
+                profile = user_profile_store.load(user_id)
+            except Exception:
+                profile = None
+        identity = self.CONTEXT_IDENTITY_MAX * _base_profile_completeness_fraction(profile)
+
+        proficiency_engagement = self.CONTEXT_PROFICIENCY_MAX * (
+            1.0 - math.exp(-proficiency_count / self.CONTEXT_PROFICIENCY_SCALE)
+        )
+
+        context = coverage + identity + proficiency_engagement
+
+        # ── Sum the pillars, clamp, round ────────────────────────────────────
+        total = min(max(breadth + depth + context, 0.0), 100.0)
+        return {
+            "overall": round(total, 1),
+            "breadth": round(breadth, 1),
+            "depth":   round(depth, 1),
+            "context": round(context, 1),
         }
-        for entity_type, score in rows:
-            if entity_type in ("skill", "trait"):
-                buckets["skill_trait"].append(float(score))
-            elif entity_type == "experience":
-                buckets["experience"].append(float(score))
-            elif entity_type == "domain":
-                buckets["domain"].append(float(score))
-            # Unknown types are silently excluded from the score (they still
-            # appear in entity listings, just not in this aggregate).
 
-        # Weighted geometric ("OR") combination — see docstring above.
-        # `complement` starts at 1.0 (no information) and each category
-        # narrows it towards 0; an empty category multiplies in exactly 1.0
-        # (no-op), so it can never pull the result down.
-        #
-        # Individual scores are clamped to [0, 100] first: geo_combine raises
-        # (1 - c/100) to fractional weight powers below, and a stray value
-        # above 100 would make that base negative — undefined for a
-        # fractional exponent (Python raises a complex number, not an error).
-        complement = 1.0
-        for group, scores in buckets.items():
-            clamped = [min(max(s, 0.0), 100.0) for s in scores]
-            group_score = geo_combine(clamped) if clamped else 0.0
-            complement *= (1.0 - group_score / 100.0) ** _WEIGHTS[group]
+    # ─────────────────────────────────────────────────────────────────────────
+    # Chat-driven entity UPDATE (proficiency / confidence correction)
+    # ─────────────────────────────────────────────────────────────────────────
 
-        weighted_sum = 100.0 * (1.0 - complement)
-        return round(min(max(weighted_sum, 0.0), 100.0), 1)
+    def apply_chat_proficiency_update(
+        self,
+        user_id: str,
+        name: str,
+        *,
+        entity_type: str = "skill",
+        proficiency_level: Optional[str] = None,
+        new_confidence: Optional[float] = None,
+        confidence_modifier: Optional[float] = None,
+        note: Optional[str] = None,
+    ) -> dict:
+        """
+        UPDATE an existing profile entity in place from a chat clarification.
+
+        This is the write path for the case the user hit in Phase 30: the
+        parsed profile scored "Python" at 51.7, the user clarified they are
+        only a Beginner, and Ariel needs to LOWER the confidence and record the
+        stated proficiency — not add or remove the skill.
+
+        Unlike the evidence-ingest paths, this is a *direct correction*: the
+        user has authoritatively stated their own level, so we override the
+        score rather than blending in another weak evidence row. To honour the
+        "ProfileUpdateService is the only writer of confidence_score" invariant
+        (see db.py), the update lives here and writes a confidence_audit_log
+        row for traceability.
+
+        Resolution order for the new confidence_score:
+          1. ``new_confidence``       — explicit target from the agent (wins).
+          2. ``confidence_modifier``  — signed delta applied to the current score.
+          3. ``proficiency_level``    — anchor DOWN to PROFICIENCY_CEILINGS[level]
+             (i.e. min(current, ceiling)); a self-claim never inflates a score.
+          4. none of the above        — score unchanged (proficiency label only).
+
+        The final score is clamped to [0, 100]. verification_status is set to
+        'verified' because the value is now user-confirmed (whether that raised
+        or lowered it) — a chat admission is direct validation of the true level.
+
+        Returns
+        -------
+        dict with keys: status ('updated' | 'not_found' | 'error'),
+        and on success: name, entity_type, old_score, new_score,
+        proficiency_level, verification_status.
+        """
+        normalized = _normalize(name)
+        now = _now_iso()
+
+        try:
+            with self._engine.begin() as conn:
+                row = conn.execute(
+                    text("""
+                        SELECT entity_id, confidence_score, proficiency_level
+                        FROM   profile_entities
+                        WHERE  user_id = :uid
+                          AND  normalized_name = :norm
+                          AND  entity_type = :etype
+                        LIMIT 1
+                    """),
+                    {"uid": user_id, "norm": normalized, "etype": entity_type},
+                ).fetchone()
+
+                if row is None:
+                    return {
+                        "status": "not_found",
+                        "name": name,
+                        "entity_type": entity_type,
+                    }
+
+                entity_id  = row[0]
+                old_score  = float(row[1])
+                old_prof   = row[2]
+
+                # ── Resolve the new confidence score ──────────────────────────
+                if new_confidence is not None:
+                    target = float(new_confidence)
+                elif confidence_modifier is not None:
+                    target = old_score + float(confidence_modifier)
+                elif proficiency_level:
+                    ceiling = self.PROFICIENCY_CEILINGS.get(
+                        proficiency_level.strip().lower()
+                    )
+                    # Only anchor down to a known level's ceiling; unknown
+                    # labels leave the score untouched (label recorded only).
+                    target = min(old_score, ceiling) if ceiling is not None else old_score
+                else:
+                    target = old_score
+
+                new_score = round(min(max(target, 0.0), 100.0), 1)
+
+                # proficiency_level: COALESCE so omitting it preserves any prior
+                # label; passing it overwrites.
+                new_prof = proficiency_level.strip() if proficiency_level else None
+
+                conn.execute(
+                    text("""
+                        UPDATE profile_entities
+                        SET    confidence_score    = :score,
+                               proficiency_level   = COALESCE(:prof, proficiency_level),
+                               verification_status = 'verified',
+                               updated_at          = :now
+                        WHERE  entity_id = :eid
+                    """),
+                    {"score": new_score, "prof": new_prof, "now": now, "eid": entity_id},
+                )
+
+                # Immutable audit trail — mirrors _recompute_and_persist so the
+                # System Confidence history shows chat corrections too.
+                conn.execute(
+                    text("""
+                        INSERT INTO confidence_audit_log
+                            (entity_id, user_id, old_score, new_score, delta,
+                             trigger_source, evidence_id, session_id, changed_at, note)
+                        VALUES
+                            (:eid, :uid, :old, :new, :delta,
+                             'chat_proficiency_update', NULL, NULL, :now, :note)
+                    """),
+                    {
+                        "eid":   entity_id,
+                        "uid":   user_id,
+                        "old":   old_score,
+                        "new":   new_score,
+                        "delta": round(new_score - old_score, 1),
+                        "now":   now,
+                        "note":  note or (
+                            f"chat proficiency update: {old_prof or '—'} → "
+                            f"{new_prof or old_prof or '—'}"
+                        ),
+                    },
+                )
+
+            logger.info(
+                "[profile_update] chat proficiency update user=%s '%s' (%s) "
+                "%.1f → %.1f  proficiency=%s",
+                user_id, name, entity_type, old_score, new_score,
+                new_prof or old_prof,
+            )
+            return {
+                "status":              "updated",
+                "name":                name,
+                "entity_type":         entity_type,
+                "old_score":           round(old_score, 1),
+                "new_score":           new_score,
+                "proficiency_level":   new_prof or old_prof,
+                "verification_status": "verified",
+            }
+
+        except Exception as exc:
+            logger.error(
+                "[profile_update] apply_chat_proficiency_update failed user=%s name=%r: %s",
+                user_id, name, exc,
+            )
+            return {"status": "error", "name": name, "error": str(exc)}

@@ -2,9 +2,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { getGreetingName } from '@/lib/nameUtils'
 import { TOKENS } from '@/lib/tokens'
-import type { ApiFeedJob } from '@/lib/apiTypes'
+import type { ApiFeedJob, ScoreBreakdown } from '@/lib/apiTypes'
 import { Skeleton } from './ui/Skeleton'
-import { SparkIcon, UserBadgeIcon, FileIcon, SlidersIcon, ArrowIcon, SearchIcon, BoltIcon } from './icons'
+import { SparkIcon, UserBadgeIcon, FileIcon, SlidersIcon, ArrowIcon, SearchIcon, BoltIcon, CheckIcon } from './icons'
 import { TrustDashboard } from './TrustDashboard'
 import { useChat } from '@/contexts/ChatContext'
 import {
@@ -411,47 +411,191 @@ function ConfidenceGauge({ pct, color }: { pct: number | null; color: string }) 
   )
 }
 
-function ConfidenceScoreCard({ score, onImprove }: {
-  score:     number | null
-  onImprove: () => void
+// The three Holistic Familiarity pillars (Phase 32). Colours stay strictly
+// inside the teal/emerald scales of the design system — no violet/purple.
+//   Breadth  → teal-600 (brand primary)
+//   Depth    → emerald-600 (success)
+//   Context  → teal-400 (a lighter teal, distinct but on-brand)
+const PILLAR_META = [
+  {
+    key:   'breadth' as const,
+    label: 'Breadth',
+    max:   40,
+    color: TOKENS.color.primary,     // #0D9488 teal-600
+    Icon:  SearchIcon,
+    caption: 'Volume of parsed data',
+    hint:  'Breadth — how much of your professional landscape the system has '
+         + 'extracted from CVs and chats. More data means a more complete picture.',
+  },
+  {
+    key:   'depth' as const,
+    label: 'Depth',
+    max:   40,
+    color: TOKENS.color.success,     // #059669 emerald-600
+    Icon:  CheckIcon,
+    caption: 'Verified & accurate claims',
+    hint:  'Depth — claims you have verified or clarified (tests, STAR probes, '
+         + 'honest proficiency levels). This is the main path toward 100%.',
+  },
+  {
+    key:   'context' as const,
+    label: 'Context',
+    max:   20,
+    color: '#2DD4BF',                // teal-400
+    Icon:  UserBadgeIcon,
+    caption: 'Profile basics & interaction',
+    hint:  'Context — profile completeness (name, contact, goals) plus how much '
+         + 'you have engaged with Ariel. Small but steady wins.',
+  },
+]
+
+// One elegant progress rail per pillar: icon + label + value/max + fill + copy.
+// `loading` (the whole card is still fetching) drives the skeleton — NOT the
+// presence of `value`. That distinction is the Phase 33 fix: a payload that
+// arrives without a breakdown shows a muted "—", never an eternal skeleton.
+function PillarRail({ label, value, max, color, Icon, caption, hint, loading }: {
+  label:   string
+  value:   number | null
+  max:     number
+  color:   string
+  Icon:    ({ s }: { s?: number }) => JSX.Element
+  caption: string
+  hint:    string
+  loading: boolean
+}) {
+  const pct = value !== null ? Math.min(100, Math.max(0, (value / max) * 100)) : 0
+  return (
+    <div className="min-w-0" title={hint}>
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
+          <span className="inline-flex" style={{ color }}><Icon s={12} /></span>
+          {label}
+        </span>
+        {loading ? (
+          <Skeleton className="h-3 w-8 rounded" />
+        ) : value === null ? (
+          <span className="text-[11px] font-medium text-slate-300">—</span>
+        ) : (
+          <span className="text-[11px] font-bold tabular-nums text-slate-900">
+            {Math.round(value)}
+            <span className="text-slate-400 font-medium">/{max}</span>
+          </span>
+        )}
+      </div>
+      <div
+        className="h-1.5 rounded-full overflow-hidden"
+        style={{ background: TOKENS.color.lineSoft }}
+      >
+        <div
+          className="h-full rounded-full"
+          style={{
+            width: `${pct}%`,
+            background: color,
+            transition: 'width 700ms cubic-bezier(0.22,1,0.36,1)',
+          }}
+        />
+      </div>
+      <p className="mt-1 text-[10.5px] text-slate-400 leading-snug">{caption}</p>
+    </div>
+  )
+}
+
+function ConfidenceScoreCard({ score, breakdown, onImprove }: {
+  score:      number | null
+  breakdown:  ScoreBreakdown | null
+  onImprove:  () => void
 }) {
   const pct  = score !== null ? Math.round(Math.min(100, Math.max(0, score))) : null
   const tier = pct !== null ? confidenceTier(pct) : null
+  // Loading is defined by the OVERALL score not yet being in — not by whether
+  // the breakdown happens to be present. This keeps the pillars from being
+  // trapped in a skeleton if a response ever omits score_breakdown.
+  const loading = score === null
 
   return (
     <section
-      className="rounded-2xl border border-slate-100 px-5 py-5 flex items-center gap-5"
+      className="rounded-2xl border border-slate-100 px-5 py-5"
       style={{ boxShadow: TOKENS.shadow.card }}
     >
-      <ConfidenceGauge pct={pct} color={tier?.color ?? TOKENS.color.primary} />
+      {/* ── Header row: gauge + title/description + CTA ─────────────────── */}
+      <div className="flex items-center gap-5">
+        <ConfidenceGauge pct={pct} color={tier?.color ?? TOKENS.color.primary} />
 
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1 flex-wrap">
-          <h2 className="text-[13.5px] font-bold text-slate-900 tracking-tight">
-            System Confidence Score
-          </h2>
-          {tier && (
-            <span
-              className="inline-flex items-center h-[18px] px-2 rounded-md text-[10.5px] font-semibold"
-              style={{ background: `color-mix(in oklab, ${tier.color} 12%, white)`, color: tier.color }}
-            >
-              {tier.label}
-            </span>
-          )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <h2 className="text-[13.5px] font-bold text-slate-900 tracking-tight">
+              System Confidence Score
+            </h2>
+            {tier && (
+              <span
+                className="inline-flex items-center h-[18px] px-2 rounded-md text-[10.5px] font-semibold"
+                style={{ background: `color-mix(in oklab, ${tier.color} 12%, white)`, color: tier.color }}
+              >
+                {tier.label}
+              </span>
+            )}
+          </div>
+          <p className="text-[12px] text-slate-500 leading-relaxed">
+            How well the system knows your profile — built from three pillars.
+            Verify your claims and share more to grow it.
+          </p>
         </div>
-        <p className="text-[12px] text-slate-500 leading-relaxed mb-3">
-          A higher confidence score means more accurate job matches and better CV tailoring.
-          Share more experiences to improve your score.
-        </p>
+
         <button
           onClick={onImprove}
-          className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-[12.5px] font-semibold transition active:scale-[0.97] hover:opacity-90"
+          className="hidden sm:inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-[12.5px] font-semibold transition active:scale-[0.97] hover:opacity-90 shrink-0"
           style={{ background: TOKENS.color.primary, color: '#fff' }}
         >
           <SparkIcon s={12} />
-          Improve Score with Ariel
+          Improve with Ariel
         </button>
       </div>
+
+      {/* ── Composition bar: the three pillars stacked toward 100 ──────── */}
+      <div
+        className="mt-4 flex h-2 w-full rounded-full overflow-hidden"
+        style={{ background: TOKENS.color.lineSoft }}
+        title="Your score is the sum of Breadth, Depth and Context (max 100)."
+      >
+        {breakdown && PILLAR_META.map(p => (
+          <div
+            key={p.key}
+            className="h-full first:rounded-l-full"
+            style={{
+              width: `${Math.min(100, Math.max(0, breakdown[p.key]))}%`,
+              background: p.color,
+              transition: 'width 700ms cubic-bezier(0.22,1,0.36,1)',
+            }}
+          />
+        ))}
+      </div>
+
+      {/* ── Three pillar rails with tooltips + micro-copy ──────────────── */}
+      <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-x-5 gap-y-4">
+        {PILLAR_META.map(p => (
+          <PillarRail
+            key={p.key}
+            label={p.label}
+            value={breakdown ? breakdown[p.key] : null}
+            max={p.max}
+            color={p.color}
+            Icon={p.Icon}
+            caption={p.caption}
+            hint={p.hint}
+            loading={loading}
+          />
+        ))}
+      </div>
+
+      {/* ── Mobile CTA (header CTA is hidden on narrow screens) ─────────── */}
+      <button
+        onClick={onImprove}
+        className="sm:hidden mt-4 w-full inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg text-[12.5px] font-semibold transition active:scale-[0.98]"
+        style={{ background: TOKENS.color.primary, color: '#fff' }}
+      >
+        <SparkIcon s={12} />
+        Improve with Ariel
+      </button>
     </section>
   )
 }
@@ -500,6 +644,14 @@ export function Overview({
   // see the comment above ConfidenceScoreCard for why we don't fetch it twice.
   const { openChat, profileVersion } = useChat()
   const [confidenceScore, setConfidenceScore] = useState<number | null>(null)
+  const [scoreBreakdown, setScoreBreakdown]   = useState<ScoreBreakdown | null>(null)
+
+  // Mirror both the overall score and its three-pillar breakdown up from
+  // TrustDashboard's single /trust-score fetch (Phase 32).
+  const handleScoreChange = useCallback((score: number, breakdown?: ScoreBreakdown) => {
+    setConfidenceScore(score)
+    if (breakdown) setScoreBreakdown(breakdown)
+  }, [])
 
   const handleImproveScore = useCallback(() => {
     openChat({
@@ -608,7 +760,11 @@ export function Overview({
       </div>
 
       {/* ── System Confidence Score — gamified Ariel engagement CTA ──────── */}
-      <ConfidenceScoreCard score={confidenceScore} onImprove={handleImproveScore} />
+      <ConfidenceScoreCard
+        score={confidenceScore}
+        breakdown={scoreBreakdown}
+        onImprove={handleImproveScore}
+      />
 
       {/* ── KPI strip — server analytics with local fallback ─────────────── */}
       <section className="space-y-4">
@@ -636,7 +792,7 @@ export function Overview({
         className="rounded-2xl bg-white border border-slate-100 p-6"
         style={{ boxShadow: TOKENS.shadow.card }}
       >
-        <TrustDashboard userId={userId} onScoreChange={setConfidenceScore} profileVersion={profileVersion} />
+        <TrustDashboard userId={userId} onScoreChange={handleScoreChange} profileVersion={profileVersion} />
       </section>
 
       {/* ── Quick actions + Top matches, side by side on wide screens ─── */}

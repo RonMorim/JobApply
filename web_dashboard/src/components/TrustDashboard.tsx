@@ -36,6 +36,7 @@ import { supabase } from '@/lib/supabase'
 import type {
   TrustScoreResponse, TrustProfileEntity, TrustEvidenceEntry, EntityType,
   SkillTier, VerificationLevel, ConfidenceMatrixResponse, ConfidenceRadarDatum,
+  ScoreBreakdown,
 } from '@/lib/apiTypes'
 
 // ── recharts — lazy so the rest of the UI is not blocked ─────────────────────
@@ -2319,10 +2320,11 @@ interface TrustDashboardProps {
   userId:         string
   showAuthWall?:  boolean   // pass true when the LinkedIn feed is auth_wall status
   className?:     string
-  /** Fired with the backend's overall_trust_score every time fetchData resolves —
-   *  lets a parent (e.g. Overview's System Confidence Score card) mirror the
-   *  same number without firing a second /trust-score request of its own. */
-  onScoreChange?: (score: number) => void
+  /** Fired with the backend's overall_trust_score (and the three-pillar
+   *  breakdown, when present) every time fetchData resolves — lets a parent
+   *  (e.g. Overview's System Confidence Score card) mirror the same numbers
+   *  without firing a second /trust-score request of its own. */
+  onScoreChange?: (score: number, breakdown?: ScoreBreakdown) => void
   /** Bump this (e.g. ChatContext's profileVersion) to force a silent re-fetch —
    *  used when Ariel updates the Master Profile mid-session so the score
    *  reflects it without the user reloading the page. Only the initial
@@ -2383,7 +2385,7 @@ export function TrustDashboard({
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = (await res.json()) as TrustScoreResponse
       setData(json)
-      onScoreChangeRef.current?.(json.overall_trust_score ?? 0)
+      onScoreChangeRef.current?.(json.overall_trust_score ?? 0, json.score_breakdown)
 
       // Fetch four-category radar data independently (non-fatal if it fails)
       try {
