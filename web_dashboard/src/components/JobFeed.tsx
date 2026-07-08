@@ -400,7 +400,7 @@ export function JobFeed({ onFeedRefreshed, preferences, expandJobId, userId }: J
         tone: 'success',
       })
     } catch {
-      setToast({ message: 'Sync failed — please try again.', tone: 'error' })
+      setToast({ message: 'Sync failed. Please try again.', tone: 'error' })
     } finally {
       setSyncing(false)
     }
@@ -502,7 +502,7 @@ export function JobFeed({ onFeedRefreshed, preferences, expandJobId, userId }: J
     setJobs(prev => prev.map(j =>
       j.job_id === jobId ? { ...j, status: 'applied' as const } : j
     ))
-    setToast({ message: '✓ Marked as Applied — visible in Applications board', tone: 'success' })
+    setToast({ message: '✓ Marked as Applied. Visible in Applications board', tone: 'success' })
   }, [])
 
   // ── Local filtering + sorting (no extra API calls) ────────────────────────
@@ -598,7 +598,7 @@ export function JobFeed({ onFeedRefreshed, preferences, expandJobId, userId }: J
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">Top Matches for You</h1>
             <p className="text-sm text-slate-400 mt-1">
-              Jobs scored against your profile — sorted by ATS match.
+              Jobs scored against your profile and sorted by ATS match.
             </p>
           </div>
           <button
@@ -656,7 +656,7 @@ export function JobFeed({ onFeedRefreshed, preferences, expandJobId, userId }: J
           <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 flex items-center justify-between">
             <p className="text-[13px] text-rose-700">
               <span className="font-medium">Could not load feed</span>
-              <span className="text-rose-500"> — {error}</span>
+              <span className="text-rose-500">: {error}</span>
             </p>
             <button onClick={loadJobs} className="text-[12px] font-medium text-rose-700 underline underline-offset-2">
               Retry
@@ -749,8 +749,8 @@ export function JobFeed({ onFeedRefreshed, preferences, expandJobId, userId }: J
                   <span className="text-[13px] font-semibold text-teal-700">Agents are actively indexing fresh roles</span>
                 </div>
                 <p className="text-[12.5px] text-center text-slate-500 max-w-xs">
-                  {totalFetched} job{totalFetched !== 1 ? 's' : ''} found in the pipeline —
-                  scoring and JD enrichment in progress. Results will appear here automatically.
+                  {totalFetched} job{totalFetched !== 1 ? 's' : ''} found in the pipeline.
+                  Scoring and JD enrichment in progress. Results will appear here automatically.
                 </p>
                 <button
                   onClick={handleSync}

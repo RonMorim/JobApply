@@ -552,7 +552,7 @@ function HistoryPanel({
                         <span className="text-[10.5px] text-slate-400">{fmtDate(s.updated_at)}</span>
                         <span className="text-[10px] text-slate-300">{s.message_count} msg{s.message_count !== 1 ? 's' : ''}</span>
                       </div>
-                      <p className="text-[12px] text-slate-600 leading-snug line-clamp-2">{s.preview || 'Empty conversation'}</p>
+                      <p dir="auto" className="text-[12px] text-slate-600 leading-snug line-clamp-2">{s.preview || 'Empty conversation'}</p>
                       {isActive && (
                         <span className="mt-1 inline-block text-[10px] font-semibold text-teal-600">Active</span>
                       )}
@@ -1345,7 +1345,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
               <span className="text-[18px] leading-none shrink-0">💬</span>
               <div className="min-w-0">
                 <p className="text-[12px] font-semibold text-teal-700 leading-tight">Continue recent conversation</p>
-                <p className="text-[11px] text-teal-500 truncate mt-0.5">
+                <p dir="auto" className="text-[11px] text-teal-500 truncate mt-0.5">
                   {latestSession.preview || 'Pick up where you left off'}
                 </p>
               </div>
