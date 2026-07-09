@@ -16,7 +16,15 @@ from models.job import DetailedAnalysis, JobMatch, RawJobPosting, ReasonTag
 import backend.services.job_store as job_store
 from backend.services import feed_service
 from backend.url_scraper import scrape_job_post
-from backend.scrapers.url_router import scrape_jd_text
+from backend.scrapers.url_router import (
+    scrape_jd_text,
+    scrape_linkedin_job,
+    LinkedInAuthWallError,
+    LinkedInRedirectError,
+    LinkedInChallengeError,
+    LinkedInRapidApiAuthError,
+    LinkedInRapidApiQuotaError,
+)
 from backend.agents.matcher import MatcherAgent
 from backend.scrapers.scraper_manager import SCRAPER_MANAGER, scraper_from_config
 
@@ -788,8 +796,47 @@ async def analyze_job(
         return cached   # return the full JobMatch so the frontend can prepend it
 
     # ── 2. Scrape ─────────────────────────────────────────────────────────────
+    # LinkedIn gets the specialized, auth-wall-aware scraper (backend.scrapers.
+    # url_router); every other host keeps the existing generic scraper — this
+    # is the same routing url_router.scrape_jd_text() already does internally,
+    # just called directly here so we also get title/company in one request.
+    is_linkedin = "linkedin.com" in url.lower()
     try:
-        scraped = await asyncio.to_thread(scrape_job_post, url)
+        if is_linkedin:
+            scraped = await asyncio.to_thread(scrape_linkedin_job, url)
+        else:
+            scraped = await asyncio.to_thread(scrape_job_post, url)
+    except LinkedInAuthWallError as exc:
+        logger.warning("[analyze] PIPELINE_FAILURE step=scrape url=%s error=auth_wall detail=%r", url, exc)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "LinkedIn login wall blocked the request. This posting requires a signed-in "
+                "LinkedIn session we don't have access to — try the company's own careers-page "
+                "link instead, or paste the job description text directly."
+            ),
+        )
+    except (LinkedInRedirectError, LinkedInChallengeError) as exc:
+        logger.warning("[analyze] PIPELINE_FAILURE step=scrape url=%s error=bot_check detail=%r", url, exc)
+        raise HTTPException(
+            status_code=422,
+            detail="LinkedIn blocked this request as automated traffic. Please try again in a few minutes.",
+        )
+    except LinkedInRapidApiQuotaError as exc:
+        logger.warning("[analyze] PIPELINE_FAILURE step=scrape url=%s error=rapidapi_quota detail=%r", url, exc)
+        # 429, not 422 — this is a distinct, retryable condition the frontend
+        # can show a specific "quota exceeded" toast for.
+        raise HTTPException(status_code=429, detail="Monthly free quota exceeded for LinkedIn job lookups.")
+    except LinkedInRapidApiAuthError as exc:
+        # Server misconfiguration (missing/invalid RAPIDAPI_KEY) — never 401
+        # here, since the frontend treats HTTP 401 as "your session expired"
+        # and force-logs the user out. 503 correctly signals "us", not "you".
+        logger.error("[analyze] PIPELINE_FAILURE step=scrape url=%s error=rapidapi_auth detail=%r", url, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="LinkedIn lookup is temporarily unavailable (scraping service misconfigured). "
+                   "Please try again later.",
+        )
     except ValueError as exc:
         logger.error("[analyze] PIPELINE_FAILURE step=scrape url=%s error=%r", url, exc, exc_info=True)
         raise HTTPException(status_code=422, detail=f"Scrape Failed: {exc}")

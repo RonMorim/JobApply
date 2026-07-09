@@ -1,7 +1,7 @@
 """
 URL Router — maps a job posting URL to the correct scraper.
 
-Two public entry points:
+Public entry points:
 
 1.  scrape_jd_text(url: str) -> str
     Fetches and returns the full JD text for a single job URL.
@@ -15,6 +15,14 @@ Two public entry points:
     Returns a BaseScraper instance capable of calling fetch_jobs() for
     the host found in `url`.  Returns None for unknown hosts.
 
+3.  scrape_linkedin_job(url: str) -> ScrapedJob
+    Fetches a LinkedIn job posting via a RapidAPI LinkedIn-jobs provider
+    (RAPIDAPI_KEY / RAPIDAPI_LINKEDIN_HOST / RAPIDAPI_LINKEDIN_PATH env vars)
+    and returns JD text plus title/company. Raises LinkedInRapidApiAuthError /
+    LinkedInRapidApiQuotaError / ValueError — callers (e.g. POST
+    /api/jobs/analyze) should catch these explicitly to surface a precise,
+    human-readable error instead of a generic scrape failure.
+
 Domain routing table
 --------------------
 linkedin.com         → _linkedin_scrape  (unauthenticated requests, JSON-LD extraction)
@@ -26,21 +34,27 @@ drushim.co.il        → scrape_drushim_jd
 comeet.co / .com     → generic scraper
 <everything else>    → generic scrape_job_post
 
-LinkedIn strategy — Authentication-free
-----------------------------------------
-Discovery routes through GoogleDorkScraper, which surfaces only public
-/jobs/view/ URLs indexed by Google.  Those pages embed a JSON-LD block
-that _linkedin_scrape() can extract without any session cookie or browser.
+LinkedIn strategy
+-----------------
+scrape_jd_text() / scrape_jd_text_async() (bulk enrichment, fetch-jd, backfill)
+still use the authentication-free direct-fetch path: discovery routes through
+GoogleDorkScraper, which surfaces only public /jobs/view/ URLs indexed by
+Google, and _linkedin_scrape() extracts the JSON-LD block those pages embed
+without any session cookie or browser. If a page requires a login the
+is_valid_job_content() gatekeeper marks it failed cleanly.
 
-If a LinkedIn page requires a login the is_valid_job_content() gatekeeper
-marks it failed cleanly — no crash, no enrichment_failures penalty, no
-Playwright or cookie management required.
+scrape_linkedin_job() (used by POST /api/jobs/analyze, a single ad-hoc URL
+pasted by the user) instead goes through a RapidAPI LinkedIn-jobs provider —
+LinkedIn's bot-detection blocks the direct-fetch path far more aggressively
+for arbitrary, non-Google-indexed URLs (HTTP 999 / challenge pages), so this
+path avoids hitting LinkedIn directly at all.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import threading
@@ -54,6 +68,30 @@ from bs4 import BeautifulSoup
 from backend.scrapers.base_scraper import BaseScraper
 
 logger = logging.getLogger(__name__)
+
+# ── RapidAPI LinkedIn-jobs provider config ────────────────────────────────────
+# LinkedIn's own pages reliably block direct, unauthenticated fetches (HTTP 999
+# / challenge pages / login walls — see _linkedin_fetch_soup below, still used
+# by the legacy _linkedin_scrape() path for non-analyze callers). For the
+# /api/jobs/analyze flow we instead go through a RapidAPI LinkedIn-jobs
+# provider, which proxies the request through infrastructure LinkedIn doesn't
+# block the same way.
+#
+# Default host/path/params below match "LinkedIn Job Search API" by Fantastic
+# Jobs (https://rapidapi.com/fantastic-jobs-fantastic-jobs-default/api/
+# linkedin-job-search-api) — verified live against a real subscription:
+#   GET /active-jb?time_frame=6m&linkedin_id={id}&description_format=text&limit=1
+# Response is a bare JSON array (not a dict wrapper); an empty array means no
+# job matched that linkedin_id within the time_frame window (job.title,
+# job.organization, job.description_text carry the fields we need).
+#
+# All are configurable via env so the provider can be swapped without a code
+# change — different RapidAPI LinkedIn-jobs listings expose different
+# hosts/paths/param/field names.
+RAPIDAPI_KEY                = os.environ.get("RAPIDAPI_KEY", "")
+RAPIDAPI_LINKEDIN_HOST      = os.environ.get("RAPIDAPI_LINKEDIN_HOST", "linkedin-job-search-api.p.rapidapi.com")
+RAPIDAPI_LINKEDIN_PATH      = os.environ.get("RAPIDAPI_LINKEDIN_PATH", "/active-jb")
+RAPIDAPI_LINKEDIN_TIME_FRAME = os.environ.get("RAPIDAPI_LINKEDIN_TIME_FRAME", "6m")
 
 
 # ── Exception hierarchy ───────────────────────────────────────────────────────
@@ -75,6 +113,23 @@ class LinkedInChallengeError(Exception):
     def __init__(self, message: str, raw_html: str = "") -> None:
         super().__init__(message)
         self.raw_html = raw_html
+
+
+class LinkedInRapidApiError(Exception):
+    """Base class for RapidAPI-provider-specific LinkedIn scrape failures."""
+
+
+class LinkedInRapidApiAuthError(LinkedInRapidApiError):
+    """
+    RAPIDAPI_KEY is missing, or the provider rejected it (401/403).
+    This is a server misconfiguration, not a user auth failure — callers must
+    NOT map this to HTTP 401, since the frontend treats 401 as "your session
+    expired" and force-logs the user out.
+    """
+
+
+class LinkedInRapidApiQuotaError(LinkedInRapidApiError):
+    """RapidAPI returned 429 — the subscribed plan's request quota is exhausted."""
 
 
 # ── LinkedIn scraper constants ────────────────────────────────────────────────
@@ -241,19 +296,17 @@ def _extract_jd_from_soup(soup: BeautifulSoup, url: str) -> Optional[str]:
 
 # ── LinkedIn public scraper ───────────────────────────────────────────────────
 
-def _linkedin_scrape(url: str) -> str:
+def _linkedin_fetch_soup(url: str) -> BeautifulSoup:
     """
-    Fetch a LinkedIn /jobs/view/ page with unauthenticated requests.
-
-    No cookie, no session, no browser.  Public job-view pages embed a
-    JSON-LD block in their static HTML that contains the full JD text.
+    Fetch a LinkedIn /jobs/view/ page with unauthenticated requests and return
+    the parsed HTML. Shared by _linkedin_scrape() and scrape_linkedin_job() so
+    the network/redirect/challenge handling lives in exactly one place.
 
     Raises
     ------
     LinkedInRedirectError   Redirected to a challenge/checkpoint URL.
     LinkedInChallengeError  2xx but body contains bot-check signals.
-    LinkedInAuthWallError   Page is a login wall.
-    ValueError              No extractable content or request failure.
+    ValueError              Request failed outright (network error).
     """
     _linkedin_rate_wait()
 
@@ -291,7 +344,24 @@ def _linkedin_scrape(url: str) -> str:
             raw_html=raw_html,
         )
 
-    soup = BeautifulSoup(raw_html, "html.parser")
+    return BeautifulSoup(raw_html, "html.parser")
+
+
+def _linkedin_scrape(url: str) -> str:
+    """
+    Fetch a LinkedIn /jobs/view/ page with unauthenticated requests.
+
+    No cookie, no session, no browser.  Public job-view pages embed a
+    JSON-LD block in their static HTML that contains the full JD text.
+
+    Raises
+    ------
+    LinkedInRedirectError   Redirected to a challenge/checkpoint URL.
+    LinkedInChallengeError  2xx but body contains bot-check signals.
+    LinkedInAuthWallError   Page is a login wall.
+    ValueError              No extractable content or request failure.
+    """
+    soup = _linkedin_fetch_soup(url)
     text = _extract_jd_from_soup(soup, url)
     if text:
         return text
@@ -302,10 +372,190 @@ def _linkedin_scrape(url: str) -> str:
         )
 
     raise ValueError(
-        f"LinkedIn scraper: no extractable JD on {url} "
-        f"(body={len(raw_html)} chars, status={resp.status_code}). "
+        f"LinkedIn scraper: no extractable JD on {url}. "
         "Posting may be expired or removed."
     )
+
+
+def _extract_linkedin_meta(soup: BeautifulSoup) -> tuple[str, str]:
+    """
+    Best-effort (title, company) from a LinkedIn JobPosting JSON-LD block —
+    the same <script type="application/ld+json"> element _extract_jd_from_soup()
+    already reads for the description field.  Returns ("", "") if absent.
+    """
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        candidates = data if isinstance(data, list) else [data]
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            org = item.get("hiringOrganization")
+            company = ""
+            if isinstance(org, dict):
+                company = str(org.get("name") or "").strip()
+            if title or company:
+                return title, company
+    return "", ""
+
+
+_LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(?:[\w-]*-)?(\d+)(?:[/?]|$)")
+
+
+def _extract_linkedin_job_id(url: str) -> str:
+    """
+    Pull the numeric job ID out of a LinkedIn job URL.
+
+    Handles both URL shapes LinkedIn uses:
+      - /jobs/view/4231563678/                              (bare ID)
+      - /jobs/view/software-engineer-at-acme-4231563678/    (slug + trailing ID)
+    The ID is always the final run of digits in the path segment.
+    """
+    match = _LINKEDIN_JOB_ID_RE.search(url)
+    if not match:
+        raise ValueError(f"Could not extract a LinkedIn job ID from {url}")
+    return match.group(1)
+
+
+def _rapidapi_headers() -> dict[str, str]:
+    if not RAPIDAPI_KEY:
+        raise LinkedInRapidApiAuthError(
+            "RAPIDAPI_KEY is not configured on this server — set it in backend/.env."
+        )
+    return {
+        "X-RapidAPI-Key":  RAPIDAPI_KEY,
+        "X-RapidAPI-Host": RAPIDAPI_LINKEDIN_HOST,
+    }
+
+
+def _first_str(payload: dict, *keys: str) -> str:
+    """Return the first non-empty string value found across the given keys."""
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def scrape_linkedin_job(url: str):
+    """
+    Fetch a LinkedIn job posting via a RapidAPI LinkedIn-jobs provider instead
+    of a direct request to LinkedIn — LinkedIn's own bot-detection (HTTP 999,
+    challenge pages, login walls) blocks the unauthenticated direct-fetch path
+    reliably (see _linkedin_scrape / _linkedin_fetch_soup above, retained for
+    other callers). RapidAPI providers proxy the request through
+    infrastructure LinkedIn doesn't block the same way.
+
+    Default provider is "LinkedIn Job Search API" by Fantastic Jobs, which is
+    a filtered-search endpoint (GET /active-jb) rather than a get-by-id
+    lookup — we filter it down to one job via the linkedin_id param and take
+    the first (only) match. It returns a bare JSON array; an empty array
+    means the job wasn't found within the time_frame window (e.g. an old or
+    expired posting), which is surfaced as a ValueError, not a RapidAPI error.
+
+    Raises
+    ------
+    LinkedInRapidApiAuthError   RAPIDAPI_KEY missing, or the provider returned
+                                401/403 (invalid/revoked key, or not
+                                subscribed to this API). Server
+                                misconfiguration — do NOT surface as HTTP 401,
+                                the frontend treats 401 as "your session
+                                expired" and force-logs the user out.
+    LinkedInRapidApiQuotaError  Provider returned 429 — the plan's request
+                                quota (e.g. monthly free tier) is exhausted.
+    ValueError                  Job ID couldn't be parsed from the URL, the
+                                request failed outright, no job matched that
+                                ID within the time_frame window, or the
+                                response contained no usable job description
+                                text.
+    """
+    from backend.url_scraper import ScrapedJob  # local import avoids a cycle at module load
+
+    job_id  = _extract_linkedin_job_id(url)
+    headers = _rapidapi_headers()
+
+    try:
+        resp = requests.get(
+            f"https://{RAPIDAPI_LINKEDIN_HOST}{RAPIDAPI_LINKEDIN_PATH}",
+            headers=headers,
+            params={
+                "linkedin_id":        job_id,
+                "time_frame":         RAPIDAPI_LINKEDIN_TIME_FRAME,
+                "description_format": "text",
+                "limit":              1,
+            },
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise ValueError(f"RapidAPI LinkedIn request failed for {url}: {exc}") from exc
+
+    if resp.status_code in (401, 403):
+        logger.error("[linkedin_rapidapi] HTTP %d for %s — key missing/invalid", resp.status_code, url)
+        raise LinkedInRapidApiAuthError(
+            f"RapidAPI rejected the request ({resp.status_code}) — RAPIDAPI_KEY is missing, "
+            "invalid, or not subscribed to this API."
+        )
+
+    if resp.status_code == 429:
+        logger.warning("[linkedin_rapidapi] HTTP 429 for %s — quota exceeded", url)
+        raise LinkedInRapidApiQuotaError(
+            "Monthly free quota exceeded for the LinkedIn jobs API. Please try again later or "
+            "upgrade the RapidAPI plan."
+        )
+
+    if resp.status_code >= 400:
+        raise ValueError(
+            f"RapidAPI returned HTTP {resp.status_code} for {url}: {resp.text[:300]}"
+        )
+
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise ValueError(f"RapidAPI returned a non-JSON response for {url}") from exc
+
+    # This provider returns a bare JSON array of matches (filtered-search
+    # endpoint, not a get-by-id lookup) — unwrap defensively in case a
+    # differently-configured provider wraps it in a dict instead.
+    payload = data
+    if isinstance(data, dict):
+        for key in ("data", "result", "job", "results"):
+            nested = data.get(key)
+            if isinstance(nested, list):
+                payload = nested
+                break
+            if isinstance(nested, dict):
+                payload = nested
+                break
+
+    if isinstance(payload, list):
+        if not payload:
+            raise ValueError(
+                f"RapidAPI found no LinkedIn job matching ID {job_id} for {url} "
+                f"(outside the {RAPIDAPI_LINKEDIN_TIME_FRAME} lookup window, or expired/removed)."
+            )
+        payload = payload[0]
+
+    if not isinstance(payload, dict):
+        raise ValueError(f"RapidAPI response for {url} was not a job object: {type(payload).__name__}")
+
+    title       = _first_str(payload, "title", "job_title", "jobTitle")
+    company     = _first_str(payload, "organization", "company", "company_name", "companyName", "hiring_company")
+    if not company:
+        org = payload.get("companyDetails") or payload.get("company_details") or {}
+        if isinstance(org, dict):
+            company = _first_str(org, "name", "companyName")
+    description = _first_str(
+        payload,
+        "description_text", "description", "job_description", "jobDescription", "descriptionText",
+    )
+
+    if not description:
+        raise ValueError(f"RapidAPI response for {url} contained no job description text.")
+
+    return ScrapedJob(title=title or "LinkedIn Job Posting", company=company, raw_text=description)
 
 
 # ── Generic scraper ───────────────────────────────────────────────────────────

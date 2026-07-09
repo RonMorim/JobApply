@@ -25,12 +25,20 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  // Re-attach the browser's Authorization header — without this, every
+  // request reaches FastAPI with no credentials and get_current_user()
+  // rejects it with 401 "Not authenticated.", regardless of session state.
+  const authHeader = request.headers.get('Authorization')
+
   let upstream: Response
   try {
     upstream = await fetch(`${BACKEND}/api/jobs/analyze`, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(body),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authHeader ? { Authorization: authHeader } : {}),
+      },
+      body: JSON.stringify(body),
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'FastAPI unreachable'
