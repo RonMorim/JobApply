@@ -281,6 +281,36 @@ def _migrate() -> None:
         ))
         conn.commit()
 
+    # ── JOB-6: indexes on jobs/applications filter+sort columns ──────────────
+    # CREATE INDEX IF NOT EXISTS is idempotent — safe to run on every startup
+    # against an existing populated DB, no data migration required.
+    #
+    # Targets the actual predicates in job_store.py / app_store.py / the crm
+    # and applications routes (not speculative columns):
+    #   get_feed()                      user_id == ? AND status (==|!=) ?
+    #   get_eligible_for_apply()        user_id == ? AND applied == ? [+ score]
+    #   get_unscored_new_jobs()         user_id == ? AND status == 'new'
+    #   get_jobs_needing_llm_enrichment user_id == ? AND status IN (...)
+    #   has_application()/mark_applied  job_id == ? AND user_id == ?
+    #   crm.get_crm_board()             user_id == ? AND status IN (...)
+    #   get_all()/get_crm_board() ORDER BY submitted_at DESC
+    #   get_feed() ORDER BY match_score DESC, created_at DESC
+    with ENGINE.connect() as conn:
+        for stmt in (
+            "CREATE INDEX IF NOT EXISTS ix_jobs_user_status   ON jobs (user_id, status)",
+            "CREATE INDEX IF NOT EXISTS ix_jobs_user_applied  ON jobs (user_id, applied)",
+            "CREATE INDEX IF NOT EXISTS ix_jobs_status        ON jobs (status)",
+            "CREATE INDEX IF NOT EXISTS ix_jobs_source        ON jobs (source)",
+            "CREATE INDEX IF NOT EXISTS ix_jobs_is_open       ON jobs (is_open)",
+            "CREATE INDEX IF NOT EXISTS ix_jobs_created_at    ON jobs (created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_applications_job_id       ON applications (job_id)",
+            "CREATE INDEX IF NOT EXISTS ix_applications_status       ON applications (status)",
+            "CREATE INDEX IF NOT EXISTS ix_applications_submitted_at ON applications (submitted_at)",
+            "CREATE INDEX IF NOT EXISTS ix_applications_user_status  ON applications (user_id, status)",
+        ):
+            conn.execute(text(stmt))
+        conn.commit()
+
 
 class MasterProfileRow(Base):
     """

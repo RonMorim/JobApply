@@ -1420,6 +1420,7 @@ def _run_ats_engine(
     company_name: str,
     local: float,
     user_id: str,
+    entity_scores: "list | None" = None,
 ) -> "object | None":
     """
     Run the ATS Match Engine against the caller's data. Returns AtsMatchResult
@@ -1428,6 +1429,14 @@ def _run_ats_engine(
     user_id is REQUIRED and must come from the caller's verified context
     (JWT or per-user pipeline loop) — tenancy invariant, never a global lookup.
 
+    entity_scores : optional pre-fetched get_entity_breakdown(user_id, ENGINE)
+        result. Callers that score many jobs for the SAME user in one batch
+        (feed_service.refresh_user_scores) fetch this once per batch instead
+        of once per job — the Confidence Matrix does not change mid-batch, so
+        re-querying profile_entities/evidence_records per job was a pure N+1
+        (JOB-6). Pass None (default) to fetch it here as before — single-job
+        callers (e.g. POST /api/jobs/analyze) are unaffected.
+
     None means "degrade gracefully to the pure LLM composite" — scoring a job
     must never crash the feed because the Confidence Matrix was unreachable.
     """
@@ -1435,10 +1444,13 @@ def _run_ats_engine(
         from backend.services.ats_match_engine import (
             ThinJdError, compute_ats_match, heuristic_structured_jd,
         )
-        from backend.services.confidence_matrix_service import get_entity_breakdown
-        from backend.services.db import ENGINE
 
-        entities = get_entity_breakdown(user_id, ENGINE)   # list[EntityScore] dicts
+        if entity_scores is None:
+            from backend.services.confidence_matrix_service import get_entity_breakdown
+            from backend.services.db import ENGINE
+            entities = get_entity_breakdown(user_id, ENGINE)   # list[EntityScore] dicts
+        else:
+            entities = entity_scores
 
         # Prefer knockout prefs from the master profile when available.
         try:
@@ -1521,6 +1533,7 @@ async def compute_match_score_async(
     company_name: str = "",
     *,
     user_id: str,
+    entity_scores: "list | None" = None,
 ) -> MatchScoreResult:
     """
     Async composite scorer — primary entry point for route handlers.
@@ -1562,6 +1575,12 @@ async def compute_match_score_async(
         Target company name — used by _find_prior_employer to detect Company
         Legacy matches.  Must be passed from the job object, NOT derived from
         jd_text, to prevent false positives from body-text substring matches.
+    entity_scores : list | None  (keyword-only, optional)
+        Pre-fetched get_entity_breakdown(user_id, ENGINE) result, forwarded
+        to _run_ats_engine. Batch callers scoring many jobs for the same user
+        in one pass (feed_service.refresh_user_scores) fetch this once and
+        pass it through to avoid re-querying the Confidence Matrix per job
+        (JOB-6 N+1 fix). None (default) preserves the original per-call fetch.
     """
     if not run_llm_validation:
         # Fast path — Phase 1 only
@@ -1636,7 +1655,7 @@ async def compute_match_score_async(
     )
 
     # ATS Match Engine — None ⇒ degrade gracefully to the pure LLM composite.
-    ats = _run_ats_engine(cv_data, jd_text, company_name, local, user_id)
+    ats = _run_ats_engine(cv_data, jd_text, company_name, local, user_id, entity_scores)
 
     llm_composite   = finalize_composite(local, semantic, management)
     knockout_failed = bool(ats and not ats.knockout.passed)

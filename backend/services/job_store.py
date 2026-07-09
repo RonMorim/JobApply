@@ -643,6 +643,46 @@ def increment_enrichment_failures(job_id: str) -> int:
     return 0
 
 
+def update_enrichment_result(
+    job_id: str,
+    user_id: str,
+    *,
+    score: float,
+    is_proxy: bool,
+    reasons: list[dict],
+    why_ron: Optional[str] = None,
+    increment_failure: bool = False,
+) -> int:
+    """
+    Persist one s2 enrichment outcome in a single SELECT + UPDATE instead of
+    the three separate round trips (update_match_score, then either
+    update_why_ron or increment_enrichment_failures, then update_reasons)
+    feed_service._enrich_one previously issued per job (JOB-6 write N+1 fix).
+
+    Exactly one of `why_ron` / `increment_failure=True` should be passed,
+    matching the has_analysis / not-has_analysis branches in _enrich_one.
+
+    Returns the row's enrichment_failures count after the update (0 if the
+    row wasn't found/owned, or if increment_failure was not requested and the
+    stored value is unchanged — callers that don't need it can ignore it).
+    """
+    with Session(ENGINE) as session:
+        row = session.get(JobRow, job_id)
+        if not row or row.user_id != user_id:
+            return 0
+
+        row.match_score    = score
+        row.score_is_proxy = is_proxy
+        row.reasons        = reasons
+        if why_ron is not None:
+            row.why_ron = why_ron
+        if increment_failure:
+            row.enrichment_failures = int(row.enrichment_failures or 0) + 1
+
+        session.commit()
+        return int(row.enrichment_failures or 0)
+
+
 def reset_job_for_enrichment(job_id: str) -> bool:
     """
     Force a job row back to "un-enriched" state so the next s2 run picks it
