@@ -22,6 +22,19 @@ jobs:
           pip install -r backend/requirements.txt
           pip install pytest
 
+      - name: Enforce backend.* import convention (no bare api./services./config imports)
+        # Bare `api.*` / `services.*` / `config` imports resolve to a second,
+        # independent module instance at a different sys.modules key than the
+        # `backend.*`-prefixed one main.py actually runs — duplicating
+        # rate-limit buckets, JWKS caches, and DB engines silently. See
+        # CLAUDE.md and JOB-6. Every intra-backend import must use the
+        # `backend.` prefix instead.
+        run: |
+          if git grep -nE '^\s*(from (api|services|config)(\.|[[:space:]]+import\b)|import[[:space:]]+config\b)' -- backend; then
+            echo "::error::Found bare 'api.'/'services.'/'config' import(s) above — use the 'backend.' prefix instead (e.g. 'from backend.services import db'). Bare imports load a second, independent module instance (duplicated rate-limit buckets, JWKS caches, DB engines)."
+            exit 1
+          fi
+
       - name: Byte-compile backend
         run: python -m py_compile $(find backend -name "*.py" -not -path "*/tests/*")
 
