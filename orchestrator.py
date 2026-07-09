@@ -304,7 +304,7 @@ def run(company: str = _TARGET_COMPANY, job: dict[str, Any] = _TARGET_JOB) -> No
     print(f"\n{_line('═')}")
     print("  SUMMARY — CANDIDATE COMMAND CENTER")
     print(_line("═"))
-    print(f"  Candidate      : {verified.get('candidate', 'Ron Morim')}")
+    print(f"  Candidate      : {verified.get('candidate', 'the candidate')}")
     print(f"  Target role    : {job['title']} @ {company}")
     print(f"  Run time       : {elapsed:.2f}s")
     print(_line())

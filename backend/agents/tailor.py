@@ -1,5 +1,5 @@
 """
-TailorAgent — produces a world-class, job-specific CV data dict for Ron Morim.
+TailorAgent — produces a world-class, job-specific CV data dict for the candidate.
 
 Output contract (always one of two shapes):
   {"type": "cv",           "cv_data": {...}}      — ready to render
@@ -64,7 +64,7 @@ at top-tier B2B SaaS companies across EMEA and beyond. You write single-page A4 
 that clear ATS filters and get interviews. You think like a hiring manager under time \
 pressure: ruthlessly selective, strategically framed, zero tolerance for noise.
 
-Your task: produce a tailored CV data object for Ron Morim, calibrated precisely to \
+Your task: produce a tailored CV data object for the candidate, calibrated precisely to \
 the specific job posting provided. Every word must serve THIS role at THIS company.
 
 CRITICAL — NEVER OUTPUT: name, email, phone, linkedin, or location. \

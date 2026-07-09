@@ -37,7 +37,7 @@ Before prescribing new work, this section maps each PRD feature to the existing 
 | `backend/services/match_score_service.py` | Phase 1 Python scoring + Phase 2 Haiku LLM validation | **Match Score already implemented** |
 | `backend/api/routes/resumes.py` | FastAPI router; all five B2C endpoints already present | **All new API endpoints already exist** |
 | `backend/engines/master_profile.py` | MasterProfile class for bullet-improvement placeholder tokens; writes to `data/user_master_profile.json` | **Different concern** — do NOT extend for B2C |
-| `backend/services/profile_manager.py` | Unclear — must audit before touching | Read before any modification |
+| `backend/services/profile_manager.py` | ~~Removed~~ — audited, confirmed zero importers/references anywhere in the codebase (dead code hardcoding real PII in a legacy `UserProfile` seed); deleted | N/A |
 | `web_dashboard/src/components/ApplierPreview.tsx` | Main CV preview modal; fully wired to B2C components | Integration complete |
 | `web_dashboard/src/components/MatchScorePanel.tsx` | CircleGauge + sub-bars + keyword chips | Built |
 | `web_dashboard/src/components/TemplateSelectorBar.tsx` | SVG thumbnail template selector | Built |
@@ -168,10 +168,10 @@ The new `master_profile_service.py` must bridge these: read from both, write to 
   "version": 1,
   "last_updated": "2026-05-08T14:30:00",
   "personal": {
-    "full_name":    "Ron Morim",
-    "email":        "ronmorim98@gmail.com",
+    "full_name":    "Jamie Smith",
+    "email":        "jamie.smith@example.com",
     "phone":        "",
-    "linkedin_url": "linkedin.com/in/ronmorim",
+    "linkedin_url": "linkedin.com/in/jamiesmith",
     "location":     ""
   },
   "metrics": {
@@ -751,7 +751,7 @@ value=null -> deletes the entry
 
 | File | Risk |
 |---|---|
-| `backend/services/profile_manager.py` | Unknown content — read before modification; may overlap with master_profile_service |
+| `backend/services/profile_manager.py` | ~~Removed~~ — audited, zero importers, deleted (dead code with hardcoded PII) |
 | `backend/engines/master_profile.py` | Bullet improvement system — completely different concern; do NOT extend for B2C |
 
 ---

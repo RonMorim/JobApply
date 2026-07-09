@@ -273,7 +273,10 @@ async def chat_stream(
     plus an optional job_context object. The server builds a system prompt from
     the user's master profile and the job context, then streams Claude's reply.
     """
-    print(f"=== DEBUG [chat/stream] user={user.user_id}  msgs={len(body.messages)}  job_context={body.job_context} ===")
+    logger.debug(
+        "[chat/stream] user=%s msgs=%d job_context=%s",
+        user.user_id, len(body.messages), body.job_context,
+    )
 
     system = _build_system_prompt(body.job_context)
     client = _get_anthropic_client()
@@ -1002,7 +1005,10 @@ async def ariel_private(
     pipeline, updating the Confidence Matrix asynchronously without blocking
     the streaming response.
     """
-    print(f"=== DEBUG [chat/ariel/private] user={user.user_id}  msg_len={len(body.message)}  history={len(body.chat_history)} ===")
+    logger.debug(
+        "[chat/ariel/private] user=%s msg_len=%d history=%d",
+        user.user_id, len(body.message), len(body.chat_history),
+    )
 
     if not body.message.strip():
         raise HTTPException(status_code=422, detail="message must not be empty.")

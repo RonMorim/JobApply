@@ -3,7 +3,180 @@ Operational configuration constants for the JobApply backend.
 
 All flags that control cost, frequency, or external-API usage live here so
 they can be found and changed in one place before launch.
+
+This module is also the single place backend/.env is loaded from and the
+single place environment-variable-backed secrets/settings are declared.
+Import the named constants below instead of calling os.getenv() directly in
+new code, so every reader agrees on the variable name, default, and
+required/optional status.
 """
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+from typing import Optional
+
+from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
+
+# ── Environment loading ───────────────────────────────────────────────────────
+# Importing backend.config from anywhere (main.py, a future worker
+# entrypoint, a standalone script, a test) guarantees backend/.env is loaded
+# before the values below are read, regardless of import order. Safe to call
+# more than once — python-dotenv is idempotent and override=True just
+# re-applies the same values if main.py has already loaded it.
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
+
+
+# ── Secrets & external-service settings ───────────────────────────────────────
+#
+# Required in production (see _validate_required_env below):
+#   ANTHROPIC_API_KEY               — every LLM-driven feature depends on this
+#   SUPABASE_URL or SUPABASE_JWT_SECRET — at least one enables authentication
+#
+# Optional / feature-specific:
+#   TAVILY_API_KEY                  — enables live company research (agents/
+#                                      matching_engine.py); labelled fallback
+#                                      output when unset, nothing breaks
+#   EMAIL_WEBHOOK_SECRET             — enables inbound-email webhook signature
+#                                      verification; webhook still works
+#                                      unauthenticated (with a loud warning)
+#                                      when unset
+#
+# NOTE: ANTHROPIC_API_KEY is still read directly via os.getenv() in ~25
+# agent/service call sites as of this writing (matcher, tailor, copilot,
+# scoring, etc.). That will be consolidated behind a single LLM client
+# wrapper in a later phase. The canonical value is exposed here now so new
+# code has one place to import it from instead of adding call site #26.
+
+ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
+TAVILY_API_KEY:    Optional[str] = os.getenv("TAVILY_API_KEY")
+
+SUPABASE_URL:        Optional[str] = os.getenv("SUPABASE_URL")
+SUPABASE_JWT_SECRET: Optional[str] = os.getenv("SUPABASE_JWT_SECRET")
+
+EMAIL_WEBHOOK_SECRET: str = os.getenv("EMAIL_WEBHOOK_SECRET", "")
+
+# Deployment environment name. Drives CORS origin selection below.
+# Defaults to "development" so nothing changes for local dev unless this is
+# explicitly set to "production".
+ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+
+
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    """Parse a boolean-ish env var: 'true'/'1'/'yes' (case-insensitive) → True."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+# Strict startup validation — opt-in, OFF by default.
+#
+#   STRICT_CONFIG=false (default) — safe for local development. Missing
+#     required variables only log a loud warning; the server still boots
+#     (see the non-strict branch in _validate_required_env below).
+#   STRICT_CONFIG=true  — for production. Missing required variables raise
+#     immediately at import time, crashing the process before it can accept
+#     any traffic in a half-configured state.
+#
+# Production deployments SHOULD set STRICT_CONFIG=true.
+STRICT_CONFIG: bool = _env_bool("STRICT_CONFIG", default=False)
+
+
+class MissingRequiredConfigError(RuntimeError):
+    """Raised at import time when STRICT_CONFIG=true and a required var is absent."""
+
+
+def _validate_required_env() -> None:
+    """
+    Check required variables and either warn (default) or fail fast (strict).
+
+    Non-strict (STRICT_CONFIG=false, the default):
+      Log a loud, hard-to-miss error for each missing required variable, but
+      do NOT raise or exit the process.
+      • No backend/.env exists in a fresh checkout, CI, or this very dev
+        environment — large parts of the app (CRM board, applications list,
+        analytics) work fine with zero external services configured.
+      • backend/api/deps.py already degrades gracefully per-request (HTTP 503)
+        when auth isn't configured; a hard crash here would be a *stricter*
+        and new failure mode than the one that exists today, which would
+        break local development and the test suite rather than any real bug.
+
+    Strict (STRICT_CONFIG=true, intended for production):
+      Raise MissingRequiredConfigError immediately, crashing the process at
+      startup/import instead of letting it serve traffic half-configured.
+    """
+    missing = []
+    if not ANTHROPIC_API_KEY:
+        missing.append("ANTHROPIC_API_KEY")
+    if not (SUPABASE_URL or SUPABASE_JWT_SECRET):
+        missing.append("SUPABASE_URL or SUPABASE_JWT_SECRET")
+
+    if not missing:
+        return
+
+    if STRICT_CONFIG:
+        raise MissingRequiredConfigError(
+            "STRICT_CONFIG=true and the following required environment "
+            f"variable(s) are missing: {', '.join(missing)}. "
+            "Set them in backend/.env (see backend/.env.example), or unset "
+            "STRICT_CONFIG for local development."
+        )
+
+    logger.error(
+        "[config] MISSING REQUIRED ENVIRONMENT VARIABLE(S): %s — "
+        "add them to backend/.env (see backend/.env.example). The server "
+        "will still start, but dependent features will fail at request "
+        "time instead of at startup. Set STRICT_CONFIG=true to make this "
+        "a hard failure (recommended for production).",
+        ", ".join(missing),
+    )
+
+
+_validate_required_env()
+
+
+# ── CORS origins ───────────────────────────────────────────────────────────────
+#
+#   ENVIRONMENT=development (default) — permissive localhost allow-list,
+#     identical to the hardcoded list main.py used before this was made
+#     configurable. Nothing changes for local dev.
+#   ENVIRONMENT=production — explicit origins only, read from
+#     CORS_ALLOWED_ORIGINS (comma-separated). No implicit localhost access.
+#     If unset in production, no origins are allowed (fail closed) and a
+#     loud error is logged — safer than silently allowing everything.
+
+_DEV_CORS_ORIGINS: list[str] = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+]
+
+CORS_ALLOWED_ORIGINS_RAW: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
+
+
+def _compute_cors_origins() -> list[str]:
+    if ENVIRONMENT == "production":
+        origins = [o.strip() for o in CORS_ALLOWED_ORIGINS_RAW.split(",") if o.strip()]
+        if not origins:
+            logger.error(
+                "[config] ENVIRONMENT=production but CORS_ALLOWED_ORIGINS is not "
+                "set — no browser origin will be allowed to call this API. Set "
+                "it in backend/.env, e.g. "
+                "CORS_ALLOWED_ORIGINS=https://app.example.com"
+            )
+        return origins
+    return _DEV_CORS_ORIGINS
+
+
+CORS_ORIGINS: list[str] = _compute_cors_origins()
+
 
 # ── Targeted search queries ───────────────────────────────────────────────────
 # The canonical list of job-title search terms used by every scraper and the

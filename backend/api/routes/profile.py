@@ -106,7 +106,10 @@ async def init_profile(user: CurrentUser = Depends(get_current_user)):
     except Exception as exc:
         db.rollback()
         logger.exception("[profile/init] Failed to init profile for %s", user.user_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to initialize profile. Please try again shortly.",
+        ) from exc
     finally:
         db.close()
 
@@ -227,7 +230,7 @@ async def trigger_research(req: ResearchRequest, user: CurrentUser = Depends(get
 
     except Exception as exc:
         logger.exception("[profile/research] Researcher agent failed")
-        raise HTTPException(status_code=502, detail=f"Research failed: {exc}")
+        raise HTTPException(status_code=502, detail="Research failed. Please try again shortly.")
 
 
 # ── POST /api/profile/preferences ─────────────────────────────────────────────
@@ -371,6 +374,35 @@ async def linkedin_import(
 _CV_MAX_BYTES = 10 * 1024 * 1024   # 10 MB per file
 _CV_MAX_FILES = 10
 
+# ── File-content signature check (shared by cv-upload and interview/upload) ──
+# A file extension is trivially spoofable (rename anything.exe to cv.pdf), so
+# every upload additionally checks the real file signature (magic bytes)
+# before the content is handed to a parser. This is defense in depth, not a
+# guarantee of a "safe" file — the parsers themselves (PyMuPDF/python-docx/
+# pypdf) already fail closed (return empty text / an "unreadable" result) on
+# malformed content, this just avoids handing obviously-mismatched content to
+# them at all.
+_FILE_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    "pdf":  (b"%PDF-",),
+    "docx": (b"PK\x03\x04",),   # OOXML files are ZIP containers
+    "png":  (b"\x89PNG\r\n\x1a\n",),
+    "jpg":  (b"\xff\xd8\xff",),
+    "jpeg": (b"\xff\xd8\xff",),
+    "webp": (b"RIFF",),        # full check would also need "WEBP" at offset 8
+}
+
+
+def _content_matches_extension(content: bytes, ext: str) -> bool:
+    """
+    True if content's magic bytes match what `ext` claims, or if `ext` isn't
+    one we have a signature for (fail open for unknown-but-already-rejected
+    extensions — the caller's own extension allow-list is the real gate).
+    """
+    signatures = _FILE_SIGNATURES.get(ext.lower())
+    if not signatures:
+        return True
+    return any(content.startswith(sig) for sig in signatures)
+
 
 def _cv_claims_to_parsed_entities(cv_claims: dict) -> list[dict]:
     """
@@ -479,6 +511,9 @@ async def upload_cv_files(
         if len(content) > _CV_MAX_BYTES:
             errors.append(f"{fname}: file too large (max 10 MB)")
             continue
+        if not _content_matches_extension(content, ext):
+            errors.append(f"{fname}: file content does not match its .{ext} extension")
+            continue
 
         text = extract_text(content, fname)
         if not text.strip():
@@ -564,7 +599,10 @@ async def upload_cv_files(
             raise
         except Exception as exc:
             logger.exception("[profile/cv-upload] Mode B failed for entity=%s", entity_id)
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=500,
+                detail="Evidence upload failed. Please try again shortly.",
+            ) from exc
 
     # ── Mode A: Full CV ingestion pipeline ────────────────────────────────────
 
@@ -846,7 +884,10 @@ async def get_trust_score(
         raise
     except Exception as exc:
         logger.exception("[profile/trust-score] Unexpected error for user=%s", user_id)
-        raise HTTPException(status_code=500, detail=f"Trust score fetch failed: {exc}") from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Trust score fetch failed. Please try again shortly.",
+        ) from exc
 
 
 # ── POST /api/profile/{user_id}/force-recalculate ─────────────────────────────
@@ -961,7 +1002,10 @@ async def force_recalculate(
         raise
     except Exception as exc:
         logger.exception("[profile/force-recalculate] Failed for user=%s", user_id)
-        raise HTTPException(status_code=500, detail=f"Recalculation failed: {exc}") from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Recalculation failed. Please try again shortly.",
+        ) from exc
 
 
 # ── Conversational Onboarding ─────────────────────────────────────────────────
@@ -976,8 +1020,8 @@ class StartInterviewRequest(BaseModel):
     Optional context hints from the frontend (e.g. from a future auth session).
     If omitted, the backend reads authoritative data from USER_PROFILE directly.
     """
-    user_name:    Optional[str] = None   # e.g. "Ron Morim" or just "Ron"
-    current_role: Optional[str] = None   # e.g. "Team Lead – Partnerships & Support at GO-OUT"
+    user_name:    Optional[str] = None   # e.g. "Jamie Smith" or just "Jamie"
+    current_role: Optional[str] = None   # e.g. "Team Lead – Partnerships & Support at Acme Co"
     intent:       Optional[str] = None   # e.g. "optimize_gaps" for the gap-drill flow
 
 
@@ -1010,7 +1054,7 @@ async def start_interview(
         return state
     except Exception as exc:
         logger.exception("[profile/interview/start] Failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to start interview session. Please try again shortly.") from exc
 
 
 @router.post("/interview/message")
@@ -1033,7 +1077,7 @@ async def send_interview_message(
         raise HTTPException(status_code=403, detail=str(exc))
     except Exception as exc:
         logger.exception("[profile/interview/message] Failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to process message. Please try again shortly.") from exc
 
 
 @router.get("/interview/{session_id}")
@@ -1072,14 +1116,14 @@ async def resume_interview_session(
         raise HTTPException(status_code=403, detail=str(exc))
     except Exception as exc:
         logger.exception("[profile/interview/resume] Failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to resume interview session. Please try again shortly.") from exc
 
 
 @router.post("/interview/{session_id}/upload")
 async def upload_verification_document(
     session_id: str,
-    claim:      str        = Form(..., description="The exact claim being verified"),
-    doc_type:   str        = Form("document", description="transcript | diploma | employment_letter | military_record | certificate"),
+    claim:      str        = Form(..., max_length=500, description="The exact claim being verified"),
+    doc_type:   str        = Form("document", max_length=50, description="transcript | diploma | employment_letter | military_record | certificate"),
     file:       UploadFile = File(...),
     user:       CurrentUser = Depends(get_current_user),
 ):
@@ -1110,17 +1154,28 @@ async def upload_verification_document(
     if len(content) > 10 * 1024 * 1024:  # 10 MB cap
         raise HTTPException(status_code=413, detail="File too large (max 10 MB).")
 
+    fname = file.filename or "upload"
+    ext   = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+    if not _content_matches_extension(content, ext):
+        raise HTTPException(
+            status_code=422,
+            detail=f"File content does not match its .{ext} extension.",
+        )
+
     # Verify
     try:
         result = verify_document(
             file_content  = content,
-            filename      = file.filename or "upload",
+            filename      = fname,
             claim         = claim,
             document_type = doc_type,
         )
     except Exception as exc:
         logger.exception("[profile/interview/upload] Verification failed")
-        raise HTTPException(status_code=500, detail=f"Verification failed: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="Document verification failed. Please try again shortly.",
+        ) from exc
 
     # Update confidence_map in DB if verified/partial
     new_confidence = result.get("confidence")
@@ -1203,7 +1258,7 @@ async def get_confidence_matrix_endpoint(
         logger.exception(
             "[confidence-matrix] radar scoring failed for user=%s: %s", user_id, exc
         )
-        raise HTTPException(status_code=500, detail=f"Radar scoring error: {exc}")
+        raise HTTPException(status_code=500, detail="Radar scoring failed. Please try again shortly.") from exc
 
     try:
         entity_breakdown = get_entity_breakdown(user_id, ENGINE)

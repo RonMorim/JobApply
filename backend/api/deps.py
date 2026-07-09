@@ -34,7 +34,6 @@ dependency) and silently degrades it to a REQUIRED QUERY PARAMETER named
 All annotations below are runtime-valid on 3.9 without the future import.
 """
 import logging
-import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -45,12 +44,16 @@ import httpx
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from backend.config import SUPABASE_JWT_SECRET, SUPABASE_URL
+
 logger = logging.getLogger(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
+# Values are read once, centrally, in backend/config.py — see that module for
+# the required/optional classification and startup validation.
 
-_SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
-_JWT_SECRET   = os.getenv("SUPABASE_JWT_SECRET", "")
+_SUPABASE_URL = (SUPABASE_URL or "").rstrip("/")
+_JWT_SECRET   = SUPABASE_JWT_SECRET or ""
 
 # RS256/JWKS endpoint derived from the Supabase project URL
 _JWKS_URL = f"{_SUPABASE_URL}/auth/v1/.well-known/jwks.json" if _SUPABASE_URL else ""

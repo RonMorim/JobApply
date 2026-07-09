@@ -106,7 +106,7 @@ export const en = {
       redirecting:           'Redirecting...',
       or:                    'or',
       full_name_label:       'Full Name',
-      full_name_placeholder: 'e.g. Ron Morim',
+      full_name_placeholder: 'e.g. Jamie Smith',
       email_label:           'Email',
       password_label:        'Password',
       show_password:         'Show password',

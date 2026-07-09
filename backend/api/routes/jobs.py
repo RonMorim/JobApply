@@ -11,7 +11,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from backend.api.deps import CurrentUser, get_current_user
+from backend.api.deps import CurrentUser, get_current_user, require_admin
 from models.job import DetailedAnalysis, JobMatch, RawJobPosting, ReasonTag
 import backend.services.job_store as job_store
 from backend.services import feed_service
@@ -421,9 +421,10 @@ async def fetch_single_jd(
         jd_text = await asyncio.to_thread(scrape_jd_text, job.apply_url)
         jd_text = jd_text.strip()
     except Exception as exc:
+        logger.error("[fetch-jd] Scrape failed for job_id=%s url=%s: %s", job_id, job.apply_url, exc)
         raise HTTPException(
             status_code=422,
-            detail=f"Could not scrape job description: {exc}",
+            detail="Could not scrape job description. Please try again shortly.",
         )
 
     job_store.update_jd_text(job_id, jd_text)
@@ -533,10 +534,12 @@ async def tailor_cv_brief(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
+        # RuntimeError here can wrap a raw Anthropic API error message
+        # (see cv_tailor_service.py) — log the full detail, don't echo it.
         logger.error("[tailor-cv] Generation failed for job %s: %s", job_id, exc)
         raise HTTPException(
             status_code=422,
-            detail=f"CV tailoring failed: {exc}",
+            detail="CV tailoring failed. Please try again shortly.",
         )
 
     return TailorBriefResponse(**brief, cached=False)
@@ -617,7 +620,8 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
             messages   = [{"role": "user", "content": user_msg}],
         )
     except anthropic.APIError as exc:
-        raise HTTPException(status_code=422, detail=f"Claude API error: {exc}")
+        logger.error("[jobs] Anthropic API error: %s", exc)
+        raise HTTPException(status_code=422, detail="AI service error. Please try again shortly.")
 
     raw = response.content[0].text if response.content else ""
 
@@ -707,7 +711,7 @@ async def analyze_job_url(request: JobUrlRequest, user: CurrentUser = Depends(ge
         raise HTTPException(status_code=422, detail=f"Scraping Error: {exc}")
     except Exception as exc:
         logger.error("Scrape failed for %s: %s", url, exc)
-        raise HTTPException(status_code=502, detail=f"Failed to scrape URL: {exc}")
+        raise HTTPException(status_code=502, detail="Failed to scrape URL. Please try again shortly.")
 
     posting = RawJobPosting(
         id=str(uuid.uuid4()),
@@ -730,7 +734,7 @@ async def analyze_job_url(request: JobUrlRequest, user: CurrentUser = Depends(ge
         raise HTTPException(status_code=502, detail=f"AI analysis returned invalid data: {exc}")
     except Exception as exc:
         logger.exception("MatcherAgent failed for %s", url)
-        raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
+        raise HTTPException(status_code=502, detail="AI analysis failed. Please try again shortly.")
 
     # ── Step 5: tag as manual and persist ────────────────────────────────────
     match = match.model_copy(update={"source": "manual", "is_open": True, "user_id": user.user_id})
@@ -791,7 +795,7 @@ async def analyze_job(
         raise HTTPException(status_code=422, detail=f"Scrape Failed: {exc}")
     except Exception as exc:
         logger.error("[analyze] PIPELINE_FAILURE step=scrape url=%s error=%r", url, exc, exc_info=True)
-        raise HTTPException(status_code=422, detail=f"Scrape Failed: {exc}")
+        raise HTTPException(status_code=422, detail="Scrape Failed. Please try again shortly.")
 
     jd_text = (scraped.raw_text or "").strip()
     if not jd_text:
@@ -815,7 +819,7 @@ async def analyze_job(
         match = await agent.match(posting, user_id=user.user_id)
     except Exception as exc:
         logger.error("[analyze] PIPELINE_FAILURE step=match url=%s error=%r", url, exc, exc_info=True)
-        raise HTTPException(status_code=422, detail=f"Match Failed: {exc}")
+        raise HTTPException(status_code=422, detail="Match Failed. Please try again shortly.")
 
     if "linkedin.com" in url:
         source_type = "linkedin"
@@ -831,7 +835,7 @@ async def analyze_job(
         structured_json = await asyncio.to_thread(structure_jd, jd_text)
     except Exception as exc:
         logger.error("[analyze] PIPELINE_FAILURE step=structure url=%s error=%r", url, exc, exc_info=True)
-        raise HTTPException(status_code=422, detail=f"Structure Failed: {exc}")
+        raise HTTPException(status_code=422, detail="Structure Failed. Please try again shortly.")
 
     if not structured_json:
         logger.error("[analyze] PIPELINE_FAILURE step=structure url=%s error=empty_output", url)
@@ -860,7 +864,7 @@ async def analyze_job(
         final_score = round(float(result.total), 1)
     except Exception as exc:
         logger.error("[analyze] PIPELINE_FAILURE step=score url=%s error=%r", url, exc, exc_info=True)
-        raise HTTPException(status_code=422, detail=f"Score Failed: {exc}")
+        raise HTTPException(status_code=422, detail="Score Failed. Please try again shortly.")
 
     # ── 6. Persist ────────────────────────────────────────────────────────────
     # Apply the same substantive-analysis gate used by the enrichment loop.
@@ -1063,7 +1067,7 @@ async def verify_chat(job_id: str, body: VerifyChatRequest, background_tasks: Ba
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:
         logger.exception("[jobs/verify/chat] Failed for job_id=%s: %s", job_id, exc)
-        raise HTTPException(status_code=502, detail=f"Verification agent error: {exc}")
+        raise HTTPException(status_code=502, detail="Verification agent error. Please try again shortly.")
 
     # Persist score adjustment on verdict
     new_fit: Optional[float] = None
@@ -1228,18 +1232,20 @@ class DevFlushResponse(BaseModel):
 
 @router.post("/dev-flush", response_model=DevFlushResponse)
 async def dev_flush_jobs(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_admin),
 ):
     """
-    **DEV_MODE only** — wipe all cached JD text and scoring state so the
-    pipeline re-fetches and re-scores from a clean slate on the next sync.
+    **DEV_MODE only, admin-only** — wipe all cached JD text and scoring state
+    so the pipeline re-fetches and re-scores from a clean slate on the next
+    sync.
 
     For each job owned by the authenticated user:
       • Clears jd_text → "" (makes _is_thin() return True → triggers hydration)
       • Resets match_score → 0.0 and why_ron → None (triggers LLM enrichment)
 
     Returns immediately with the total number of flushed jobs.
-    Raises HTTP 403 in production (DEV_MODE=False).
+    Raises HTTP 403 in production (DEV_MODE=False) and HTTP 403 for any
+    non-admin caller (require_admin), even when DEV_MODE=True.
     """
     from backend.config import DEV_MODE
 
@@ -1277,14 +1283,17 @@ async def dev_flush_jobs(
 async def purge_jobs(
     min_score: float = Query(30.0, description="Delete rows with match_score below this value"),
     dry_run:   bool  = Query(True,  description="Preview without deleting (default: True for safety)"),
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_admin),
 ):
     """
-    One-time cleanup: remove job rows where match_score < min_score OR title
-    does not match TARGET_SEARCH_QUERIES.
+    Admin-only. One-time cleanup: remove job rows where match_score < min_score
+    OR title does not match TARGET_SEARCH_QUERIES.
 
     Defaults to dry_run=True so you must explicitly pass ?dry_run=false to
     actually delete rows.  Returns a count of rows examined / deleted.
+
+    This is a bulk-delete utility with no frontend UI wired to it — gated to
+    admins (require_admin) rather than every authenticated user.
     """
     from backend.main import purge_irrelevant_jobs
 

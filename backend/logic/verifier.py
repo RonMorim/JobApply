@@ -508,7 +508,7 @@ class ProfileVerifier:
         overall_confidence = round(max(0.0, min(1.0, avg_skill_conf - flag_penalty)), 3)
 
         return {
-            "candidate": "Ron Morim",
+            "candidate": "the candidate",
             "verification_timestamp": datetime.utcnow().isoformat(),
             "overall_confidence": overall_confidence,
             "job_history_verification": job_verifications,
@@ -516,7 +516,7 @@ class ProfileVerifier:
             "company_cultures": company_cultures,
             "discrepancies": discrepancies,
             "synthesized_identity": {
-                "name": "Ron Morim",
+                "name": "the candidate",
                 "verified_title": "Product Manager / Team Lead",
                 "verified_skills": [
                     s["skill"]

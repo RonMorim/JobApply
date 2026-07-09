@@ -82,18 +82,18 @@ def _extract_first_name(
 
     Examples
     --------
-      _extract_first_name("Ron Morim")                 → "Ron"
-      _extract_first_name("ron")                       → "Ron"
-      _extract_first_name(None, "ron.morim@gmail.com") → "Ron"
-      _extract_first_name(None, "ronmorim98@gmail.com")→ "Ronmorim"  (no separator — best effort)
-      _extract_first_name("Ron Morim", "ron@x.com")    → "Ron"  (name_hint wins)
+      _extract_first_name("Jamie Smith")                    → "Jamie"
+      _extract_first_name("jamie")                          → "Jamie"
+      _extract_first_name(None, "jamie.smith@example.com")  → "Jamie"
+      _extract_first_name(None, "jamiesmith98@example.com") → "Jamiesmith"  (no separator — best effort)
+      _extract_first_name("Jamie Smith", "jamie@x.com")     → "Jamie"  (name_hint wins)
     """
     # 1. name_hint that is a proper name (no @ sign).
     #    If the caller accidentally forwarded an email address as name_hint,
     #    fall through to the email-based path below rather than mangling it
-    #    into "Ronmorim" (no separator) or "Ronmorim98" (with digits).
+    #    into "Jamiesmith" (no separator) or "Jamiesmith98" (with digits).
     if name_hint and "@" not in name_hint:
-        token = name_hint.strip().split()[0]        # "Ron Morim" → "Ron"
+        token = name_hint.strip().split()[0]        # "Jamie Smith" → "Jamie"
         token = re.sub(r"^\d+|\d+$", "", token)    # strip leading/trailing digits
         if token:
             return token.capitalize()
@@ -511,8 +511,8 @@ def _build_profile_context(
     (e.g. from the auth session) without changing the source of truth.
 
     Returns:
-        first_name       – given name to address the user ("Ron")
-        full_name        – full name ("Ron Morim")
+        first_name       – given name to address the user ("Jamie")
+        full_name        – full name ("Jamie Smith")
         current_role     – most recent role title + company
         profile_snapshot – plain-text block for injection into system prompts
     """
@@ -522,7 +522,7 @@ def _build_profile_context(
         personal = USER_PROFILE.get("personal", {})
         # Only treat user_name_override as a real name if it contains no @.
         # An email address in this field is a frontend bug — ignore it and
-        # fall back to the stored profile name so we never mangle "Ron Morim".
+        # fall back to the stored profile name so we never mangle it.
         _name_override = user_name_override if (user_name_override and "@" not in user_name_override) else None
         full_name = _name_override or personal.get("name", "")
 
