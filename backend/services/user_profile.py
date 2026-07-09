@@ -759,6 +759,68 @@ def get_profile(user_id: str) -> dict:
     }
 
 
+def format_profile_compact(profile: dict) -> str:
+    """
+    Render the get_profile() shape as compact plain text instead of pretty
+    JSON, for injection into the Ariel system prompt. Every experience entry
+    and every skill is still included — nothing is capped or sliced — only
+    each entry's representation drops JSON's brace/quote/indent overhead.
+    """
+    lines: list[str] = []
+
+    summary = (profile.get("summary") or "").strip()
+    lines.append(f"SUMMARY: {summary or '(none)'}")
+
+    lines.append("")
+    lines.append("EXPERIENCE (most recent first):")
+    experience = profile.get("experience") or []
+    if experience:
+        for e in experience:
+            role    = e.get("role", "") or "(role unknown)"
+            company = e.get("company", "") or "(company unknown)"
+            period  = e.get("period", "")
+            details = (e.get("details") or "").strip()
+            line = f"- {role} @ {company}"
+            if period:
+                line += f" ({period})"
+            if details:
+                line += f": {details}"
+            lines.append(line)
+    else:
+        lines.append("- (none)")
+
+    skills = [str(s).strip() for s in (profile.get("skills") or []) if str(s).strip()]
+    lines.append("")
+    lines.append(f"SKILLS: {', '.join(skills) if skills else '(none)'}")
+
+    education = profile.get("education") or []
+    lines.append("")
+    lines.append("EDUCATION:")
+    if education:
+        for ed in education:
+            parts = [
+                str(ed.get("degree", "") or ""), str(ed.get("field", "") or ""),
+                str(ed.get("institution", "") or ""), str(ed.get("year", "") or ""),
+            ]
+            lines.append("- " + ", ".join(p for p in parts if p))
+    else:
+        lines.append("- (none)")
+
+    goals = profile.get("career_goals") or {}
+    lines.append("")
+    lines.append(
+        "CAREER GOALS: target_roles={}; preferred_locations={}; "
+        "work_environment={}; notes={}".format(
+            ", ".join(goals.get("target_roles") or []) or "(none)",
+            ", ".join(goals.get("preferred_locations") or []) or "(none)",
+            goals.get("work_environment", "any"),
+            (goals.get("notes") or "").strip() or "(none)",
+        )
+    )
+
+    return "\n".join(lines)
+
+
 def build_full_text(user_id: str = "default") -> str:
     """
     Single searchable blob of all profile facts for user_id.

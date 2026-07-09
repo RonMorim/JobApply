@@ -275,6 +275,33 @@ ARIEL_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "update_profile_base",
+        "description": (
+            "Directly write the user's professional summary and/or target job "
+            "title into their profile. Call this the moment you and the user "
+            "land on new or revised summary/title text — do not print the new "
+            "text and ask the user to paste it into the profile UI themselves; "
+            "write it yourself, then confirm in your own words."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "The full replacement professional summary "
+                                   "text, ready to store verbatim.",
+                },
+                "target_title": {
+                    "type": "string",
+                    "description": "The user's current primary target job title "
+                                   "(e.g. 'Senior Product Manager'). Replaces "
+                                   "career_goals.target_roles with this single title.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_tailored_cv_for_review",
         "description": (
             "READ the tailored CV the user is currently reviewing. Returns the "
@@ -670,6 +697,60 @@ def _handle_update_career_goals(
         return f"error: could not save career goals — {exc}"
 
 
+def _handle_update_profile_base(
+    tool_input: dict[str, Any],
+    user_id:    str,
+    session:    Session,
+) -> str:
+    """
+    Directly write professional_summary and/or career_goals.target_roles —
+    the fields Ariel previously could only recommend and rely on the user to
+    paste into the profile UI by hand.
+
+    Partial update semantics: only keys present in tool_input are touched.
+    """
+    summary      = tool_input.get("summary")
+    target_title = tool_input.get("target_title")
+
+    if summary is None and target_title is None:
+        return "No summary or target_title was provided."
+
+    try:
+        row     = _get_or_create_row(user_id, session)
+        profile = copy.deepcopy(row.master_profile or _empty_master_profile())
+
+        updated_fields = []
+
+        if summary is not None:
+            profile["professional_summary"] = str(summary).strip()
+            updated_fields.append("summary")
+
+        if target_title is not None:
+            title = str(target_title).strip()
+            goals: dict = profile.setdefault("career_goals", {
+                "target_roles": [], "preferred_locations": [],
+                "work_environment": "any", "notes": "",
+            })
+            goals["target_roles"] = [title] if title else []
+            profile["career_goals"] = goals
+            updated_fields.append("target_title")
+
+        row.master_profile = profile
+        row.updated_at     = _now_iso()
+        session.commit()
+
+        logger.info(
+            "[ariel_tools] update_profile_base user=%s fields=%s",
+            user_id, updated_fields,
+        )
+        return f"Profile updated: {', '.join(updated_fields)}."
+
+    except Exception as exc:
+        session.rollback()
+        logger.error("[ariel_tools] update_profile_base failed user=%s: %s", user_id, exc)
+        return f"error: could not save profile base fields — {exc}"
+
+
 def _handle_finalize_onboarding(
     tool_input: dict[str, Any],
     user_id:    str,
@@ -796,6 +877,7 @@ _HANDLERS = {
     "update_experience":          _handle_update_experience,
     "update_skills":              _handle_update_skills,
     "update_career_goals":        _handle_update_career_goals,
+    "update_profile_base":        _handle_update_profile_base,
     "finalize_onboarding":        _handle_finalize_onboarding,
     "get_tailored_cv_for_review": _handle_get_tailored_cv_for_review,
     "edit_tailored_cv_bullet":    _handle_edit_tailored_cv_bullet,
