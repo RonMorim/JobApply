@@ -814,11 +814,29 @@ def _extract_text_from_attachment(item: AttachmentItem) -> str | None:
 
     try:
         if mime == "application/pdf":
-            import fitz  # PyMuPDF
-            doc  = fitz.open(stream=raw, filetype="pdf")
-            text = "\n\n".join(page.get_text() for page in doc)
-            doc.close()
-            return text.strip() or None
+            import pdfplumber
+            import re
+            
+            def fix_rtl_visual(text: str) -> str:
+                if not text:
+                    return text
+                if not re.search(r'[\u0590-\u05FF\u0600-\u06FF]', text):
+                    return text
+                rev = text[::-1]
+                def re_rev(m):
+                    return m.group(0)[::-1]
+                ltr_pattern = r'[A-Za-z0-9@#.$%^&*()[\]{}<>\-_|+]+(?:[\s]+[A-Za-z0-9@#.$%^&*()[\]{}<>\-_|+]+)*'
+                return re.sub(ltr_pattern, re_rev, rev)
+
+            pages_text = []
+            with pdfplumber.open(io.BytesIO(raw)) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text(layout=True)
+                    if text:
+                        fixed_lines = [fix_rtl_visual(line) for line in text.split('\n')]
+                        pages_text.append('\n'.join(fixed_lines))
+
+            return "\n\n".join(pages_text).strip() or None
 
         if mime in (
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

@@ -22,6 +22,14 @@ ENGINE   = create_engine(
     connect_args={"check_same_thread": False},
 )
 
+from sqlalchemy import event
+
+@event.listens_for(ENGINE, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA encoding = 'UTF-8'")
+    cursor.close()
+
 
 class Base(DeclarativeBase):
     pass

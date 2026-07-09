@@ -79,11 +79,35 @@ def extract_text(content: bytes, filename: str) -> str:
 
 def _extract_pdf(content: bytes) -> str:
     try:
-        import fitz  # PyMuPDF
-        doc   = fitz.open(stream=content, filetype="pdf")
-        pages = [page.get_text() for page in doc]
-        doc.close()
-        return "\n".join(pages).strip()
+        import pdfplumber
+        import io
+        import re
+
+        def fix_rtl_visual(text: str) -> str:
+            if not text:
+                return text
+            # If no Hebrew/Arabic is present, return text as-is
+            if not re.search(r'[\u0590-\u05FF\u0600-\u06FF]', text):
+                return text
+            
+            rev = text[::-1]
+            def re_rev(m):
+                return m.group(0)[::-1]
+                
+            # Match LTR sequences (words, numbers, symbols) separated by spaces
+            ltr_pattern = r'[A-Za-z0-9@#.$%^&*()[\]{}<>\-_|+]+(?:[\s]+[A-Za-z0-9@#.$%^&*()[\]{}<>\-_|+]+)*'
+            return re.sub(ltr_pattern, re_rev, rev)
+
+        pages_text = []
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text(layout=True)
+                if text:
+                    # Fix RTL for each line
+                    fixed_lines = [fix_rtl_visual(line) for line in text.split('\n')]
+                    pages_text.append('\n'.join(fixed_lines))
+
+        return "\n".join(pages_text).strip()
     except Exception as exc:
         logger.warning("[cv_aggregator] PDF extraction failed: %s", exc)
         return ""

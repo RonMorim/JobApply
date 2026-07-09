@@ -210,6 +210,7 @@ function HistoryIcon({ s = 14 }: { s?: number }) {
 }
 
 function CopyIcon()        { return <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> }
+function CheckIcon()       { return <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg> }
 function ReplyIcon()       { return <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg> }
 function TranslateIcon()   { return <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 8l6 6"/><path d="M4 14l6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg> }
 function PinIcon({ filled = false }: { filled?: boolean }) { return <svg width={13} height={13} viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg> }
@@ -287,8 +288,28 @@ interface ActionBarCallbacks {
 }
 
 function MessageActionBar({ isUser, callbacks }: { isUser: boolean; callbacks: ActionBarCallbacks }) {
+  // Brief "Copied!" feedback — swap the icon/label back after 2s. A ref holds
+  // the timeout id so a rapid second click restarts the window instead of
+  // stacking timeouts, and so it can be cleared on unmount.
+  const [copied, setCopied]   = useState(false)
+  const copiedTimeoutRef      = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => { if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current) }, [])
+
+  const handleCopy = useCallback(() => {
+    callbacks.onCopy()
+    setCopied(true)
+    if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current)
+    copiedTimeoutRef.current = setTimeout(() => setCopied(false), 2000)
+  }, [callbacks])
+
   const actions = [
-    { icon: <CopyIcon />,    label: 'Copy',   danger: false, fn: callbacks.onCopy   },
+    {
+      icon:  copied ? <CheckIcon /> : <CopyIcon />,
+      label: copied ? 'Copied!' : 'Copy',
+      danger: false,
+      fn: handleCopy,
+    },
     { icon: <ReplyIcon />,   label: 'Reply',  danger: false, fn: callbacks.onReply  },
     // Edit — user messages only
     ...(isUser && callbacks.onEdit ? [{
@@ -326,7 +347,7 @@ function MessageActionBar({ isUser, callbacks }: { isUser: boolean; callbacks: A
           className={`
             w-6 h-6 flex items-center justify-center rounded-lg transition
             ${a.danger ? 'text-slate-300 hover:text-rose-500 hover:bg-rose-50' : 'text-slate-300 hover:text-slate-600 hover:bg-slate-100'}
-            ${a.label === 'Unpin' ? '!text-teal-500' : ''}
+            ${a.label === 'Unpin' || a.label === 'Copied!' ? '!text-teal-500' : ''}
           `}>
           {a.icon}
         </button>
