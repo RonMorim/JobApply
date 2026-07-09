@@ -45,43 +45,27 @@ function LinkedInIcon({ s = 13 }: { s?: number }) {
   )
 }
 
-// ── RTL detection ─────────────────────────────────────────────────────────────
-
-const _HEBREW_RE = /[֐-׿יִ-ﭏ]/g
-
-function getTextDirection(text: string): 'rtl' | 'ltr' {
-  if (!text) return 'ltr'
-  const hebrewCount = (text.match(_HEBREW_RE) ?? []).length
-  const letterCount = (text.match(/[a-zA-Z֐-׿יִ-ﭏ]/g) ?? []).length
-  return letterCount > 0 && hebrewCount / letterCount > 0.35 ? 'rtl' : 'ltr'
-}
+// RTL detection no longer needed due to dir="auto"
 
 // ── RTL-aware bullet & paragraph atoms ───────────────────────────────────────
 
 function BulletItem({ text }: { text: string }) {
-  const dir   = getTextDirection(text)
-  const isRtl = dir === 'rtl'
   return (
     <li
-      dir={dir}
-      className={`flex items-start gap-2 text-[12px] leading-relaxed text-slate-600 ${
-        isRtl ? 'flex-row-reverse text-right' : 'text-left'
-      }`}
+      dir="auto"
+      className="flex items-start gap-2 text-[12px] leading-relaxed text-slate-600 [unicode-bidi:plaintext] text-start"
     >
       <span className="mt-[6px] shrink-0 h-[5px] w-[5px] rounded-full bg-slate-400" />
-      <span className="flex-1">{text}</span>
+      <span className="flex-1" dir="auto">{text}</span>
     </li>
   )
 }
 
 function ParagraphBlock({ text, className = '' }: { text: string; className?: string }) {
-  const dir = getTextDirection(text)
   return (
     <p
-      dir={dir}
-      className={`text-[12px] leading-relaxed text-slate-600 ${
-        dir === 'rtl' ? 'text-right' : 'text-left'
-      } ${className}`}
+      dir="auto"
+      className={`text-[12px] leading-relaxed text-slate-600 [unicode-bidi:plaintext] text-start ${className}`}
     >
       {text}
     </p>
@@ -367,14 +351,14 @@ function StructuredJdPanel({ parsed }: { parsed: StructuredJd }) {
             {Array.isArray(val) ? (
               <ul className="space-y-1.5">
                 {(val as string[]).map((item, i) => (
-                  <li key={i} className="flex items-start gap-2 text-[12.5px] leading-relaxed text-slate-700">
+                  <li key={i} dir="auto" className="flex items-start gap-2 text-[12.5px] leading-relaxed text-slate-700 [unicode-bidi:plaintext] text-start">
                     <span className="mt-[7px] shrink-0 h-[4px] w-[4px] rounded-full bg-slate-400" />
-                    <span className="flex-1">{item}</span>
+                    <span className="flex-1" dir="auto">{item}</span>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-[12.5px] leading-relaxed text-slate-700">{val as string}</p>
+              <p dir="auto" className="text-[12.5px] leading-relaxed text-slate-700 [unicode-bidi:plaintext] text-start">{val as string}</p>
             )}
           </div>
         )
@@ -395,13 +379,12 @@ interface JdPanelProps {
 }
 function JdPanel({ text, expanded, onToggleExpand, isHebrewLocale = false }: JdPanelProps) {
   const isLong   = text.length > JD_COLLAPSE_THRESHOLD
-  const outerDir: 'rtl' | 'ltr' = isHebrewLocale ? 'rtl' : getTextDirection(text.slice(0, 200))
   return (
     <div>
       <div className="relative">
         <div
           className="overflow-y-auto rounded-lg bg-white border border-slate-200 p-4"
-          dir={outerDir}
+          dir="auto"
           style={{
             boxShadow: 'inset 0 2px 4px rgba(15,23,42,0.04)',
             maxHeight: isLong ? (expanded ? '60vh' : '16rem') : undefined,
@@ -703,7 +686,7 @@ function AgentAnalysisBox({ job, userId }: { job: ApiFeedJob; userId?: string })
           <div
             className="rounded-lg px-4 py-3 bg-slate-50 border border-slate-200"
           >
-            <p className="text-[13px] text-slate-600 leading-relaxed max-w-3xl">
+            <p dir="auto" className="text-[13px] text-slate-600 leading-relaxed max-w-3xl [unicode-bidi:plaintext] text-start">
               {raw}
             </p>
           </div>
@@ -816,9 +799,7 @@ export function JobCard({
 
   const handleToggleDetails = () => setShowDetails(v => !v)
 
-  // Title / company direction
-  const titleDir   = isHebrewLocale || getTextDirection(job.title)   === 'rtl' ? 'rtl' : 'ltr'
-  const companyDir = isHebrewLocale || getTextDirection(job.company)  === 'rtl' ? 'rtl' : 'ltr'
+  // Title / company direction handled by dir="auto"
 
   return (
     <article
@@ -850,7 +831,7 @@ export function JobCard({
         }`}
       >
         {/* Title + meta */}
-        <div className="flex-1 min-w-0" dir={titleDir}>
+        <div className="flex-1 min-w-0" dir="auto" style={{ textAlign: 'start', unicodeBidi: 'plaintext' }}>
           <div className="flex items-center gap-2.5 flex-wrap">
             <h2 className="text-[15px] font-bold text-slate-900 tracking-tight">
               {job.is_new && (
@@ -875,7 +856,7 @@ export function JobCard({
               </span>
             )}
           </div>
-          <p className="text-[12.5px] text-slate-400 mt-1" dir={companyDir}>
+          <p className="text-[12.5px] text-slate-400 mt-1" dir="auto" style={{ textAlign: 'start', unicodeBidi: 'plaintext' }}>
             {job.company || 'Unknown Company'}
             {job.location && <> · {job.location}</>}
             {job.posted_at && <> · <span className="tabular-nums">{job.posted_at}</span></>}

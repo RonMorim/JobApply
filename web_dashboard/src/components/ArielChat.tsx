@@ -390,7 +390,8 @@ const MessageBubble = memo(function MessageBubble({
             style={{ background: TOKENS.color.primary }}>A</div>
         )}
         <div
-          className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-[13px] leading-relaxed transition-all duration-200
+          dir="auto"
+          className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-[13px] leading-relaxed transition-all duration-200 [unicode-bidi:plaintext] text-start
             ${isUser ? 'text-white rounded-tr-sm' : 'bg-white border text-slate-800 rounded-tl-sm'}
             ${!isUser && message.isPinned ? 'border-teal-300 bg-teal-50/40' : !isUser ? 'border-slate-100' : ''}
           `}
@@ -552,7 +553,7 @@ function HistoryPanel({
                         <span className="text-[10.5px] text-slate-400">{fmtDate(s.updated_at)}</span>
                         <span className="text-[10px] text-slate-300">{s.message_count} msg{s.message_count !== 1 ? 's' : ''}</span>
                       </div>
-                      <p dir="auto" className="text-[12px] text-slate-600 leading-snug line-clamp-2">{s.preview || 'Empty conversation'}</p>
+                      <p dir="auto" className="text-[12px] text-slate-600 leading-snug line-clamp-2 [unicode-bidi:plaintext] text-start">{s.preview || 'Empty conversation'}</p>
                       {isActive && (
                         <span className="mt-1 inline-block text-[10px] font-semibold text-teal-600">Active</span>
                       )}
@@ -1263,7 +1264,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
           rows={1}
           autoFocus
           disabled={inputDisabled}
-          className="flex-1 resize-none overflow-y-auto rounded-xl border border-slate-200 px-3 py-2.5 text-[13px] leading-[1.4] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-500/20 transition disabled:opacity-50 bg-white min-h-[44px] max-h-[112px]"
+          className="flex-1 resize-none overflow-y-auto rounded-xl border border-slate-200 px-3 py-2.5 text-[13px] leading-[1.4] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-500/20 transition disabled:opacity-50 bg-white min-h-[44px] max-h-[112px] [unicode-bidi:plaintext] text-start"
         />
 
         {streaming ? (

@@ -85,6 +85,7 @@ function EditableField({
       ref={ref}
       value={value}
       rows={rows}
+      dir="auto"
       onChange={e => onChange(e.target.value)}
       style={{
         width: '100%',
@@ -100,6 +101,8 @@ function EditableField({
         background: highlight ? 'oklch(0.98 0.02 80)' : TOKENS.color.bg,
         outline: 'none',
         transition: 'border-color 0.15s, background 0.15s',
+        textAlign: 'start',
+        unicodeBidi: 'plaintext',
       }}
       onFocus={e => { e.currentTarget.style.borderColor = TOKENS.color.primary }}
       onBlur={e => { e.currentTarget.style.borderColor = highlight ? 'oklch(0.75 0.14 80)' : TOKENS.color.line }}
@@ -171,11 +174,14 @@ function SkillCategoryEditor({
           onChange={e => setInputVal(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && add()}
           placeholder="Add skill…"
+          dir="auto"
           style={{
             flex: 1, fontSize: 11, padding: '3px 8px', borderRadius: 5,
             border: `1px solid ${TOKENS.color.line}`,
             background: TOKENS.color.bg, color: TOKENS.color.ink2,
             outline: 'none',
+            textAlign: 'start',
+            unicodeBidi: 'plaintext',
           }}
         />
         <button onClick={add} style={{
