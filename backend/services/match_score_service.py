@@ -972,6 +972,12 @@ _LLM_SCORER_TEMPLATE = """\
 Score this JOB vs. CANDIDATE across two independent capability dimensions.
 Return ONLY valid JSON — no markdown, no extra text.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BILINGUAL & RTL PROCESSING (HEBREW/ENGLISH)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You must seamlessly comprehend mixed syntax, such as Hebrew sentences containing English technical terms or acronyms, without losing context or introducing translation artifacts.
+Regardless of the input language (Hebrew, English, or mixed), all returned JSON structures MUST use English keys exclusively. Values may be in the source language, but keys must always be English.
+
 JOB TITLE: {job_title}
 HIRING COMPANY: {company_name}
 

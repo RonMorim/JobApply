@@ -35,6 +35,12 @@ _SENIORITY_LEVELS = ("junior", "mid", "senior", "staff", "principal")
 _PROFILE_SYSTEM_PROMPT = """\
 Return ONLY raw JSON, no conversational filler, no markdown blocks.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BILINGUAL & RTL PROCESSING (HEBREW/ENGLISH)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You must seamlessly comprehend mixed syntax, such as Hebrew sentences containing English technical terms or acronyms, without losing context or introducing translation artifacts.
+Regardless of the input language (Hebrew, English, or mixed), all returned JSON structures MUST use English keys exclusively. Values may be in the source language, but keys must always be English.
+
 Extract a structured candidate profile from the CV text and optional chat context.
 Return this exact JSON shape — every key is required:
 
@@ -61,6 +67,12 @@ Extraction rules:
 
 _POSTING_SYSTEM_PROMPT = """\
 Return ONLY raw JSON, no conversational filler, no markdown blocks.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BILINGUAL & RTL PROCESSING (HEBREW/ENGLISH)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You must seamlessly comprehend mixed syntax, such as Hebrew sentences containing English technical terms or acronyms, without losing context or introducing translation artifacts.
+Regardless of the input language (Hebrew, English, or mixed), all returned JSON structures MUST use English keys exclusively. Values may be in the source language, but keys must always be English.
 
 Extract a structured job analysis from the job posting text.
 Return this exact JSON shape — every key is required:
