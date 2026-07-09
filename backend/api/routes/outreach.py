@@ -80,7 +80,7 @@ async def generate_message(body: OutreachRequest, user: CurrentUser = Depends(ge
         )
     except Exception as exc:
         logger.exception("[outreach] Message generation failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Message generation failed. Please try again shortly.") from exc
 
     return OutreachResponse(
         message_type = body.message_type,
@@ -105,7 +105,7 @@ async def generate_headhunter_message(body: HeadhunterRequest, user: CurrentUser
         )
     except Exception as exc:
         logger.exception("[outreach] Headhunter message generation failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Message generation failed. Please try again shortly.") from exc
 
     return OutreachResponse(
         message_type = "headhunter",
@@ -137,7 +137,7 @@ async def generate_job_outreach(
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         logger.exception("[outreach] generate failed for job %s: %s", job_id, exc)
-        raise HTTPException(status_code=502, detail=f"Outreach generation failed: {exc}")
+        raise HTTPException(status_code=502, detail="Outreach generation failed. Please try again shortly.") from exc
 
     return JobOutreachResponse(
         job_id        = job_id,

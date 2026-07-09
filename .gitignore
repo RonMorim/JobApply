@@ -24,6 +24,13 @@ __pycache__/
 # Personal data & profiles
 data/
 backend/data/
+backend/personal_overrides.json
+backend/supplemental_answers.json
+/Ron_Morim_CV_PM.pdf
+/*_CV_*.pdf
+
+# Generated CVs / smoke-test output
+test_cv.pdf
 
 # Node.js
 node_modules/
@@ -45,8 +52,15 @@ logs/
 # Build artifacts
 dist/
 build/
+*.tsbuildinfo
 
 # Test artifacts
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Generated reports / scan output
+skills_report.md
+
+# Claude Code local (per-developer) settings — do not share machine-specific state
+.claude/settings.local.json

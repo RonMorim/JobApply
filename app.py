@@ -562,7 +562,7 @@ identity       = vp.get("synthesized_identity", {})
 skill_records  = vp.get("skill_verification", [])
 job_history    = vp.get("job_history_verification", [])
 overall_conf   = vp.get("overall_confidence", 0.0)
-candidate      = vp.get("candidate", "Ron Morim")
+candidate      = vp.get("candidate", "the candidate")
 verified_title = identity.get("verified_title", "Product Manager / Team Lead")
 
 for _sk, _ctx in raw.get("skill_contexts", {}).items():

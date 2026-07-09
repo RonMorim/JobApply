@@ -10,6 +10,10 @@ from dotenv import load_dotenv
 
 # Load backend/.env before any module that reads env vars is imported.
 # Using an absolute path guarantees the correct file regardless of CWD.
+# backend/config.py performs this same load (so it's self-sufficient for any
+# other entrypoint that imports it directly); this call is kept as the
+# earliest possible guard for this specific process. Both calls are
+# idempotent — see backend/config.py for the full env-var inventory.
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
 
 # When uvicorn is launched from the backend/ directory, the project root
@@ -23,13 +27,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.api.routes import agents, analytics, applications, ariel, auth, chat, crm, history, jobs, outreach, profile, resumes, settings, webhooks
 from backend.config import (
     AUTO_DISCOVERY,
+    CORS_ORIGINS,
     CREDIT_CONSERVATION_MODE,
     DEV_MAX_JOBS_PER_BOARD,
     DEV_MODE,
@@ -332,6 +338,27 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Job Apply API", version="0.1.0", lifespan=lifespan)
 
 
+# ── Global exception safety net ───────────────────────────────────────────────
+# Last-resort handler for any exception a route/service did not itself convert
+# to an HTTPException. FastAPI's built-in handlers for HTTPException and
+# RequestValidationError are more specific and always win over this one, so
+# existing intentional error responses (422 validation errors, deliberate
+# HTTPException(status_code=..., detail=...) calls) are completely unaffected.
+# This only catches what would otherwise be an unhandled exception — it
+# ensures the raw exception text (which can contain library internals, DB
+# details, or LLM provider error bodies) never reaches the client.
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception(
+        "[unhandled] %s %s -> %s", request.method, request.url.path, type(exc).__name__,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error. Please try again shortly."},
+    )
+
+
 # ── Security headers ──────────────────────────────────────────────────────────
 # Inject hardening headers on every response. Native Starlette middleware — no
 # new dependency. Placed as a class so the header set lives in one auditable
@@ -354,16 +381,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
+# Origin list is environment-based (backend/config.py::CORS_ORIGINS):
+#   ENVIRONMENT=development (default) → same localhost list as before.
+#   ENVIRONMENT=production            → explicit CORS_ALLOWED_ORIGINS only.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://127.0.0.1:5500",
-        "http://localhost:5500",
-    ],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

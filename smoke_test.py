@@ -18,7 +18,7 @@ async def run_test():
     
     # עדכון פרופיל עם הוכחות כרונולוגיות כדי "לשבור" את שגיאת ה-0 שנים
     my_profile = UserProfile(
-        full_name="Ron Morim",
+        full_name="Jamie Smith",
         current_role="Product Manager",
         skills=[
             "Product Manager at Go-Out (2022-2025): Led B2C product roadmap and Agile sprints",

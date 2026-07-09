@@ -414,9 +414,9 @@ export function ProfileChat({ intent, forceIntro = false }: { intent?: string; f
   // from its own USER_PROFILE constant in that case.
   const { user } = useAuth()
 
-  // Resolve the display name using the same function that drives the avatar,
-  // which includes the KNOWN_EMAIL_NAMES override map. Only forward to the
-  // backend if the result is a real name (no @ sign, not a bare email prefix).
+  // Resolve the display name using the same function that drives the avatar.
+  // Only forward to the backend if the result is a real name (no @ sign, not
+  // a bare email prefix).
   const _resolvedName = resolveDisplayName(
     user?.email,
     user?.user_metadata as Record<string, unknown> | null,
@@ -425,7 +425,7 @@ export function ProfileChat({ intent, forceIntro = false }: { intent?: string; f
 
   const userContext: StartInterviewContext = {
     // Send the resolved full name so the backend can extract the exact first
-    // name (e.g. "Ron Morim" → "Ron") without relying on email parsing.
+    // name (e.g. "Jamie Smith" → "Jamie") without relying on email parsing.
     ...((_isRealName) ? { user_name: _resolvedName } : {}),
     // Forward the intent to the backend so it can tailor the opening prompt.
     ...(intent ? { intent } : {}),

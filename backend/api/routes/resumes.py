@@ -138,7 +138,7 @@ async def generate_resume(
         )
     except Exception as exc:
         logger.exception("[resumes] ResumeAgent failed for job %s", job_id)
-        raise HTTPException(status_code=502, detail=f"Resume generation failed: {exc}")
+        raise HTTPException(status_code=502, detail="Resume generation failed. Please try again shortly.") from exc
 
     missing = [
         MissingDataRequest(
@@ -538,7 +538,7 @@ async def tailor_resume(req: TailorRequest, user: CurrentUser = Depends(get_curr
         result = await agent.tailor(job, supplemental_answers=jd_answers or None)
     except Exception as exc:
         logger.exception("[resumes/tailor] TailorAgent failed for job %s", req.job_id)
-        raise HTTPException(status_code=502, detail=f"CV tailoring failed: {exc}")
+        raise HTTPException(status_code=502, detail="CV tailoring failed. Please try again shortly.") from exc
 
     # ── Missing data: attempt auto-fill from master profile ───────────────────
     if result["type"] == "missing_data":
@@ -566,7 +566,7 @@ async def tailor_resume(req: TailorRequest, user: CurrentUser = Depends(get_curr
                 logger.exception(
                     "[resumes/tailor] TailorAgent (auto-fill retry) failed for job %s", req.job_id
                 )
-                raise HTTPException(status_code=502, detail=f"CV tailoring failed: {exc}")
+                raise HTTPException(status_code=502, detail="CV tailoring failed. Please try again shortly.") from exc
 
         # Still missing data after auto-fill attempt (or no hits): return only
         # the questions that were NOT resolved by the cache.
@@ -597,7 +597,7 @@ async def tailor_resume(req: TailorRequest, user: CurrentUser = Depends(get_curr
         pdf_bytes = await build_pdf(cv_data, template_id="t2_modern")
     except Exception as exc:
         logger.exception("[resumes/tailor] PDF build failed for job %s", req.job_id)
-        raise HTTPException(status_code=502, detail=f"PDF generation failed: {exc}")
+        raise HTTPException(status_code=502, detail="PDF generation failed. Please try again shortly.") from exc
 
     # ── Compute match score against the freshly generated cv_data ────────────
     # cv_data is always the just-produced output from TailorAgent — never cached.
@@ -783,7 +783,7 @@ async def copilot_edit(req: CopilotRequest, user: CurrentUser = Depends(get_curr
         )
     except Exception as exc:
         logger.exception("[resumes/copilot] CopilotAgent failed for job %s", req.job_id)
-        raise HTTPException(status_code=502, detail=f"Copilot edit failed: {exc}")
+        raise HTTPException(status_code=502, detail="Copilot edit failed. Please try again shortly.") from exc
 
     # ── warning / rejected: skip rebuild, return agent's message immediately ──
     if result["status"] in ("warning", "rejected"):
@@ -813,7 +813,7 @@ async def copilot_edit(req: CopilotRequest, user: CurrentUser = Depends(get_curr
         pdf_bytes = await build_pdf(cv_data, template_id="t2_modern")
     except Exception as exc:
         logger.exception("[resumes/copilot] PDF build failed for job %s", req.job_id)
-        raise HTTPException(status_code=502, detail=f"PDF generation failed: {exc}")
+        raise HTTPException(status_code=502, detail="PDF generation failed. Please try again shortly.") from exc
 
     match_score_dict: Optional[dict] = None
     score_result = None
@@ -1058,7 +1058,7 @@ async def revise_resume(req: ReviseRequest, user: CurrentUser = Depends(get_curr
         )
     except Exception as exc:
         logger.exception("[resumes/revise] Gatekeeper failed for job %s", req.job_id)
-        raise HTTPException(status_code=502, detail=f"Revision failed: {exc}")
+        raise HTTPException(status_code=502, detail="Revision failed. Please try again shortly.") from exc
 
     pdf_b64: Optional[str] = None
     if result.pdf_bytes:
@@ -1098,7 +1098,7 @@ async def render_pdf(req: RenderPdfRequest, user: CurrentUser = Depends(get_curr
         pdf_bytes = await build_pdf(req.cv_data, template_id=req.template_id)
     except Exception as exc:
         logger.exception("[resumes/render-pdf] PDF render failed template=%s", req.template_id)
-        raise HTTPException(status_code=502, detail=f"PDF render failed: {exc}")
+        raise HTTPException(status_code=502, detail="PDF render failed. Please try again shortly.") from exc
 
     return {"pdf_b64": base64.b64encode(pdf_bytes).decode()}
 
@@ -1143,7 +1143,7 @@ async def match_score(req: MatchScoreRequest, user: CurrentUser = Depends(get_cu
         )
     except Exception as exc:
         logger.exception("[resumes/match-score] Scoring failed for job %s", req.job_id)
-        raise HTTPException(status_code=502, detail=f"Match scoring failed: {exc}")
+        raise HTTPException(status_code=502, detail="Match scoring failed. Please try again shortly.") from exc
 
     return MatchScoreResponse(
         total               = result.total,
