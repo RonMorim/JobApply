@@ -481,6 +481,23 @@ async def refresh_user_scores(user_id: str) -> int:
     if proficiencies:
         logger.info("[feed_service] s2 proficiency context: %s", list(proficiencies.keys()))
 
+    # Fetch the Confidence Matrix once for this batch instead of once per job.
+    # It does not change mid-batch, so re-querying profile_entities /
+    # evidence_records inside compute_match_score_async for every pending job
+    # was a pure N+1 (JOB-6) — up to len(pending) redundant identical query
+    # pairs per enrichment cycle. Falls back to per-job fetching (entity_scores
+    # stays None) if the lookup itself fails, matching the previous behavior.
+    try:
+        from backend.services.confidence_matrix_service import get_entity_breakdown
+        from backend.services.db import ENGINE
+        entity_scores = list(get_entity_breakdown(user_id, ENGINE))
+    except Exception as exc:
+        logger.warning(
+            "[feed_service] s2: batch entity_breakdown prefetch failed for user=%s "
+            "(falling back to per-job fetch): %s", user_id, exc,
+        )
+        entity_scores = None
+
     enriched = 0
     sem      = asyncio.Semaphore(5)   # gates concurrent Anthropic calls only
 
@@ -564,6 +581,7 @@ async def refresh_user_scores(user_id: str) -> int:
                     user_id             = user_id,
                     job_title           = job.title,
                     company_name        = job.company or "",
+                    entity_scores       = entity_scores,
                 )
 
                 # Re-use the s1 local proxy score when available to avoid
@@ -593,14 +611,22 @@ async def refresh_user_scores(user_id: str) -> int:
                 # enrichment pass re-attempts it on the next s2 cycle.
                 _why         = (result.why_ron or "").strip()
                 has_analysis = is_substantive_analysis(_why)
-                job_store.update_match_score(
-                    job.job_id, user_id, float(result.total), is_proxy=not has_analysis
+
+                skill_tags = _match_skill_tags(result.matched_skills)
+                prof_tags  = _proficiency_reason_tags(result.proficiency_notes)
+
+                # Single SELECT + UPDATE for this job's whole enrichment outcome
+                # instead of 3 separate round trips (JOB-6 write N+1 fix).
+                fail_count = job_store.update_enrichment_result(
+                    job.job_id, user_id,
+                    score             = float(result.total),
+                    is_proxy          = not has_analysis,
+                    reasons           = skill_tags + prof_tags,
+                    why_ron           = result.why_ron if has_analysis else None,
+                    increment_failure = not has_analysis,
                 )
 
-                if has_analysis:
-                    job_store.update_why_ron(job.job_id, user_id, result.why_ron)
-                else:
-                    fail_count = job_store.increment_enrichment_failures(job.job_id)
+                if not has_analysis:
                     logger.warning(
                         "[feed_service] s2: job %s (%s @ %s) scored but LLM returned "
                         "non-substantive analysis (why_ron=%r, len=%d) — "
@@ -608,10 +634,6 @@ async def refresh_user_scores(user_id: str) -> int:
                         job.job_id, job.title, job.company,
                         _why[:80], len(_why), fail_count,
                     )
-
-                skill_tags = _match_skill_tags(result.matched_skills)
-                prof_tags  = _proficiency_reason_tags(result.proficiency_notes)
-                job_store.update_reasons(job.job_id, user_id, skill_tags + prof_tags)
 
                 enriched += 1
                 logger.info(

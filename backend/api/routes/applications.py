@@ -69,8 +69,7 @@ async def get_application(
     user: CurrentUser = Depends(get_current_user),
 ):
     """Return a single application by ID, scoped to the authenticated user."""
-    all_apps = app_store.get_all(user_id=user.user_id)
-    match    = next((a for a in all_apps if a.application_id == application_id), None)
+    match = app_store.get_by_id(application_id, user_id=user.user_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Application not found.")
     return match

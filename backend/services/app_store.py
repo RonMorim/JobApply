@@ -3,6 +3,8 @@ Persistent application store backed by SQLite via SQLAlchemy.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from sqlalchemy.orm import Session
 
 from backend.services.db import ENGINE, ApplicationRow
@@ -57,6 +59,21 @@ def get_all(user_id: str = "default") -> list[Application]:
             .all()
         )
         return [_from_row(r) for r in rows]
+
+
+def get_by_id(application_id: str, user_id: str = "default") -> Optional[Application]:
+    """
+    Return a single application by its primary key, scoped to user_id.
+
+    Direct indexed lookup — replaces the previous get_application() route
+    pattern of fetching every application for the user via get_all() and
+    linear-scanning in Python for one application_id (JOB-6).
+    """
+    with Session(ENGINE) as session:
+        row = session.get(ApplicationRow, application_id)
+        if not row or row.user_id != user_id:
+            return None
+        return _from_row(row)
 
 
 def has_application(job_id: str, user_id: str = "default") -> bool:
