@@ -40,7 +40,7 @@ No test framework is configured for the frontend.
 **Database**: SQLite is the actual, active primary datastore — `backend/services/db.py` connects to `sqlite:///backend/jobs.db` (has live `-shm`/`-wal` files). `DATABASE_URL`/Postgres in `.env.example` is not wired into `backend/config.py` — treat as aspirational/unused. Supabase is used only for auth (JWT) and a chat-logs table (`supabase/migrations/`), not as the main app DB. Root-level `jobs.db` is a stray 0-byte artifact, unrelated to `backend/jobs.db`.
 
 ### Legacy standalone Streamlit app (not part of the FastAPI product)
-Root `app.py` is a separate Streamlit dashboard that imports `orchestrator.py` and `backend/logic/*`. `orchestrator.py` defines `analyze_fit()` and a hardcoded `_TARGET_JOB`. Do not confuse this with the FastAPI backend — it's a parallel/older UI kept for reference.
+Root `app.py` is a separate Streamlit dashboard that imports `orchestrator.py` and `backend/logic/*`. `orchestrator.py` defines `analyze_fit()` and a hardcoded `_TARGET_JOB`. Do not confuse this with the FastAPI backend — it's a parallel/older UI kept for reference. See `docs/architecture-boundaries.md` for the full dependency-direction audit and multi-tenant preparation notes.
 
 ### Frontend (`web_dashboard/`)
 App root and package name are `job-apply-web`; source lives in `web_dashboard/src/{app,components,contexts,hooks,lib,locales}`. Next.js 14 (app router), Tailwind, Supabase JS client. `web_dashboard/job-apply-web/` is **not** a nested app — it's a stray build-cache leftover with no source, safe to ignore.
