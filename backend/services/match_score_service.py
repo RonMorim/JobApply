@@ -350,6 +350,17 @@ class MatchScoreResult:
     culture_delta:        Optional[float] = None   # applied composite adjustment, ±5.0
     culture_category:     Optional[str]   = None   # startup|scaleup|corporate|agency
     culture_note:         Optional[str]   = None   # specific UI explanation
+    # ── Bullet-level skills-gap mapping (CVParser/LiveEditor integration) ─────
+    # Computed by _map_bullet_matches() inside _phase1() — always populated,
+    # LLM-independent, no cap on length (Principle: no truncation). Addressed
+    # by (experience_index, bullet_index), NOT a frontend ParsedBullet.id:
+    # that id is a content hash that exists only in the frontend's
+    # web_dashboard/src/lib/cv.ts/cvParser.ts and never crosses the wire (the
+    # CvData JSON this service consumes carries bullets as plain strings).
+    # The frontend resolves position -> stable id via
+    # cv.experience[experience_index].bullets[bullet_index].id when it wants
+    # to key Ariel's per-bullet analysis off a persistent id.
+    bullet_matches:       list[dict]      = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -378,6 +389,7 @@ class MatchScoreResult:
             "culture_delta":        self.culture_delta,
             "culture_category":     self.culture_category,
             "culture_note":         self.culture_note,
+            "bullet_matches":       self.bullet_matches,
         }
 
 
@@ -712,6 +724,60 @@ def _confidence_weighted_skill_score(
         return None, None, None
 
 
+# ── Bullet-level skills-gap mapping ───────────────────────────────────────────
+
+def _map_bullet_matches(
+    cv_data: dict,
+    jd_keywords: set[str],
+    jd_skills: list[str],
+    jd_seniority: int,
+) -> list[dict]:
+    """
+    Skills Gap Analysis at bullet granularity: for every bullet in the CV,
+    find which JD keywords/skills it evidences and whether its own seniority
+    signal meets the JD's required level — "critical for Ariel's analysis"
+    per the CVParser/LiveEditor integration (bullet_matches on MatchScoreResult).
+
+    Pure-Python, deterministic, no network calls — runs unconditionally
+    alongside the rest of Phase 1, independent of whether the LLM ran.
+
+    No cap on the returned list: every bullet that evidences at least one JD
+    term is included (Architectural Principle: no truncation — this mirrors
+    why matched_critical_capabilities/ats_gaps are never sliced).
+    """
+    all_terms = sorted(set(jd_keywords) | {s for s in jd_skills if s})
+    if not all_terms:
+        return []
+
+    matches: list[dict] = []
+    for exp_idx, exp in enumerate(cv_data.get("experience") or []):
+        for bullet_idx, bullet_text in enumerate(exp.get("bullets") or []):
+            if not bullet_text or not bullet_text.strip():
+                continue
+            bullet_lower  = bullet_text.lower()
+            bullet_tokens = _tokenize(bullet_text)
+            matched_terms = [
+                term for term in all_terms
+                if term in bullet_tokens or (" " in term and term in bullet_lower)
+            ]
+            if not matched_terms:
+                continue
+            matches.append({
+                "experience_index":  exp_idx,
+                "bullet_index":      bullet_idx,
+                "matched_terms":     matched_terms,
+                # Experience Weighting: does this specific bullet's own
+                # seniority signal meet the JD's required level? Informational
+                # (feeds Ariel's explanation of WHICH bullets carry the match),
+                # not a re-weighting of the composite score — the existing
+                # seniority_alignment component (title-level, 0-25 pts) is the
+                # only place seniority affects the numeric total; see
+                # finalize_composite()'s single-source-of-truth guard above.
+                "seniority_aligned": _detect_seniority(bullet_text) >= jd_seniority,
+            })
+    return matches
+
+
 # ── Phase 1: pure-Python keyword/skills/seniority scoring ────────────────────
 
 def _phase1(
@@ -883,9 +949,12 @@ def _phase1(
 
     total = round(min(100.0, max(0.0, total)), 1)
 
+    bullet_matches = _map_bullet_matches(cv_data, jd_keywords, jd_skills, jd_seniority)
+
     logger.debug(
-        "match_score Phase1: kw=%.1f/40 skills=%.1f/35 seniority=%.1f/25 → %.1f",
-        score_1, score_2, score_3, total,
+        "match_score Phase1: kw=%.1f/40 skills=%.1f/35 seniority=%.1f/25 → %.1f "
+        "bullet_matches=%d",
+        score_1, score_2, score_3, total, len(bullet_matches),
     )
 
     return MatchScoreResult(
@@ -904,6 +973,7 @@ def _phase1(
         ],
         llm_validated       = False,
         proficiency_notes   = proficiency_notes,
+        bullet_matches      = bullet_matches,
     )
 
 
@@ -1832,6 +1902,10 @@ async def compute_match_score_async(
             management_score    = 0.0,
             why_ron             = None,
             missing_critical_capabilities = [],
+            # bullet_matches is a Phase-1, LLM-independent signal — the thin-JD
+            # fallback zeroes the LLM-derived score components but must not
+            # drop it too (it's still honest, still useful for Ariel).
+            bullet_matches      = p1.bullet_matches,
         )
 
     # ── Full unified composite ────────────────────────────────────────────────
@@ -1923,6 +1997,7 @@ async def compute_match_score_async(
         culture_delta        = culture_delta,
         culture_category     = culture_category,
         culture_note         = culture_note,
+        bullet_matches       = p1.bullet_matches,
     )
 
     # ── High-match trigger (JOB-43) — fire-and-forget, never blocks scoring ───
