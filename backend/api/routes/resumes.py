@@ -1122,6 +1122,17 @@ class MatchScoreResponse(BaseModel):
     missing_skills:      list[str] = []
     suggestions:         list[str] = []
     llm_validated:       bool      = False
+    
+    # JOB-20: Dynamic culture fit scoring dimensions
+    culture_delta:       Optional[float] = None
+    culture_alignment:   Optional[float] = None
+    culture_category:    Optional[str]   = None
+    culture_note:        Optional[str]   = None
+
+    # Bullet-level skills-gap mapping (CVParser/LiveEditor integration) —
+    # see match_score_service.py's _map_bullet_matches(). Each entry:
+    # {experience_index, bullet_index, matched_terms, seniority_aligned}.
+    bullet_matches:      list[dict] = []
 
 
 @router.post("/match-score", response_model=MatchScoreResponse, dependencies=[Depends(llm_rate_limit)])
@@ -1156,4 +1167,9 @@ async def match_score(req: MatchScoreRequest, user: CurrentUser = Depends(get_cu
         missing_skills      = result.missing_skills,
         suggestions         = result.suggestions,
         llm_validated       = result.llm_validated,
+        culture_delta       = result.culture_delta,
+        culture_alignment   = result.culture_alignment,
+        culture_category    = result.culture_category,
+        culture_note        = result.culture_note,
+        bullet_matches      = result.bullet_matches,
     )

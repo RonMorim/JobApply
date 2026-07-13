@@ -332,8 +332,8 @@ function ProgressBar({ score, verificationLevel }: {
   return (
     <div className="w-full flex items-center gap-2.5 min-w-0">
       {/* Prominent numeric score — anchors the row's visual hierarchy */}
-      <span className="shrink-0 w-9 text-right text-[13px] font-bold tabular-nums leading-none" style={{ color: to }}>
-        {pct.toFixed(0)}
+      <span className="shrink-0 w-11 text-right text-[13px] font-bold tabular-nums leading-none" style={{ color: to }}>
+        {pct.toFixed(1)}
         <span className="text-[9px] font-semibold align-top ml-px">%</span>
       </span>
       {/* Track — inset shadow for depth; taller rounded rail with a gradient fill */}
@@ -820,14 +820,14 @@ function ManualReviewModal({ entity, onClose, onDone }: ManualReviewModalProps) 
   }, [onClose])
 
   return (
-    /* Backdrop */
+    /* Backdrop — Meridian V2 §3.2 scrim */
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(15,23,42,0.45)', backdropFilter: 'blur(4px)' }}
+      style={{ background: 'rgba(15,23,42,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
-        className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden"
+        className="bg-white rounded-2xl w-full max-w-md shadow-floating overflow-hidden animate-modal-in"
         style={{ boxShadow: '0 24px 64px rgba(15,23,42,0.22)' }}
       >
         {/* Header */}
@@ -1096,11 +1096,11 @@ export function ProbeModal({ probe: initialProbe, onClose, onDone }: ProbeModalP
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(15,23,42,0.45)', backdropFilter: 'blur(4px)' }}
+      style={{ background: 'rgba(15,23,42,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={e => { if (e.target === e.currentTarget && !probe.done) onClose() }}
     >
       <div
-        className="bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden"
+        className="bg-white rounded-2xl w-full max-w-lg shadow-floating overflow-hidden animate-modal-in"
         style={{ boxShadow: '0 24px 64px rgba(15,23,42,0.22)' }}
       >
         {/* Teal accent bar */}
@@ -1548,10 +1548,10 @@ function TrustRadarChart({ data }: { data: RadarDatum[] }) {
           <div key={d.category} className="flex flex-col items-center gap-0.5">
             <span className="text-[10px] font-medium text-slate-500">{d.category}</span>
             <span className="text-[11px] tabular-nums" style={{ color: RADAR_TEAL }}>
-              {d.arch_value.toFixed(0)}
+              {d.arch_value.toFixed(1)}
               {d.syn_value > 0 && (
                 <span className="ml-1" style={{ color: RADAR_VIOLET }}>
-                  / {d.syn_value.toFixed(0)}
+                  / {d.syn_value.toFixed(1)}
                 </span>
               )}
             </span>
@@ -1952,7 +1952,9 @@ function WhiteboardChallengeModal({ entity, session, loading, onClose }: Whitebo
         role="dialog"
         aria-modal="true"
         aria-label={`Whiteboard Challenge: ${entity.name}`}
-        className="w-full max-w-lg rounded-2xl overflow-hidden"
+        // Dark command-overlay variant (§3.2) — border-white/10 + shadow-floating
+        // on top of its existing per-section dark fills; those stay untouched.
+        className="w-full max-w-lg rounded-2xl overflow-hidden border border-white/10 shadow-floating animate-modal-in"
         style={{ boxShadow: '0 32px 80px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.06)' }}
       >
         {/* Dark header band */}

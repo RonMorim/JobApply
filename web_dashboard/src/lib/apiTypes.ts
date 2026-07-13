@@ -2,6 +2,22 @@
 
 // ── B2C types ─────────────────────────────────────────────────────────────────
 
+/**
+ * Bullet-level skills-gap entry from match_score_service.py's
+ * _map_bullet_matches(). Addressed by position — (experience_index,
+ * bullet_index) — NOT a ParsedBullet.id: the backend has no notion of the
+ * frontend's content-hashed bullet ids (lib/cv.ts), since the wire-format
+ * CvData sends bullets as plain strings. Resolve to a stable id via
+ * `cv.experience[experience_index].bullets[bullet_index].id` (lib/cv.ts)
+ * when keying Ariel's per-bullet analysis off something persistent.
+ */
+export interface BulletMatch {
+  experience_index:  number
+  bullet_index:       number
+  matched_terms:      string[]
+  seniority_aligned:  boolean
+}
+
 export interface MatchScoreResult {
   total:               number
   keyword_overlap:     number
@@ -13,6 +29,15 @@ export interface MatchScoreResult {
   missing_skills:      string[]
   suggestions:         string[]
   llm_validated:       boolean
+  /** Skills Gap Analysis at bullet granularity — always populated,
+   *  LLM-independent, never truncated. See BulletMatch for id resolution. */
+  bullet_matches:      BulletMatch[]
+
+  // ── JOB-20: Dynamic culture fit scoring dimensions ───────────────────────
+  culture_delta:       number | null
+  culture_alignment:   number | null
+  culture_category:    string | null
+  culture_note:        string | null
 }
 
 export interface TemplateInfo {
@@ -159,6 +184,12 @@ export interface ApiFeedJob {
   has_tailored_cv:       boolean
   /** How many times s2 LLM enrichment returned a non-substantive result. */
   enrichment_failures:   number
+
+  // ── JOB-20: Dynamic culture fit scoring dimensions ───────────────────────
+  culture_delta:         number | null
+  culture_alignment:     number | null
+  culture_category:      string | null
+  culture_note:          string | null
 }
 
 export interface JobAnalysisState {

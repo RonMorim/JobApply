@@ -274,11 +274,12 @@ export function ControlsSheet({ open, onClose, settings, setSettings }: Props) {
 
   return (
     <div className="fixed inset-0 z-50" onClick={onClose}>
-      <div className="absolute inset-0 bg-slate-900/20 backdrop-blur-[2px]" />
+      {/* Backdrop — Meridian V2 §3.2 scrim */}
+      <div className="absolute inset-0 bg-slate-900/55 backdrop-blur-[4px]" />
 
       <aside
         onClick={e => e.stopPropagation()}
-        className="absolute right-0 top-0 bottom-0 w-full max-w-[440px] bg-white border-l border-slate-200 shadow-2xl flex flex-col"
+        className="absolute right-0 top-0 bottom-0 w-full max-w-[440px] bg-white border-l border-slate-200 shadow-floating flex flex-col"
       >
         {/* ── Header ── */}
         <div className="flex items-center justify-between px-6 h-14 border-b border-slate-100 shrink-0">

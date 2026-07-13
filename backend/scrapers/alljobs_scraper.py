@@ -99,7 +99,7 @@ def _fetch_html(url: str, session: requests.Session) -> Optional[BeautifulSoup]:
     try:
         resp = session.get(url, headers=_HTML_HEADERS, timeout=_TIMEOUT)
         resp.raise_for_status()
-        return BeautifulSoup(resp.text, "html.parser")
+        return BeautifulSoup(resp.content, "html.parser", from_encoding="utf-8")
     except Exception as exc:
         logger.warning("[AllJobsScraper] Failed to fetch %s: %s", url, exc)
         return None
@@ -113,7 +113,7 @@ async def _fetch_html_async(
     try:
         resp = await client.get(url, headers=_HTML_HEADERS)
         resp.raise_for_status()
-        return BeautifulSoup(resp.text, "html.parser")
+        return BeautifulSoup(resp.content, "html.parser", from_encoding="utf-8")
     except Exception as exc:
         logger.warning("[AllJobsScraper] Failed to fetch %s: %s", url, exc)
         return None

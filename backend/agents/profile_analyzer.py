@@ -35,6 +35,12 @@ _SENIORITY_LEVELS = ("junior", "mid", "senior", "staff", "principal")
 _PROFILE_SYSTEM_PROMPT = """\
 Return ONLY raw JSON, no conversational filler, no markdown blocks.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BILINGUAL & RTL PROCESSING (HEBREW/ENGLISH)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You must seamlessly comprehend mixed syntax, such as Hebrew sentences containing English technical terms or acronyms, without losing context or introducing translation artifacts.
+Regardless of the input language (Hebrew, English, or mixed), all returned JSON structures MUST use English keys exclusively. Values may be in the source language, but keys must always be English.
+
 Extract a structured candidate profile from the CV text and optional chat context.
 Return this exact JSON shape — every key is required:
 
@@ -61,6 +67,12 @@ Extraction rules:
 
 _POSTING_SYSTEM_PROMPT = """\
 Return ONLY raw JSON, no conversational filler, no markdown blocks.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BILINGUAL & RTL PROCESSING (HEBREW/ENGLISH)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You must seamlessly comprehend mixed syntax, such as Hebrew sentences containing English technical terms or acronyms, without losing context or introducing translation artifacts.
+Regardless of the input language (Hebrew, English, or mixed), all returned JSON structures MUST use English keys exclusively. Values may be in the source language, but keys must always be English.
 
 Extract a structured job analysis from the job posting text.
 Return this exact JSON shape — every key is required:
@@ -252,10 +264,29 @@ class ProfileAnalyzerAgent:
             logger.warning("extract_text_from_pdf: file not found — %s", pdf_path)
             return ""
         try:
-            doc = fitz.open(pdf_path)
-            pages = [page.get_text() for page in doc]
-            doc.close()
-            text = "\n".join(pages).strip()
+            import pdfplumber
+            import re
+
+            def fix_rtl_visual(text: str) -> str:
+                if not text:
+                    return text
+                if not re.search(r'[\u0590-\u05FF\u0600-\u06FF]', text):
+                    return text
+                rev = text[::-1]
+                def re_rev(m):
+                    return m.group(0)[::-1]
+                ltr_pattern = r'[A-Za-z0-9@#.$%^&*()[\]{}<>\-_|+]+(?:[\s]+[A-Za-z0-9@#.$%^&*()[\]{}<>\-_|+]+)*'
+                return re.sub(ltr_pattern, re_rev, rev)
+
+            pages_text = []
+            with pdfplumber.open(pdf_path) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text(layout=True)
+                    if text:
+                        fixed_lines = [fix_rtl_visual(line) for line in text.split('\n')]
+                        pages_text.append('\n'.join(fixed_lines))
+            
+            text = "\n".join(pages_text).strip()
             logger.debug("Extracted %d chars from %s", len(text), pdf_path)
             return text
         except Exception as exc:

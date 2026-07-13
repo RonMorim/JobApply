@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+from backend.utilities.ai_scrubber import clean_ai_text
 from pathlib import Path
 from typing import Literal
 
@@ -35,6 +36,7 @@ from dotenv import load_dotenv
 from backend.services.user_profile import USER_PROFILE, build_full_text
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
 import backend.services.job_store as job_store
+from models.job import RawJobPosting
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 
@@ -220,7 +222,7 @@ def generate_outreach_message(
         messages   = [{"role": "user", "content": user_prompt}],
     )
 
-    message = response.content[0].text.strip()
+    message = clean_ai_text(response.content[0].text).strip()
     logger.info(
         "[OutreachService] Generated %s message for %s @ %s (%d chars)",
         message_type, target_name, target_company, len(message),
@@ -325,7 +327,7 @@ def generate_outreach(job_id: str, user_id: str) -> str:
         system     = harden_system_prompt(_OUTREACH_SYSTEM),
         messages   = [{"role": "user", "content": user_prompt}],
     )
-    message = response.content[0].text.strip()
+    message = clean_ai_text(response.content[0].text).strip()
 
     # Persist before returning so it survives reloads (tenancy-scoped write).
     job_store.save_outreach_text(job_id, user_id, message)
@@ -334,3 +336,54 @@ def generate_outreach(job_id: str, user_id: str) -> str:
         job_id, user_id, len(message),
     )
     return message
+
+
+_PITCH_SYSTEM = """You are a master technical recruiter advocating for your candidate directly to hiring companies.
+Your goal is to write a highly concise, punchy, direct pitch message (under 120 words) for a recruiter or hiring manager based on raw scraped job data.
+
+Rules:
+1. NO subject line or pleasantries like "Hope this finds you well". Start directly.
+2. Emphasize domain expertise, trajectory, and immediate readiness for the role.
+3. The message must feel like it was sent by a human recruiter who just matched the perfect candidate to the job.
+4. Output ONLY the message text.
+5. NO hashtags, emojis, or corporate buzzwords.
+6. The output MUST be strictly in English."""
+
+_PITCH_USER_TMPL = """Write a direct pitch for this raw scraped job opening:
+
+JOB DETAILS:
+Title: {title}
+Company: {company}
+Location: {location}
+Raw Description: {jd_text}
+
+CANDIDATE PROFILE:
+{candidate_material}"""
+
+
+def generate_pitch_from_raw(posting: RawJobPosting, user_profile: str) -> str:
+    """
+    Generate a direct pitch for recruiters based on unpersisted raw job data
+    and a candidate's profile.
+    """
+    user_prompt = _PITCH_USER_TMPL.format(
+        title              = posting.title,
+        company            = posting.company,
+        location           = "Israel",
+        jd_text            = sanitize_text(posting.raw_text[:4000]),
+        candidate_material = sanitize_text(user_profile),
+    )
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+
+    client   = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model      = _MODEL,
+        max_tokens = _MAX_TOKENS,
+        system     = harden_system_prompt(_PITCH_SYSTEM),
+        messages   = [{"role": "user", "content": user_prompt}],
+    )
+    
+    return clean_ai_text(response.content[0].text).strip()

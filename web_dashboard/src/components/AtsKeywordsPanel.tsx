@@ -1,17 +1,21 @@
 'use client'
-import { useState, useCallback } from 'react'
-import { fetchAtsKeywords } from '@/lib/api'
+import { useState, useEffect } from 'react'
+import { fetchAtsKeywords, ensureFreshToken, getAuthHeaders } from '@/lib/api'
+import { getScoreBand } from '@/lib/scoreBand'
 import type { AtsKeywordsResponse } from '@/lib/apiTypes'
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function CopyIcon({ s = 13 }: { s?: number }) {
-  return (
-    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  )
-}
+// ── ATS Breakdown ─────────────────────────────────────────────────────────────
+//
+// Clean, data-dense replacement for the old bulky keyword-gap box. Three
+// micro-sections, no coverage meters, no oversized pills:
+//
+//   ✓ KEYWORDS INJECTED                    — JD keywords covered by the profile
+//   SKILLS EXCLUDED (REQUIRES EXPERIENCE)  — JD keywords with no evidence
+//   CONFIDENCE SNAPSHOT                    — verified skills with a status dot
+//
+// The panel is mounted only after the user opens the "ATS Breakdown"
+// disclosure in JobCard, so it auto-fetches on mount — the disclosure click
+// is the intent signal; no second "Analyse" click needed.
 
 function SpinnerIcon({ s = 14 }: { s?: number }) {
   return (
@@ -23,200 +27,190 @@ function SpinnerIcon({ s = 14 }: { s?: number }) {
   )
 }
 
-// ── Keyword pill ──────────────────────────────────────────────────────────────
+// ── Section atoms ─────────────────────────────────────────────────────────────
 
-function Pill({
-  label,
-  variant,
-}: {
-  label:   string
-  variant: 'present' | 'missing'
+function SectionLabel({ children, tone = 'slate' }: {
+  children: React.ReactNode
+  tone?: 'emerald' | 'slate'
 }) {
   return (
-    <span
-      className={`inline-flex items-center h-6 px-2.5 rounded-full text-[11.5px] font-medium border ${
-        variant === 'present'
-          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-          : 'bg-amber-50 text-amber-700 border-amber-200'
-      }`}
-    >
-      {variant === 'present' ? '✓ ' : '+ '}
+    <p className={`text-[10px] font-bold tracking-widest uppercase mb-1.5 ${
+      tone === 'emerald' ? 'text-emerald-700' : 'text-slate-400'
+    }`}>
+      {children}
+    </p>
+  )
+}
+
+function MicroChip({ label, tone }: { label: string; tone: 'injected' | 'excluded' }) {
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10.5px] font-medium ${
+      tone === 'injected'
+        ? 'bg-emerald-50 text-emerald-700'
+        : 'bg-slate-50 text-slate-500 border border-slate-100'
+    }`}>
       {label}
     </span>
   )
 }
 
+// ── Confidence snapshot ───────────────────────────────────────────────────────
+//
+// Verified skills relevant to this JD, each with a micro status dot:
+//   emerald ≥ 70 (verified) · amber 40–69 (partial) · slate < 40 (weak)
+
+interface TrustEntity {
+  entity_id:        string
+  name:             string
+  confidence_score: number
+}
+
+// Solid dot color pulled from the same 5-tier Meridian V2 band (§2.3) as
+// every other score-magnitude indicator — swaps the pale `text-*` shade for
+// its saturated `bg-*` equivalent since a 6px dot needs to read at a glance.
+function confidenceDot(score: number): string {
+  return getScoreBand(score).text.replace('text-', 'bg-')
+}
+
+function ConfidenceSnapshot({ entities }: { entities: TrustEntity[] }) {
+  if (entities.length === 0) return null
+  return (
+    <div>
+      <SectionLabel>Confidence Snapshot</SectionLabel>
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        {entities.map(e => (
+          <span key={e.entity_id} className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 tabular-nums">
+            <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${confidenceDot(e.confidence_score)}`} />
+            {e.name} ({e.confidence_score.toFixed(1)}%)
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** Trust entities whose name overlaps any JD keyword — the JD-relevant subset. */
+function relevantEntities(entities: TrustEntity[], keywords: string[]): TrustEntity[] {
+  const kws = keywords.map(k => k.toLowerCase())
+  return entities
+    .filter(e => {
+      const name = e.name.toLowerCase()
+      return kws.some(k => name.includes(k) || k.includes(name))
+    })
+    .sort((a, b) => b.confidence_score - a.confidence_score)
+    .slice(0, 6)
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 interface Props {
-  jobId:    string
-  hasJd:    boolean  // whether JD text is available — show hint if not
+  jobId:   string
+  hasJd:   boolean          // whether JD text is available — show hint if not
+  userId?: string           // enables the Confidence Snapshot section
 }
 
-export function AtsKeywordsPanel({ jobId, hasJd }: Props) {
-  const [data,       setData]       = useState<AtsKeywordsResponse | null>(null)
-  const [loading,    setLoading]    = useState(false)
-  const [error,      setError]      = useState<string | null>(null)
-  const [copiedList, setCopiedList] = useState<'missing' | null>(null)
+export function AtsKeywordsPanel({ jobId, hasJd, userId }: Props) {
+  const [data,     setData]     = useState<AtsKeywordsResponse | null>(null)
+  const [entities, setEntities] = useState<TrustEntity[]>([])
+  const [loading,  setLoading]  = useState(false)
+  const [error,    setError]    = useState<string | null>(null)
 
-  const run = useCallback(async () => {
+  // Auto-fetch on mount — the panel only mounts once the user opens the
+  // "ATS Breakdown" disclosure, so the click already expressed intent.
+  useEffect(() => {
+    if (!hasJd) return
+    let cancelled = false
     setLoading(true)
     setError(null)
-    try {
-      const result = await fetchAtsKeywords(jobId)
-      setData(result)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setError(msg.includes('400') ? 'Fetch the full JD first (click "Details → Load Description").' : msg)
-    } finally {
-      setLoading(false)
+
+    const load = async () => {
+      try {
+        const result = await fetchAtsKeywords(jobId)
+        if (cancelled) return
+        setData(result)
+
+        // Confidence snapshot — best-effort; never blocks the keyword view.
+        if (userId) {
+          try {
+            await ensureFreshToken()
+            const res = await fetch(`/api/profile/${userId}/trust-score`, {
+              headers: getAuthHeaders(),
+              cache:   'no-store',
+            })
+            if (res.ok && !cancelled) {
+              const trust = await res.json()
+              setEntities((trust.entities ?? []) as TrustEntity[])
+            }
+          } catch { /* snapshot is optional */ }
+        }
+      } catch (e) {
+        if (cancelled) return
+        const msg = e instanceof Error ? e.message : String(e)
+        setError(msg.includes('400') ? 'Fetch the full JD first (click "View Job Description").' : msg)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     }
-  }, [jobId])
+    load()
+    return () => { cancelled = true }
+  }, [jobId, hasJd, userId])
 
-  const copyMissing = useCallback(() => {
-    if (!data?.missing.length) return
-    navigator.clipboard.writeText(data.missing.join(', ')).then(() => {
-      setCopiedList('missing')
-      setTimeout(() => setCopiedList(null), 2000)
-    })
-  }, [data])
-
-  // ── No JD available ────────────────────────────────────────────────────────
-  if (!hasJd && !data) {
+  if (!hasJd) {
     return (
-      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-[12.5px] text-slate-500 flex items-center gap-2">
-        <span className="text-slate-300 text-base">⚠</span>
-        Fetch the full job description first to run ATS keyword analysis.
-      </div>
+      <p className="text-[12px] text-slate-400 italic">
+        Fetch the full job description first to run the ATS breakdown.
+      </p>
     )
   }
 
-  // ── Initial state ──────────────────────────────────────────────────────────
-  if (!data && !loading) {
-    return (
-      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-        <div className="px-4 py-3 flex items-center justify-between">
-          <div>
-            <p className="text-[12.5px] font-semibold text-slate-700">ATS Keyword Gap Analysis</p>
-            <p className="text-[11.5px] text-slate-400 mt-0.5">
-              Find which JD keywords are missing from your LinkedIn profile.
-            </p>
-          </div>
-          <button
-            onClick={run}
-            className="h-8 px-3 rounded-lg text-[12px] font-semibold border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition flex items-center gap-1.5"
-          >
-            ✦ Analyse
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  // ── Loading ────────────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="rounded-xl border border-slate-200 bg-white px-4 py-4 flex items-center gap-2 text-[12.5px] text-slate-500">
-        <SpinnerIcon /> Extracting ATS keywords…
+      <div className="flex items-center gap-2 py-2 text-[12px] text-slate-400">
+        <SpinnerIcon /> Analysing keywords…
       </div>
     )
   }
 
-  // ── Error ──────────────────────────────────────────────────────────────────
   if (error) {
     return (
-      <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[12.5px] text-red-700 flex items-center justify-between gap-3">
-        <span>{error}</span>
-        <button onClick={run} className="text-red-500 hover:text-red-700 text-[11px] underline">Retry</button>
-      </div>
+      <p className="text-[12px] text-rose-600 py-1">{error}</p>
     )
   }
 
   if (!data) return null
 
-  const coverage = data.jd_keywords.length
-    ? Math.round((data.present.length / data.jd_keywords.length) * 100)
-    : 0
+  const injected = data.present
+  const excluded = data.missing
+  const snapshot = relevantEntities(entities, data.jd_keywords)
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-[12.5px] font-semibold text-slate-700">ATS Keyword Gap</span>
-          {/* Coverage meter */}
-          <div className="flex items-center gap-1.5">
-            <div className="w-24 h-1.5 rounded-full bg-slate-100 overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  coverage >= 70 ? 'bg-emerald-400' : coverage >= 40 ? 'bg-amber-400' : 'bg-red-400'
-                }`}
-                style={{ width: `${coverage}%` }}
-              />
-            </div>
-            <span className={`text-[11px] font-semibold tabular-nums ${
-              coverage >= 70 ? 'text-emerald-600' : coverage >= 40 ? 'text-amber-600' : 'text-red-600'
-            }`}>
-              {coverage}%
-            </span>
+    <div className="space-y-4 py-1">
+      {/* ✓ KEYWORDS INJECTED */}
+      {injected.length > 0 && (
+        <div>
+          <SectionLabel tone="emerald">✓ Keywords Injected</SectionLabel>
+          <div className="flex flex-wrap gap-1">
+            {injected.map(kw => <MicroChip key={kw} label={kw} tone="injected" />)}
           </div>
         </div>
-        <button
-          onClick={run}
-          className="text-[11px] text-slate-400 hover:text-slate-600 underline"
-        >
-          Refresh
-        </button>
-      </div>
+      )}
 
-      <div className="px-4 py-4 flex flex-col gap-4">
-        {/* Missing keywords — action items */}
-        {data.missing.length > 0 && (
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-[11.5px] font-semibold text-amber-700">
-                Missing from LinkedIn ({data.missing.length}) — add these to your Skills section
-              </p>
-              <button
-                onClick={copyMissing}
-                className={`flex items-center gap-1 text-[11px] font-medium border rounded-lg h-6 px-2 transition ${
-                  copiedList === 'missing'
-                    ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
-                    : 'border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300'
-                }`}
-              >
-                <CopyIcon s={11} />
-                {copiedList === 'missing' ? 'Copied!' : 'Copy list'}
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {data.missing.map(kw => (
-                <Pill key={kw} label={kw} variant="missing" />
-              ))}
-            </div>
+      {/* SKILLS EXCLUDED (REQUIRES EXPERIENCE) */}
+      {excluded.length > 0 && (
+        <div>
+          <SectionLabel>Skills Excluded (Requires Experience)</SectionLabel>
+          <div className="flex flex-wrap gap-1">
+            {excluded.map(kw => <MicroChip key={kw} label={kw} tone="excluded" />)}
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Present keywords */}
-        {data.present.length > 0 && (
-          <div>
-            <p className="text-[11.5px] font-semibold text-emerald-700 mb-2">
-              Already in your profile ({data.present.length}) ✓
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {data.present.map(kw => (
-                <Pill key={kw} label={kw} variant="present" />
-              ))}
-            </div>
-          </div>
-        )}
+      {/* CONFIDENCE SNAPSHOT */}
+      <ConfidenceSnapshot entities={snapshot} />
 
-        {data.missing.length === 0 && (
-          <p className="text-[12.5px] text-emerald-700 font-semibold">
-            ✓ Full keyword coverage — your profile matches all extracted ATS keywords.
-          </p>
-        )}
-      </div>
+      {injected.length === 0 && excluded.length === 0 && (
+        <p className="text-[12px] text-slate-400 italic">No ATS keywords extracted for this posting.</p>
+      )}
     </div>
   )
 }

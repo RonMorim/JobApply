@@ -2,8 +2,11 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { TOKENS } from '@/lib/tokens'
+import { getScoreBand } from '@/lib/scoreBand'
 import type { Job } from '@/lib/data'
 import type { ApiFeedJob, MatchScoreResult, TemplateInfo } from '@/lib/apiTypes'
+import type { ParsedCV } from '@/lib/cv'
+import { parseCv, toLiveEditorCvData, resetToOriginal } from '@/lib/cvParser'
 import { fetchTemplates, renderPdf, fetchMatchScore, fetchCachedCV, markJobApplied, ensureFreshToken, getAuthHeaders, saveCv } from '@/lib/api'
 import { MatchScorePanel } from './MatchScorePanel'
 import { TemplateSelectorBar } from './TemplateSelectorBar'
@@ -105,14 +108,7 @@ function pdfDataUrl(b64: string) {
 // ── JobInfoCard ───────────────────────────────────────────────────────────────
 
 function JobInfoCard({ job }: { job: Job }) {
-  const scoreBg =
-    job.score >= 85 ? 'oklch(0.95 0.04 155)' :
-    job.score >= 70 ? TOKENS.color.primarySoft :
-                      'oklch(0.97 0.03 80)'
-  const scoreFg =
-    job.score >= 85 ? 'oklch(0.38 0.11 155)' :
-    job.score >= 70 ? TOKENS.color.primary :
-                      'oklch(0.48 0.12 80)'
+  const band = getScoreBand(job.score)
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 mb-5"
       style={{ boxShadow: TOKENS.shadow.card }}>
@@ -131,9 +127,9 @@ function JobInfoCard({ job }: { job: Job }) {
             {job.location}
           </p>
           <div className="mt-2">
-            <span className="inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full"
-              style={{ background: scoreBg, color: scoreFg }}>
-              {job.score}% match
+            <span className="inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full tabular-nums"
+              style={{ background: band.hexBg, color: band.hexFg }}>
+              {job.score.toFixed(1)}% match
             </span>
           </div>
         </div>
@@ -346,8 +342,11 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
   const [selectedTemplate, setSelectedTemplate] = useState('t2_modern')
   const [templates,        setTemplates]        = useState<TemplateInfo[]>([])
   const [isEditMode,       setIsEditMode]       = useState(false)
-  const [editedCvData,     setEditedCvData]     = useState<CvData | null>(null)
-  const [originalCvData,   setOriginalCvData]   = useState<CvData | null>(null)
+  // LiveEditor's edit state — ID-stable ParsedCV (lib/cv.ts), not raw CvData.
+  // toLiveEditorCvData() converts to the wire shape only where an API call
+  // needs it (fetchMatchScore/renderPdf/saveCv); parseCv() converts back
+  // whenever fresh cv_data JSON arrives from the backend.
+  const [parsedCv,         setParsedCv]         = useState<ParsedCV | null>(null)
   const [isDirty,          setIsDirty]          = useState(false)
   const [isSaving,         setIsSaving]         = useState(false)
   const [isScoreLoading,   setIsScoreLoading]   = useState(false)
@@ -394,9 +393,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
     fetchCachedCV(job.id).then(data => {
       if (!data || !data.cv_data) return
       setCvState({ cvData: data.cv_data, pdfB64: data.pdf_b64 ?? '' })
-      const snapshot = data.cv_data as CvData
-      setEditedCvData(snapshot)
-      setOriginalCvData(snapshot)
+      setParsedCv(parseCv(data.cv_data).data)
       if (data.match_score)        setMatchScore(data.match_score)
       if (data.preferred_template) setSelectedTemplate(data.preferred_template)
       setPhase('preview')
@@ -446,9 +443,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
 
       // status === "ok"
       setCvState({ cvData: data.cv_data, pdfB64: data.pdf_b64 })
-      const snapshot = data.cv_data as CvData
-      setEditedCvData(snapshot)
-      setOriginalCvData(snapshot)
+      setParsedCv(parseCv(data.cv_data).data)
       setIsDirty(false)
       setIsEditMode(false)
       setHasUnsavedDraft(false)   // /tailor persists its own output — this IS the saved baseline
@@ -508,29 +503,31 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
 
   // ── B2C handlers ──────────────────────────────────────────────────────────
 
-  const handleCvDataChange = useCallback((updated: CvData) => {
-    setEditedCvData(updated)
+  const handleCvDataChange = useCallback((updated: ParsedCV) => {
+    setParsedCv(updated)
     setIsDirty(true)
   }, [])
 
   const handleEditorReset = useCallback(() => {
-    if (!originalCvData) return
-    setEditedCvData(originalCvData)
+    setParsedCv(prev => prev ? resetToOriginal(prev) : prev)
     setIsDirty(false)
-  }, [originalCvData])
+  }, [])
 
   const handleEditorSave = useCallback(async () => {
-    if (!editedCvData || isSaving) return
+    if (!parsedCv || isSaving) return
     setIsSaving(true)
     setIsScoreLoading(true)
     try {
+      const editedCvData = toLiveEditorCvData(parsedCv)
       const [score, pdfB64] = await Promise.all([
         fetchMatchScore(job.id, editedCvData as Record<string, unknown>, false),
         renderPdf(editedCvData as Record<string, unknown>, selectedTemplate),
       ])
       setMatchScore(score)
       setCvState({ cvData: editedCvData as Record<string, unknown>, pdfB64 })
-      setOriginalCvData(editedCvData)
+      // Saving commits the current edits as the new AI-original baseline —
+      // re-parse so every field's originalValue/isAiGenerated resets to match.
+      setParsedCv(parseCv(editedCvData).data)
       setIsDirty(false)
       setHasUnsavedDraft(true)   // local-only edit — not persisted until handleSaveDraft
       setIsEditMode(false)   // return to PDF view so updated score is front-and-center
@@ -538,7 +535,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
       setIsSaving(false)
       setIsScoreLoading(false)
     }
-  }, [editedCvData, isSaving, job.id, selectedTemplate])
+  }, [parsedCv, isSaving, job.id, selectedTemplate])
 
   const handleSaveDraft = useCallback(async () => {
     if (!cvState || isSavingDraft) return
@@ -553,13 +550,13 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
 
   const handleSelectTemplate = useCallback(async (templateId: string) => {
     setSelectedTemplate(templateId)
-    const data = editedCvData ?? (cvState?.cvData as CvData | undefined)
+    const data = parsedCv ? toLiveEditorCvData(parsedCv) : (cvState?.cvData as CvData | undefined)
     if (!data) return
     try {
       const pdfB64 = await renderPdf(data as Record<string, unknown>, templateId)
       setCvState(prev => prev ? { ...prev, pdfB64 } : null)
     } catch { /* leave existing preview intact */ }
-  }, [editedCvData, cvState])
+  }, [parsedCv, cvState])
 
   const handleCopilotSubmit = useCallback(async () => {
     // Always read from the ref — guaranteed to hold the latest keystroke value
@@ -611,9 +608,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
 
       // update CV state and clear everything
       setCvState({ cvData: data.cv_data, pdfB64: data.pdf_b64 })
-      const snapshot = data.cv_data as CvData
-      setEditedCvData(snapshot)
-      setOriginalCvData(snapshot)
+      setParsedCv(parseCv(data.cv_data).data)
       setIsDirty(false)
       setHasUnsavedDraft(true)   // Copilot edits are draft-only — backend no longer auto-persists them
       copilotPromptRef.current = ''
@@ -639,11 +634,9 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
   const handleUndo = useCallback(() => {
     setEditHistory(prev => {
       if (prev.length === 0) return prev
-      const last     = prev[prev.length - 1]
-      const snapshot = last.cvData as CvData
+      const last = prev[prev.length - 1]
       setCvState({ cvData: last.cvData, pdfB64: last.pdfB64 })
-      setEditedCvData(snapshot)
-      setOriginalCvData(snapshot)
+      setParsedCv(parseCv(last.cvData).data)
       setMatchScore(last.matchScore)
       setChatHistory(last.chatHistory)
       setIsDirty(false)
@@ -670,8 +663,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
     setCvState(null)
     setMissingReqs([])
     setAnswers({})
-    setEditedCvData(null)
-    setOriginalCvData(null)
+    setParsedCv(null)
     setIsDirty(false)
     setIsEditMode(false)
     setIsScoreLoading(false)
@@ -683,7 +675,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(15,23,42,0.55)', backdropFilter: 'blur(4px)' }}>
-      <div className="relative flex w-full max-w-5xl rounded-2xl overflow-hidden"
+      <div className="relative flex w-full max-w-5xl rounded-2xl overflow-hidden animate-modal-in"
         style={{
           height:     'min(90vh, 760px)',
           background: TOKENS.color.surface,
@@ -995,10 +987,9 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
             </div>
           )}
 
-          {cvState && isEditMode && editedCvData && originalCvData ? (
+          {cvState && isEditMode && parsedCv ? (
             <LiveEditor
-              cvData={editedCvData}
-              originalCvData={originalCvData}
+              cv={parsedCv}
               onChange={handleCvDataChange}
               onReset={handleEditorReset}
               isDirty={isDirty}

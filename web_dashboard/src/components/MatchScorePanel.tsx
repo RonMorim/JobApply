@@ -1,33 +1,8 @@
 'use client'
 
 import { TOKENS } from '@/lib/tokens'
+import { getScoreBand } from '@/lib/scoreBand'
 import type { MatchScoreResult } from '@/lib/apiTypes'
-
-// ── Colour helpers ────────────────────────────────────────────────────────────
-
-function scoreColor(total: number): { fg: string; bg: string; ring: string } {
-  if (total >= 75) return {
-    fg:   'oklch(0.38 0.13 155)',
-    bg:   'oklch(0.96 0.04 155)',
-    ring: 'oklch(0.70 0.14 155)',
-  }
-  if (total >= 50) return {
-    fg:   'oklch(0.45 0.14 60)',
-    bg:   'oklch(0.97 0.04 80)',
-    ring: 'oklch(0.75 0.14 80)',
-  }
-  return {
-    fg:   TOKENS.color.danger,
-    bg:   'oklch(0.97 0.02 25)',
-    ring: 'oklch(0.70 0.16 25)',
-  }
-}
-
-function scoreLabel(total: number): string {
-  if (total >= 75) return 'Strong match'
-  if (total >= 50) return 'Partial match'
-  return 'Weak match'
-}
 
 // ── Circular gauge ────────────────────────────────────────────────────────────
 
@@ -82,11 +57,13 @@ function CircleGauge({
         x={36} y={38}
         textAnchor="middle"
         dominantBaseline="middle"
+        className="tabular-nums"
         style={{
           fontSize: isLoading ? '11px' : '13px',
           fontWeight: 700,
           fill: fg,
           fontFamily: 'system-ui, sans-serif',
+          fontVariantNumeric: 'tabular-nums',
           opacity: isLoading ? 0.45 : 1,
           transition: 'opacity 0.2s',
         }}
@@ -164,7 +141,10 @@ export function MatchScorePanel({ score, isLoading, baselineScore }: MatchScoreP
   // Floor the displayed total at the baseline: the tailored CV is always at
   // least as strong as the candidate's raw profile for this role.
   const displayTotal = Math.max(score.total, baselineScore ?? 0)
-  const { fg, bg, ring } = scoreColor(displayTotal)
+  const band = getScoreBand(displayTotal)
+  const fg   = band.hexFg
+  const bg   = band.hexBg
+  const ring = band.hexFg
 
   return (
     <div style={{
@@ -181,14 +161,14 @@ export function MatchScorePanel({ score, isLoading, baselineScore }: MatchScoreP
         <CircleGauge total={displayTotal} fg={fg} ring={ring} isLoading={isLoading} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <p style={{ fontSize: 13, fontWeight: 700, color: fg, lineHeight: 1.2 }}>
-            {scoreLabel(displayTotal)}
+            {band.label} match
           </p>
           <p style={{ fontSize: 11, color: TOKENS.color.muted, marginTop: 2 }}>
             Optimized ATS score
           </p>
           {baselineScore != null && baselineScore > 0 && (
             <p style={{ fontSize: 10, color: TOKENS.color.muted, marginTop: 3, opacity: 0.8 }}>
-              Boosted from your {baselineScore}% baseline fit
+              Boosted from your <span style={{ fontVariantNumeric: 'tabular-nums' }}>{baselineScore.toFixed(1)}</span>% baseline fit
             </p>
           )}
           {score.llm_validated && (

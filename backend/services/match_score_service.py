@@ -60,12 +60,18 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
+from typing import Any, Optional
+
+from backend.utilities.ai_scrubber import scrub_dict
 from dataclasses import dataclass, field
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, ValidationError
+
+from backend.agents.jd_parser import JDParserAgent
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +342,25 @@ class MatchScoreResult:
     knockout_failed:      bool            = False  # Layer-0 hard-constraint conflict
     knockout_reasons:     list[str]       = field(default_factory=list)
     ats_gaps:             list[str]       = field(default_factory=list)  # unmet must-haves
+    # ── Dynamic Matching Score: culture-fit dimension (JOB-20) ────────────────
+    # None across all four fields ⇒ no culture signal for this job (unknown
+    # profile, no user preference, thin JD, or fetch failure) and the
+    # composite is exactly the pre-culture formula.
+    culture_alignment:    Optional[float] = None   # 0-100 preference alignment, 1 dp
+    culture_delta:        Optional[float] = None   # applied composite adjustment, ±5.0
+    culture_category:     Optional[str]   = None   # startup|scaleup|corporate|agency
+    culture_note:         Optional[str]   = None   # specific UI explanation
+    # ── Bullet-level skills-gap mapping (CVParser/LiveEditor integration) ─────
+    # Computed by _map_bullet_matches() inside _phase1() — always populated,
+    # LLM-independent, no cap on length (Principle: no truncation). Addressed
+    # by (experience_index, bullet_index), NOT a frontend ParsedBullet.id:
+    # that id is a content hash that exists only in the frontend's
+    # web_dashboard/src/lib/cv.ts/cvParser.ts and never crosses the wire (the
+    # CvData JSON this service consumes carries bullets as plain strings).
+    # The frontend resolves position -> stable id via
+    # cv.experience[experience_index].bullets[bullet_index].id when it wants
+    # to key Ariel's per-bullet analysis off a persistent id.
+    bullet_matches:       list[dict]      = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -360,6 +385,11 @@ class MatchScoreResult:
             "knockout_failed":      self.knockout_failed,
             "knockout_reasons":     self.knockout_reasons,
             "ats_gaps":             self.ats_gaps,
+            "culture_alignment":    self.culture_alignment,
+            "culture_delta":        self.culture_delta,
+            "culture_category":     self.culture_category,
+            "culture_note":         self.culture_note,
+            "bullet_matches":       self.bullet_matches,
         }
 
 
@@ -694,6 +724,60 @@ def _confidence_weighted_skill_score(
         return None, None, None
 
 
+# ── Bullet-level skills-gap mapping ───────────────────────────────────────────
+
+def _map_bullet_matches(
+    cv_data: dict,
+    jd_keywords: set[str],
+    jd_skills: list[str],
+    jd_seniority: int,
+) -> list[dict]:
+    """
+    Skills Gap Analysis at bullet granularity: for every bullet in the CV,
+    find which JD keywords/skills it evidences and whether its own seniority
+    signal meets the JD's required level — "critical for Ariel's analysis"
+    per the CVParser/LiveEditor integration (bullet_matches on MatchScoreResult).
+
+    Pure-Python, deterministic, no network calls — runs unconditionally
+    alongside the rest of Phase 1, independent of whether the LLM ran.
+
+    No cap on the returned list: every bullet that evidences at least one JD
+    term is included (Architectural Principle: no truncation — this mirrors
+    why matched_critical_capabilities/ats_gaps are never sliced).
+    """
+    all_terms = sorted(set(jd_keywords) | {s for s in jd_skills if s})
+    if not all_terms:
+        return []
+
+    matches: list[dict] = []
+    for exp_idx, exp in enumerate(cv_data.get("experience") or []):
+        for bullet_idx, bullet_text in enumerate(exp.get("bullets") or []):
+            if not bullet_text or not bullet_text.strip():
+                continue
+            bullet_lower  = bullet_text.lower()
+            bullet_tokens = _tokenize(bullet_text)
+            matched_terms = [
+                term for term in all_terms
+                if term in bullet_tokens or (" " in term and term in bullet_lower)
+            ]
+            if not matched_terms:
+                continue
+            matches.append({
+                "experience_index":  exp_idx,
+                "bullet_index":      bullet_idx,
+                "matched_terms":     matched_terms,
+                # Experience Weighting: does this specific bullet's own
+                # seniority signal meet the JD's required level? Informational
+                # (feeds Ariel's explanation of WHICH bullets carry the match),
+                # not a re-weighting of the composite score — the existing
+                # seniority_alignment component (title-level, 0-25 pts) is the
+                # only place seniority affects the numeric total; see
+                # finalize_composite()'s single-source-of-truth guard above.
+                "seniority_aligned": _detect_seniority(bullet_text) >= jd_seniority,
+            })
+    return matches
+
+
 # ── Phase 1: pure-Python keyword/skills/seniority scoring ────────────────────
 
 def _phase1(
@@ -865,9 +949,12 @@ def _phase1(
 
     total = round(min(100.0, max(0.0, total)), 1)
 
+    bullet_matches = _map_bullet_matches(cv_data, jd_keywords, jd_skills, jd_seniority)
+
     logger.debug(
-        "match_score Phase1: kw=%.1f/40 skills=%.1f/35 seniority=%.1f/25 → %.1f",
-        score_1, score_2, score_3, total,
+        "match_score Phase1: kw=%.1f/40 skills=%.1f/35 seniority=%.1f/25 → %.1f "
+        "bullet_matches=%d",
+        score_1, score_2, score_3, total, len(bullet_matches),
     )
 
     return MatchScoreResult(
@@ -886,6 +973,7 @@ def _phase1(
         ],
         llm_validated       = False,
         proficiency_notes   = proficiency_notes,
+        bullet_matches      = bullet_matches,
     )
 
 
@@ -971,6 +1059,12 @@ _LLM_SYSTEM_SCORER = (
 _LLM_SCORER_TEMPLATE = """\
 Score this JOB vs. CANDIDATE across two independent capability dimensions.
 Return ONLY valid JSON — no markdown, no extra text.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BILINGUAL & RTL PROCESSING (HEBREW/ENGLISH)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You must seamlessly comprehend mixed syntax, such as Hebrew sentences containing English technical terms or acronyms, without losing context or introducing translation artifacts.
+Regardless of the input language (Hebrew, English, or mixed), all returned JSON structures MUST use English keys exclusively. Values may be in the source language, but keys must always be English.
 
 JOB TITLE: {job_title}
 HIRING COMPANY: {company_name}
@@ -1295,6 +1389,8 @@ async def _llm_dual_score(
         if payload is None:
             return _FALLBACK
 
+        payload = scrub_dict(payload)
+
         # ── Strict Pydantic validation ────────────────────────────────────────
         # Catches wrong types / missing required fields explicitly rather than
         # letting a malformed payload silently corrupt the composite formula.
@@ -1381,6 +1477,89 @@ _LLM_BLEND_WEIGHT  = 0.60    # unified: share of the LLM semantic composite
 _ATS_BLEND_WEIGHT  = 0.40    # unified: share of the ATS engine base_score
 KNOCKOUT_SCORE_CAP = 40.0    # hard ceiling when Layer-0 knockout fails
 
+# ── Dynamic Matching Score: culture-fit adjustment (JOB-20) ───────────────────
+# Culture fit enters the composite as a BOUNDED POST-BLEND DELTA, never as a
+# re-weighting of the existing terms. Rationale (Future-Mandate review):
+#   • With no culture signal (delta=None) the composite is bit-identical to
+#     the pre-culture formula — regression-safe by construction.
+#   • ±5 points cannot inflate a thin JD (the thin path never computes a
+#     delta) and cannot turn a mid-tier match into a top match on vibe alone.
+#   • Company Legacy: culture_delta_from_alignment() clamps negative deltas
+#     to 0 for prior employers, so culture can never undercut the legacy
+#     floor enforced at the prompt level.
+#   • Exploration Freedom: alignment derives ONLY from the user's explicit
+#     stated preferences vs the company profile — candidate titles, history,
+#     and seniority never enter the calculation.
+CULTURE_MAX_ADJUST = 5.0     # |delta| ceiling, in composite points
+
+# Work-model alignment for a remote-only user, per company work_model value.
+_REMOTE_ONLY_WM_ALIGNMENT: dict[str, float] = {
+    "remote":   100.0,
+    "flexible":  85.0,
+    "hybrid":    40.0,
+    "onsite":     0.0,
+}
+
+
+def compute_culture_alignment(culture_profile, user_prefs: dict) -> tuple[Optional[float], str]:
+    """
+    Alignment (0-100, 1 decimal) between the user's explicit preferences and
+    a CompanyCultureProfile, plus a specific human-readable note for the UI.
+
+    Signals (each only when both sides carry real data — no signal, no score):
+      • work model  — user's remote_only hard constraint vs the company's
+                      stated work_model ("unknown" contributes nothing).
+      • culture axis — user's culture_preference ("startup"/"corporate") vs
+                      the company's 0-100 startup axis.
+
+    Returns (None, "") when the profile is missing/low-confidence or neither
+    signal exists — the fallback contract: no signal must mean no effect.
+    """
+    if culture_profile is None or getattr(culture_profile, "confidence", "low") == "low":
+        return None, ""
+
+    signals: list[float] = []
+    notes:   list[str]   = []
+
+    wm = getattr(culture_profile, "work_model", "unknown")
+    if user_prefs.get("work_model") == "remote_only" and wm in _REMOTE_ONLY_WM_ALIGNMENT:
+        score = _REMOTE_ONLY_WM_ALIGNMENT[wm]
+        signals.append(score)
+        notes.append(f"remote-only requirement vs company work model '{wm}'")
+
+    pref = str(user_prefs.get("culture_preference", "any")).lower()
+    category = getattr(culture_profile, "culture_category", "unknown")
+    if pref in ("startup", "corporate") and category != "unknown":
+        axis  = float(getattr(culture_profile, "culture_axis", 50.0))
+        score = axis if pref == "startup" else 100.0 - axis
+        signals.append(score)
+        notes.append(f"'{pref}' preference vs culture axis {axis:.1f}/100 ({category})")
+
+    if not signals:
+        return None, ""
+    return round(sum(signals) / len(signals), 1), "; ".join(notes)
+
+
+def culture_delta_from_alignment(
+    alignment: Optional[float],
+    prior_employer: bool = False,
+) -> Optional[float]:
+    """
+    Map alignment (0-100) to a bounded composite delta in
+    [-CULTURE_MAX_ADJUST, +CULTURE_MAX_ADJUST]; 50 is neutral (0.0).
+
+    prior_employer=True clamps negative deltas to 0.0 — the Company Legacy
+    principle: culture fit may reward, never penalize, a validated prior
+    employer. None in → None out (no signal, no effect).
+    """
+    if alignment is None:
+        return None
+    delta = (float(alignment) - 50.0) / 50.0 * CULTURE_MAX_ADJUST
+    delta = round(min(max(delta, -CULTURE_MAX_ADJUST), CULTURE_MAX_ADJUST), 1)
+    if prior_employer and delta < 0.0:
+        return 0.0
+    return delta
+
 
 def finalize_composite(
     local: float,
@@ -1388,20 +1567,26 @@ def finalize_composite(
     management: float,
     ats_base: float | None = None,
     knockout_failed: bool = False,
+    culture_delta: float | None = None,
 ) -> float:
     """
     Compose the final 0-100 Match Score from its parts. Pure and deterministic.
 
       llm_composite = 0.30 × local + 0.70 × (5/7 × semantic + 2/7 × management)
       unified       = 0.60 × llm_composite + 0.40 × ats_base   (when ATS ran)
-      capped        = min(unified, 40.0)                        (knockout failed)
+      adjusted      = unified + culture_delta                   (when culture ran;
+                      bounded ±CULTURE_MAX_ADJUST, see culture_delta_from_alignment)
+      capped        = min(adjusted, 40.0)                       (knockout failed)
 
     ats_base must be the engine's PRE-knockout base_score — the knockout
     penalty is applied here, once, as a cap (never also via the engine's
-    0.35 multiplier, which would double-penalise).
+    0.35 multiplier, which would double-penalise). The knockout cap is applied
+    AFTER the culture delta so a hard-constraint conflict can never be bought
+    back by good vibes.
 
-    Thin-JD callers (Principle 4) do not use this function's ATS path: they
-    zero semantic/management and pass no ats_base, preserving 0.30 × local.
+    Thin-JD callers (Principle 4) do not use this function's ATS or culture
+    paths: they zero semantic/management and pass no ats_base and no
+    culture_delta, preserving exactly 0.30 × local.
     """
     llm_bucket    = _SEMANTIC_SHARE * semantic + _MANAGEMENT_SHARE * management
     llm_composite = _LOCAL_WEIGHT * local + _LLM_BUCKET_WEIGHT * llm_bucket
@@ -1409,6 +1594,8 @@ def finalize_composite(
     composite = llm_composite
     if ats_base is not None:
         composite = _LLM_BLEND_WEIGHT * llm_composite + _ATS_BLEND_WEIGHT * ats_base
+    if culture_delta is not None:
+        composite += culture_delta
     if knockout_failed:
         composite = min(composite, KNOCKOUT_SCORE_CAP)
     return round(min(100.0, max(0.0, composite)), 1)
@@ -1476,6 +1663,67 @@ def _run_ats_engine(
         return None
 
 
+def _load_culture_prefs(user_id: str) -> dict:
+    """
+    The user-side inputs for culture alignment, from role_preferences:
+      work_model         — "remote_only" only for an explicit remote-only user
+                           (same mapping as get_knockout_prefs)
+      culture_preference — "startup" | "corporate" | "any" (default "any" ⇒
+                           the axis signal contributes nothing)
+    Non-fatal: any load failure returns preference-free defaults, which
+    produce alignment=None ⇒ no composite effect.
+    """
+    try:
+        from backend.services.master_profile_service import load
+        prefs = (load(user_id) or {}).get("role_preferences", {}) or {}
+        work  = str(prefs.get("work_type", "any")).lower()
+        return {
+            "work_model":         "remote_only" if work == "remote" else None,
+            "culture_preference": str(prefs.get("culture_preference", "any")).lower(),
+        }
+    except Exception as exc:
+        logger.warning("[culture-fit] prefs load failed for user=%s: %s", user_id, exc)
+        return {"work_model": None, "culture_preference": "any"}
+
+
+async def _compute_culture_fit(
+    cv_data: dict,
+    jd_text: str,
+    company_name: str,
+    user_id: str,
+) -> tuple[Optional[float], Optional[float], Optional[str], Optional[str]]:
+    """
+    Fetch the company culture profile (cached per company) and compute the
+    bounded composite delta. Returns (alignment, delta, category, note) —
+    all None on any failure or absence of signal. Never raises: culture fit
+    is additive-only and must never break or block scoring.
+
+    Runs ONLY from the full-composite path of compute_match_score_async —
+    the thin-JD early return precedes it, so thin JDs can never gain
+    (or lose) points from culture (Principle 4).
+    """
+    if not company_name or not company_name.strip():
+        return None, None, None, None
+    try:
+        from backend.agents.company_culture import get_culture_profile
+        profile = await get_culture_profile(company_name, jd_text=jd_text)
+        if profile is None:
+            return None, None, None, None
+
+        alignment, note = compute_culture_alignment(profile, _load_culture_prefs(user_id))
+        prior = _find_prior_employer(cv_data, company_name) is not None
+        delta = culture_delta_from_alignment(alignment, prior_employer=prior)
+        if delta is None:
+            return None, None, None, None
+        if prior and delta == 0.0 and alignment is not None and alignment < 50.0:
+            note = (note + " — negative adjustment waived (prior employer)") if note else note
+        category = profile.culture_category if profile.culture_category != "unknown" else None
+        return alignment, delta, category, (note or None)
+    except Exception as exc:
+        logger.warning("[culture-fit] unavailable for %r (non-fatal): %s", company_name, exc)
+        return None, None, None, None
+
+
 def _persist_score_audit(
     job_title: str,
     company_name: str,
@@ -1534,6 +1782,7 @@ async def compute_match_score_async(
     *,
     user_id: str,
     entity_scores: "list | None" = None,
+    job_id: Optional[str] = None,
 ) -> MatchScoreResult:
     """
     Async composite scorer — primary entry point for route handlers.
@@ -1581,10 +1830,28 @@ async def compute_match_score_async(
         in one pass (feed_service.refresh_user_scores) fetch this once and
         pass it through to avoid re-querying the Confidence Matrix per job
         (JOB-6 N+1 fix). None (default) preserves the original per-call fetch.
+    job_id : str | None  (keyword-only, optional)
+        Stable job identifier. When provided AND the computed score qualifies
+        (llm_validated, semantic signal present, total >= HIGH_MATCH_THRESHOLD),
+        a fire-and-forget high-match trigger is scheduled via
+        match_trigger_service.schedule_match_trigger (JOB-43) — exactly once
+        per (user, job), never blocking this scorer. None (default) disables
+        trigger evaluation, e.g. for preview scoring of unsaved jobs.
     """
     if not run_llm_validation:
         # Fast path — Phase 1 only
         return _phase1(cv_data, jd_text, skill_proficiencies)
+
+    # ── Parse Noisy JDs ───────────────────────────────────────────────────────
+    # Pass the raw scraped JD through the JDParserAgent first. It strips noise,
+    # structures the output, and extracts the company name.
+    # The output string must be used for the 300-char thin-JD check and scoring.
+    parser = JDParserAgent()
+    parsed_jd = await parser.parse_and_format_jd(jd_text)
+    jd_text = parsed_jd.formatted_text
+
+    if parsed_jd.company_name and (not company_name or not company_name.strip() or company_name.strip().lower() in ("unknown", "n/a")):
+        company_name = parsed_jd.company_name
 
     # Safety net: refuse to call the LLM on a placeholder / un-hydrated JD.
     # Sending "Title at Company in Location" to Claude wastes tokens and
@@ -1635,6 +1902,10 @@ async def compute_match_score_async(
             management_score    = 0.0,
             why_ron             = None,
             missing_critical_capabilities = [],
+            # bullet_matches is a Phase-1, LLM-independent signal — the thin-JD
+            # fallback zeroes the LLM-derived score components but must not
+            # drop it too (it's still honest, still useful for Ariel).
+            bullet_matches      = p1.bullet_matches,
         )
 
     # ── Full unified composite ────────────────────────────────────────────────
@@ -1657,13 +1928,26 @@ async def compute_match_score_async(
     # ATS Match Engine — None ⇒ degrade gracefully to the pure LLM composite.
     ats = _run_ats_engine(cv_data, jd_text, company_name, local, user_id, entity_scores)
 
+    # Culture fit (JOB-20) — bounded ±5 post-blend delta; all-None when there
+    # is no real signal, leaving the composite bit-identical to pre-culture.
+    culture_alignment, culture_delta, culture_category, culture_note = (
+        await _compute_culture_fit(cv_data, jd_text, company_name, user_id)
+    )
+
     llm_composite   = finalize_composite(local, semantic, management)
     knockout_failed = bool(ats and not ats.knockout.passed)
     composite       = finalize_composite(
         local, semantic, management,
         ats_base        = ats.base_score if ats else None,
         knockout_failed = knockout_failed,
+        culture_delta   = culture_delta,
     )
+
+    if culture_delta is not None:
+        logger.info(
+            "match_score culture-fit: alignment=%.1f delta=%+.1f category=%s title='%s'",
+            culture_alignment, culture_delta, culture_category, inferred_title,
+        )
 
     # Phase 1 for rich keyword/skills breakdown (populates UI tag row)
     p1 = _phase1(cv_data, jd_text, skill_proficiencies)
@@ -1687,7 +1971,7 @@ async def compute_match_score_async(
             local, semantic, management, composite, inferred_title,
         )
 
-    return MatchScoreResult(
+    result = MatchScoreResult(
         total               = composite,
         keyword_overlap     = p1.keyword_overlap,
         skills_alignment    = p1.skills_alignment,
@@ -1709,4 +1993,23 @@ async def compute_match_score_async(
         knockout_failed      = knockout_failed,
         knockout_reasons     = list(ats.knockout.reasons) if ats else [],
         ats_gaps             = list(ats.gap_analysis) if ats else [],
+        culture_alignment    = culture_alignment,
+        culture_delta        = culture_delta,
+        culture_category     = culture_category,
+        culture_note         = culture_note,
+        bullet_matches       = p1.bullet_matches,
     )
+
+    # ── High-match trigger (JOB-43) — fire-and-forget, never blocks scoring ───
+    # Only evaluated on the full LLM-validated path with a stable job_id; the
+    # thin-JD early return above never reaches here, and schedule_match_trigger
+    # itself re-checks llm_validated + semantic_score as defence in depth.
+    if job_id:
+        from backend.services.match_trigger_service import schedule_match_trigger
+        schedule_match_trigger(
+            job_id, user_id, result.as_dict(),
+            job_title    = inferred_title,
+            company_name = company_name,
+        )
+
+    return result

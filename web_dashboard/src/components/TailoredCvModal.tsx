@@ -438,15 +438,15 @@ export function TailoredCvModal({ job, onClose, onGeneratePdf }: TailoredCvModal
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop — Meridian V2 §3.2 scrim */}
       <div
-        className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[2px]"
+        className="fixed inset-0 z-40 bg-slate-900/55 backdrop-blur-[4px]"
         onClick={onClose}
       />
 
       {/* Panel — slides in from the right */}
       <div
-        className="fixed inset-y-0 right-0 z-50 flex flex-col bg-slate-50 shadow-2xl"
+        className="fixed inset-y-0 right-0 z-50 flex flex-col bg-slate-50 shadow-floating"
         style={{ width: 'min(600px, 100vw)' }}
       >
         {/* ── Header ───────────────────────────────────────────────────────── */}

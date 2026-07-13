@@ -21,7 +21,8 @@ export function Footer() {
   return (
     <>
       {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 bg-slate-900 text-white text-[13px] font-medium px-5 py-3 rounded-xl shadow-2xl max-w-sm text-center">
+        // Dark glass (§3.2) — this toast already committed to a dark theme.
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 bg-[#0A1F1C]/80 backdrop-blur-xl border border-white/10 text-white text-[13px] font-medium px-5 py-3 rounded-xl shadow-floating max-w-sm text-center animate-modal-in">
           <span>🚧</span>
           <span>{COMING_SOON_MSG}</span>
         </div>

@@ -39,8 +39,9 @@ from sqlalchemy.orm import Session
 from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, standard_rate_limit
 from backend.services.db import ENGINE, MasterProfileRow
 from backend.agents.ariel_tools import ARIEL_TOOLS, execute_tool
-from backend.services.user_profile import USER_PROFILE, get_profile
+from backend.services.user_profile import USER_PROFILE, get_profile, format_profile_compact
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
+from backend.utilities.ai_scrubber import AIScrubberBuffer, clean_ai_text
 
 logger = logging.getLogger(__name__)
 # All chat routes hit the LLM → strict per-caller budget.
@@ -134,6 +135,9 @@ def _build_system_prompt(job_context: Optional[JobContext]) -> str:
         "You are female — always use feminine verb conjugations and self-references, "
         "especially in Hebrew (e.g. אני רואה, ניתחתי, הכנתי, אני ממליצה). "
         "Never use masculine self-references in any language.\n\n"
+        "BILINGUAL & RTL PROCESSING (HEBREW/ENGLISH)\n"
+        "You must seamlessly comprehend mixed syntax, such as Hebrew sentences containing English technical terms or acronyms, without losing context or introducing translation artifacts.\n"
+        "Regardless of the input language (Hebrew, English, or mixed), all returned JSON structures MUST use English keys exclusively. Values may be in the source language, but keys must always be English.\n\n"
         "PACING — CRITICAL: This is a conversation, not a document. "
         "When gathering information or exploring options, keep responses to 1–4 sentences "
         "and ask exactly ONE question at a time. Be thorough only when delivering a "
@@ -216,6 +220,8 @@ async def _stream_response(
         # input_json_delta events, so we buffer them and parse once the block closes.
         pending_tool_name: Optional[str]  = None
         pending_tool_json: str            = ""
+        
+        scrubber = AIScrubberBuffer()
 
         async with client.messages.stream(
             model=_MODEL,
@@ -236,7 +242,9 @@ async def _stream_response(
                 elif etype == "content_block_delta":
                     delta = event.delta
                     if delta.type == "text_delta" and delta.text:
-                        yield _sse_chunk(delta.text)
+                        cleaned = scrubber.process_chunk(delta.text)
+                        if cleaned:
+                            yield _sse_chunk(cleaned)
                     elif delta.type == "input_json_delta":
                         pending_tool_json += delta.partial_json
 
@@ -250,6 +258,9 @@ async def _stream_response(
                         pending_tool_name = None
                         pending_tool_json = ""
 
+        final_cleaned = scrubber.flush()
+        if final_cleaned:
+            yield _sse_chunk(final_cleaned)
         yield _sse_done()
 
     except anthropic.APIStatusError as exc:
@@ -299,6 +310,11 @@ async def chat_stream(
 _ARIEL_MODEL      = "claude-sonnet-4-6"
 _ARIEL_MAX_TOKENS = 1024
 _MAX_TOOL_LOOPS   = 5   # safety ceiling on sequential tool-use iterations
+# Sliding window on transmitted chat_history — without this, a long-running
+# conversation resends every prior turn on every request (seen up to 71
+# messages). Pinned messages are exempt: `pinned` is computed from the full,
+# unsliced body.chat_history before this window is applied (see the route).
+_ARIEL_MAX_HISTORY_MESSAGES = 14
 
 # ── System prompt builders ────────────────────────────────────────────────────
 
@@ -311,12 +327,25 @@ that is.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 IDENTITY & GENDER — MANDATORY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-You are female. This is non-negotiable and must be reflected in every
-language that grammatically encodes gender.
+Identity: You are Ariel, a female Career Intelligence Agent. This is
+non-negotiable and must be reflected in every language that grammatically
+encodes gender.
 
-Hebrew: ALWAYS use feminine verb conjugations and self-references.
-  ✓ Correct:  אני רואה, ניתחתי, הכנתי, אני ממליצה, אני חושבת
-  ✗ Forbidden: ניתחתי (male form if used as such), כתבתי (male), אמרתי (male)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BILINGUAL & RTL PROCESSING (HEBREW/ENGLISH)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You must seamlessly comprehend mixed syntax, such as Hebrew sentences containing English technical terms or acronyms, without losing context or introducing translation artifacts.
+Regardless of the input language (Hebrew, English, or mixed), all returned JSON structures MUST use English keys exclusively. Values may be in the source language, but keys must always be English.
+
+Language Constraint: When communicating in Hebrew, you MUST strictly and
+consistently use female grammatical forms and inflections for yourself.
+Never mix genders or use male inflections for yourself. Use explicit
+female phrasing naturally so the user clearly registers your identity as
+a female companion.
+  ✓ Correct:   אני יכולה, עדכנתי, אשמח לעזור, אני רואה, ניתחתי, הכנתי,
+               אני ממליצה, אני חושבת
+  ✗ Forbidden: any masculine-form self-reference or self-conjugation, in
+               any of the above phrases or elsewhere in your reply.
 
 If you catch yourself about to use a masculine form in Hebrew, stop and use
 the correct feminine form instead. There are no exceptions.
@@ -516,6 +545,18 @@ just acknowledge it.
   in your own words.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AUTONOMOUS PROFILE WRITES — NO COPY-PASTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The moment you and the user land on new or revised phrasing for their
+professional summary or target job title, call update_profile_base yourself
+with the final text. NEVER print the new summary/title and ask the user to
+paste it into the profile UI — that is a broken experience; you have a tool
+that writes it directly. After the call, confirm what you saved in your own
+words. Same principle applies to skills and career goals: use update_skills
+/ update_career_goals rather than asking the user to make the edit
+themselves anywhere the write tools already exist.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 YOUR CAPABILITIES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • Target role deduction and career path mapping from the user's profile.
@@ -523,6 +564,8 @@ YOUR CAPABILITIES
 • Adding, removing, AND updating skills — including correcting an existing
   skill's proficiency/confidence DOWN when the user admits they are less
   experienced than the profile shows (see KEEPING SKILL CONFIDENCE HONEST).
+• Writing the agreed professional summary and target title directly into
+  the profile via update_profile_base (see AUTONOMOUS PROFILE WRITES).
 • Actionable career-move recommendations (roles, companies, timelines).
 • CV language tailoring and ATS optimisation — including DIRECT execution of
   edits on the user's tailored CV via the edit tools (see EXECUTOR MODE).
@@ -621,16 +664,18 @@ def _build_ariel_system(pinned_messages: list[ChatMessage], user_id: str) -> str
         # Profile text is CV-derived and user-controlled — sanitize before it
         # re-enters the system prompt, same as the tool-result path, so a
         # hostile CV can't smuggle instructions into Ariel's own persona.
-        profile_json = sanitize_text(
-            json.dumps(get_profile(user_id), ensure_ascii=False, indent=2)
-        )
+        # Rendered as compact plain text rather than pretty JSON — every
+        # experience entry and skill is still included, only the per-entry
+        # JSON scaffolding (braces/quotes/indentation) is dropped, saving
+        # thousands of input tokens per turn on a well-populated profile.
+        profile_text = sanitize_text(format_profile_compact(get_profile(user_id)))
     except Exception as exc:
         logger.error("[_build_ariel_system] profile fetch failed user=%s: %s", user_id, exc)
-        profile_json = "{}"
+        profile_text = "(none)"
 
     parts.append(
         "<MasterProfile>\n"
-        f"{profile_json}\n"
+        f"{profile_text}\n"
         "</MasterProfile>"
     )
 
@@ -693,6 +738,7 @@ async def _ariel_tool_loop_then_stream(
             for block in text_blocks:
                 text = getattr(block, "text", "") or ""
                 if text:
+                    text = clean_ai_text(text)
                     # Chunk into ~80-char pieces so the client renders progressively
                     for i in range(0, len(text), 80):
                         yield _sse_chunk(text[i:i + 80])
@@ -727,6 +773,7 @@ async def _ariel_tool_loop_then_stream(
     # Reached only when the model kept requesting tools up to _MAX_TOOL_LOOPS.
     # Make one final streaming call with tool_choice=none to force a text reply.
     try:
+        scrubber = AIScrubberBuffer()
         async with client.messages.stream(
             model       = _ARIEL_MODEL,
             max_tokens  = _ARIEL_MAX_TOKENS,
@@ -738,7 +785,13 @@ async def _ariel_tool_loop_then_stream(
                 if event.type == "content_block_delta":
                     delta = event.delta
                     if delta.type == "text_delta" and delta.text:
-                        yield _sse_chunk(delta.text)
+                        cleaned = scrubber.process_chunk(delta.text)
+                        if cleaned:
+                            yield _sse_chunk(cleaned)
+        
+        final_cleaned = scrubber.flush()
+        if final_cleaned:
+            yield _sse_chunk(final_cleaned)
         yield _sse_done()
     except anthropic.APIStatusError as exc:
         logger.error("[ariel/private] Anthropic API error in final stream: %s", exc)
@@ -786,11 +839,29 @@ def _extract_text_from_attachment(item: AttachmentItem) -> str | None:
 
     try:
         if mime == "application/pdf":
-            import fitz  # PyMuPDF
-            doc  = fitz.open(stream=raw, filetype="pdf")
-            text = "\n\n".join(page.get_text() for page in doc)
-            doc.close()
-            return text.strip() or None
+            import pdfplumber
+            import re
+            
+            def fix_rtl_visual(text: str) -> str:
+                if not text:
+                    return text
+                if not re.search(r'[\u0590-\u05FF\u0600-\u06FF]', text):
+                    return text
+                rev = text[::-1]
+                def re_rev(m):
+                    return m.group(0)[::-1]
+                ltr_pattern = r'[A-Za-z0-9@#.$%^&*()[\]{}<>\-_|+]+(?:[\s]+[A-Za-z0-9@#.$%^&*()[\]{}<>\-_|+]+)*'
+                return re.sub(ltr_pattern, re_rev, rev)
+
+            pages_text = []
+            with pdfplumber.open(io.BytesIO(raw)) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text(layout=True)
+                    if text:
+                        fixed_lines = [fix_rtl_visual(line) for line in text.split('\n')]
+                        pages_text.append('\n'.join(fixed_lines))
+
+            return "\n\n".join(pages_text).strip() or None
 
         if mime in (
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1030,19 +1101,23 @@ async def ariel_private(
     # alongside the user's Master Profile (see _build_ariel_system).
     pinned = [m for m in body.chat_history if m.isPinned]
     system = _build_ariel_system(pinned, user.user_id)
-    logger.info(
-        "[ariel/private] mode=strategist user=%s  pinned=%d",
-        user.user_id, len(pinned),
-    )
 
     # ── Build Anthropic messages array ────────────────────────────────────────
+    # Slide the window before filtering: only the most recent
+    # _ARIEL_MAX_HISTORY_MESSAGES entries are ever sent to the model, even if
+    # the client has accumulated many more. Pinned messages are unaffected —
+    # `pinned` above was already computed from the full, unsliced history.
     # Validate history: only user/assistant turns with non-empty content,
     # alternating correctly (Anthropic requires strict user/assistant alternation).
     raw_history = [
         {"role": m.role, "content": m.content}
-        for m in body.chat_history
+        for m in body.chat_history[-_ARIEL_MAX_HISTORY_MESSAGES:]
         if m.role in ("user", "assistant") and m.content.strip()
     ]
+    logger.info(
+        "[ariel/private] mode=strategist user=%s  pinned=%d  history_total=%d  history_sent=%d",
+        user.user_id, len(pinned), len(body.chat_history), len(raw_history),
+    )
 
     # Process attachments: extract document text, build vision blocks for images.
     user_content = _build_message_with_attachments(
@@ -1191,6 +1266,7 @@ async def _stream_public_reply(
 ) -> AsyncIterator[str]:
     """Plain text-only SSE stream — Eliya has no tools."""
     try:
+        scrubber = AIScrubberBuffer()
         async with client.messages.stream(
             model      = _ELIYA_MODEL,
             max_tokens = _ELIYA_MAX_TOKENS,
@@ -1201,7 +1277,13 @@ async def _stream_public_reply(
                 if event.type == "content_block_delta":
                     delta = event.delta
                     if delta.type == "text_delta" and delta.text:
-                        yield _sse_chunk(delta.text)
+                        cleaned = scrubber.process_chunk(delta.text)
+                        if cleaned:
+                            yield _sse_chunk(cleaned)
+                            
+        final_cleaned = scrubber.flush()
+        if final_cleaned:
+            yield _sse_chunk(final_cleaned)
         yield _sse_done()
     except anthropic.APIStatusError as exc:
         logger.error("[chat/public] Anthropic API error: %s", exc)

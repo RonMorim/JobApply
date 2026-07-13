@@ -44,6 +44,17 @@ const config: Config = {
           // ── Fixed brand constants ─────────────────────────────────────────
           linkedin:      '#0A66C2',   // LinkedIn brand blue — external constant
           inkDeep:       '#0A1F1C',   // near-black teal — dark hero/auth gradient stop
+
+          // ── V2 'Meridian' — Abyss / Harbor (dark anchor tier) ──────────────
+          harbor:        '#134E4A',   // teal-900 — authoritative fills, dark-surface buttons
+
+          // ── V2 'Meridian' — Amethyst (AI voice) ────────────────────────────
+          ai:            '#7C3AED',   // violet-600 — Ariel identity, AI-generated content
+          aiSubtle:      '#F5F3FF',   // violet-50  — AI-surface fills
+          support:       '#4F46E5',   // indigo-600 — Eliya support chat only
+
+          // ── V2 'Meridian' — Electric Emerald (verification) ────────────────
+          verified:      '#10B981',   // emerald-500 — live/verified signals, high-match pulses
         },
       },
       maxWidth: {
@@ -76,6 +87,17 @@ const config: Config = {
         'lg':  '12px',
         'xl':  '16px',
         '2xl': '20px',
+      },
+      keyframes: {
+        // Meridian V2 §8 — canonical modal entrance: fade + scale, 200ms.
+        // Single shared definition so every modal panel animates identically.
+        'modal-in': {
+          '0%':   { opacity: '0', transform: 'scale(0.96)' },
+          '100%': { opacity: '1', transform: 'scale(1)' },
+        },
+      },
+      animation: {
+        'modal-in': 'modal-in 200ms ease-out',
       },
     },
   },

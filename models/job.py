@@ -111,3 +111,9 @@ class JobMatch(BaseModel):
     # Set by scrapers that know the source language (e.g. Israeli boards → 'he').
     # Drives RTL rendering priority in the UI without requiring per-char detection.
     locale:               Optional[str]   = None
+    
+    # ── JOB-20: Dynamic culture fit scoring dimensions ────────────────────────
+    culture_delta:        Optional[float] = None
+    culture_alignment:    Optional[float] = None
+    culture_category:     Optional[str]   = None
+    culture_note:         Optional[str]   = None

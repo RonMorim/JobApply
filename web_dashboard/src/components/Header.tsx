@@ -172,8 +172,7 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
 
           {bellOpen && (
             <div
-              className="absolute right-0 top-11 w-72 rounded-xl bg-white border border-slate-100 overflow-hidden z-50"
-              style={{ boxShadow: 'var(--ja-floating)' }}
+              className="absolute right-0 top-11 w-72 rounded-xl bg-white/85 backdrop-blur-xl border border-white/60 shadow-floating overflow-hidden z-50"
             >
               <div className="px-3 py-2.5 border-b border-slate-50 flex items-center justify-between">
                 <span className="text-[12px] font-semibold text-slate-700">High-match alerts</span>
@@ -223,8 +222,7 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
           {menuOpen && (
             <div
               onMouseLeave={() => setMenuOpen(false)}
-              className="absolute right-0 top-10 w-56 rounded-xl bg-white border border-slate-100 overflow-hidden z-50"
-              style={{ boxShadow: 'var(--ja-floating)' }}
+              className="absolute right-0 top-10 w-56 rounded-xl bg-white/85 backdrop-blur-xl border border-white/60 shadow-floating overflow-hidden z-50"
             >
               <div className="px-3 py-3 border-b border-slate-50">
                 <div className="text-[13px] font-semibold text-slate-900">{displayName}</div>

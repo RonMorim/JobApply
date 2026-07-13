@@ -19,8 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install pytest
+          pip install -r backend/requirements-dev.txt
 
       - name: Enforce backend.* import convention (no bare api./services./config imports)
         # Bare `api.*` / `services.*` / `config` imports resolve to a second,
@@ -39,6 +38,8 @@ jobs:
         run: python -m py_compile $(find backend -name "*.py" -not -path "*/tests/*")
 
       - name: Run backend tests
+        env:
+          ANTHROPIC_API_KEY: 'test-key'
         run: pytest backend/tests -q
 
   frontend:

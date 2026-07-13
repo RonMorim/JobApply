@@ -2,12 +2,16 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { ApiFeedJob, JobSourceType, ReasonKind } from '@/lib/apiTypes'
 import { markJobApplied, refreshFeedScores, fetchJobJd, ensureFreshToken, getAuthHeaders } from '@/lib/api'
+import { getScoreBand as scoreBand } from '@/lib/scoreBand'
 import { ProbeModal, type ProbeState } from './TrustDashboard'
 
 const IS_DEV = process.env.NODE_ENV === 'development'
 import { SkillIcon, ExpIcon, LocIcon, WarnIcon } from './icons'
 import { OutreachModal }    from './OutreachModal'
+import { DirectPitchModal } from './DirectPitchModal'
+import { InterviewSimulatorModal } from './InterviewSimulatorModal'
 import { AtsKeywordsPanel } from './AtsKeywordsPanel'
+import { SkillsGapPanel }   from './SkillsGapPanel'
 
 // ── Chevron ───────────────────────────────────────────────────────────────────
 
@@ -45,43 +49,75 @@ function LinkedInIcon({ s = 13 }: { s?: number }) {
   )
 }
 
-// ── RTL detection ─────────────────────────────────────────────────────────────
+// RTL detection no longer needed due to dir="auto"
 
-const _HEBREW_RE = /[֐-׿יִ-ﭏ]/g
+// ── Workplace type from the unstructured location string ─────────────────────
+// Returns null when the type is already spelled out inside the location text
+// (avoids "Tel Aviv · Hybrid · Hybrid") or when no location exists at all.
 
-function getTextDirection(text: string): 'rtl' | 'ltr' {
-  if (!text) return 'ltr'
-  const hebrewCount = (text.match(_HEBREW_RE) ?? []).length
-  const letterCount = (text.match(/[a-zA-Z֐-׿יִ-ﭏ]/g) ?? []).length
-  return letterCount > 0 && hebrewCount / letterCount > 0.35 ? 'rtl' : 'ltr'
+function deriveWorkplaceType(location: string | null | undefined): string | null {
+  const loc = (location ?? '').toLowerCase()
+  if (!loc.trim()) return null
+  if (/(remote|wfh|work from home)/.test(loc)) return null   // already visible in location
+  if (loc.includes('hybrid')) return null                    // already visible in location
+  return 'On-site'
+}
+
+// ── Posted-at formatting ──────────────────────────────────────────────────────
+// < 7 days old → relative ("2d ago"); ≥ 7 days → exact date ("Jul 4").
+// Falls back to the backend-provided string; never fabricates "just now".
+
+function formatPostedAt(createdAt: string | null, postedAt: string): string | null {
+  if (createdAt) {
+    const d = new Date(createdAt)
+    if (!isNaN(d.getTime())) {
+      const diffMs = Math.max(0, Date.now() - d.getTime())
+      const diffH  = Math.floor(diffMs / 3_600_000)
+      const diffD  = Math.floor(diffMs / 86_400_000)
+      if (diffD >= 7) {
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      }
+      if (diffD >= 1) return `${diffD}d ago`
+      if (diffH >= 1) return `${diffH}h ago`
+      return `${Math.max(1, Math.floor(diffMs / 60_000))}m ago`
+    }
+  }
+  const p = (postedAt ?? '').trim()
+  if (!p || /just now/i.test(p)) return null
+  return p
+}
+
+// ── Strength badge ────────────────────────────────────────────────────────────
+// Subtle highlight chips under the metadata row — the user's top strengths for
+// this role (source advantage + positive skill/experience reason tags).
+
+function StrengthBadge({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center h-[18px] px-1.5 rounded-md text-[10.5px] font-medium bg-slate-50 text-slate-500 border border-slate-100">
+      {label}
+    </span>
+  )
 }
 
 // ── RTL-aware bullet & paragraph atoms ───────────────────────────────────────
 
 function BulletItem({ text }: { text: string }) {
-  const dir   = getTextDirection(text)
-  const isRtl = dir === 'rtl'
   return (
     <li
-      dir={dir}
-      className={`flex items-start gap-2 text-[12px] leading-relaxed text-slate-600 ${
-        isRtl ? 'flex-row-reverse text-right' : 'text-left'
-      }`}
+      dir="auto"
+      className="flex items-start gap-2 text-[12px] leading-relaxed text-slate-600 [unicode-bidi:plaintext] text-start"
     >
       <span className="mt-[6px] shrink-0 h-[5px] w-[5px] rounded-full bg-slate-400" />
-      <span className="flex-1">{text}</span>
+      <span className="flex-1" dir="auto">{text}</span>
     </li>
   )
 }
 
 function ParagraphBlock({ text, className = '' }: { text: string; className?: string }) {
-  const dir = getTextDirection(text)
   return (
     <p
-      dir={dir}
-      className={`text-[12px] leading-relaxed text-slate-600 ${
-        dir === 'rtl' ? 'text-right' : 'text-left'
-      } ${className}`}
+      dir="auto"
+      className={`text-[12px] leading-relaxed text-slate-600 [unicode-bidi:plaintext] text-start ${className}`}
     >
       {text}
     </p>
@@ -268,7 +304,7 @@ function DirectApplyBadge() {
 
 const GAP_TONES: Record<ReasonKind, { cls: string; Icon: (p: { s?: number }) => JSX.Element }> = {
   skill: { cls: 'bg-emerald-50 text-emerald-700', Icon: SkillIcon },
-  exp:   { cls: 'bg-blue-50 text-blue-700',       Icon: ExpIcon   },
+  exp:   { cls: 'bg-teal-50 text-teal-700',       Icon: ExpIcon   },
   loc:   { cls: 'bg-violet-50 text-violet-700',   Icon: LocIcon   },
   neg:   { cls: 'bg-ja-dangerSubtle text-red-700', Icon: WarnIcon  },
 }
@@ -367,14 +403,14 @@ function StructuredJdPanel({ parsed }: { parsed: StructuredJd }) {
             {Array.isArray(val) ? (
               <ul className="space-y-1.5">
                 {(val as string[]).map((item, i) => (
-                  <li key={i} className="flex items-start gap-2 text-[12.5px] leading-relaxed text-slate-700">
+                  <li key={i} dir="auto" className="flex items-start gap-2 text-[12.5px] leading-relaxed text-slate-700 [unicode-bidi:plaintext] text-start">
                     <span className="mt-[7px] shrink-0 h-[4px] w-[4px] rounded-full bg-slate-400" />
-                    <span className="flex-1">{item}</span>
+                    <span className="flex-1" dir="auto">{item}</span>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-[12.5px] leading-relaxed text-slate-700">{val as string}</p>
+              <p dir="auto" className="text-[12.5px] leading-relaxed text-slate-700 [unicode-bidi:plaintext] text-start">{val as string}</p>
             )}
           </div>
         )
@@ -395,13 +431,12 @@ interface JdPanelProps {
 }
 function JdPanel({ text, expanded, onToggleExpand, isHebrewLocale = false }: JdPanelProps) {
   const isLong   = text.length > JD_COLLAPSE_THRESHOLD
-  const outerDir: 'rtl' | 'ltr' = isHebrewLocale ? 'rtl' : getTextDirection(text.slice(0, 200))
   return (
     <div>
       <div className="relative">
         <div
           className="overflow-y-auto rounded-lg bg-white border border-slate-200 p-4"
-          dir={outerDir}
+          dir="auto"
           style={{
             boxShadow: 'inset 0 2px 4px rgba(15,23,42,0.04)',
             maxHeight: isLong ? (expanded ? '60vh' : '16rem') : undefined,
@@ -501,7 +536,7 @@ function AnalysisUnavailable() {
 function AnalysisAuthWall() {
   return (
     <div
-      className="rounded-lg px-4 py-3 flex items-start gap-3 bg-blue-50 border border-blue-200"
+      className="rounded-lg px-4 py-3 flex items-start gap-3 bg-ja-primarySubtle border border-teal-200"
     >
       <span className="text-[15px] mt-0.5" aria-hidden="true">🔒</span>
       <div className="flex-1 min-w-0">
@@ -687,9 +722,9 @@ function AgentAnalysisBox({ job, userId }: { job: ApiFeedJob; userId?: string })
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-2">
-        <span aria-hidden="true">🤖</span>
+        <span aria-hidden="true" className="h-2 w-2 rounded-full bg-violet-500 shrink-0" />
         <span className="text-[10.5px] font-bold uppercase tracking-widest text-slate-400">
-          Agent Analysis
+          Ariel&apos;s Analysis
         </span>
         {IS_DEV && !analysisReady && !hardFailed && !isAuthWall && (
           <span className="ml-auto text-[10px] text-amber-600 font-medium">
@@ -700,10 +735,11 @@ function AgentAnalysisBox({ job, userId }: { job: ApiFeedJob; userId?: string })
 
       {analysisReady ? (
         <>
+          {/* Generated-content marker (Meridian V2 §6.1) — amethyst left border + bg-ja-aiSubtle: Ariel wrote this */}
           <div
-            className="rounded-lg px-4 py-3 bg-slate-50 border border-slate-200"
+            className="rounded-lg px-4 py-3 bg-ja-aiSubtle border border-l-2 border-slate-200 border-l-ja-ai"
           >
-            <p className="text-[13px] text-slate-600 leading-relaxed max-w-3xl">
+            <p dir="auto" className="text-[13px] text-slate-600 leading-relaxed max-w-3xl [unicode-bidi:plaintext] text-start">
               {raw}
             </p>
           </div>
@@ -771,7 +807,10 @@ export function JobCard({
   const [showDetails,      setShowDetails]      = useState(initialExpanded)
   const [jdExpanded,       setJdExpanded]       = useState(false)
   const [showOutreach,     setShowOutreach]     = useState(false)
+  const [showPitch,        setShowPitch]        = useState(false)
+  const [showInterview,    setShowInterview]    = useState(false)
   const [showAtsPanel,     setShowAtsPanel]     = useState(false)
+  const [showSkillsGap,    setShowSkillsGap]    = useState(false)
   const [isMarkingApplied, setIsMarkingApplied] = useState(false)
   // Seed from server state so a refresh doesn't show "Mark Applied" again
   // for a job that's already in the applied/submitted pipeline stage.
@@ -793,6 +832,14 @@ export function JobCard({
   }, [initialExpanded])
 
   const isDirect           = job.is_direct_application === true || job.source_type === 'company_site'
+  const workplaceType      = deriveWorkplaceType(job.location)
+  const postedLabel        = formatPostedAt(job.created_at, job.posted_at)
+  // Top strengths for this role: source advantage first, then positive
+  // skill/experience reason tags (never the negative "neg" kind).
+  const strengths: string[] = [
+    ...(isDirect ? ['Company Site'] : []),
+    ...job.reasons.filter(r => r.kind === 'skill' || r.kind === 'exp').map(r => r.label),
+  ].slice(0, 4)
   const isSaved            = job.status === 'saved'
   // Server-authoritative applied state — button must be visible/enabled for
   // any job NOT already in the 'applied' pipeline stage, regardless of
@@ -816,9 +863,7 @@ export function JobCard({
 
   const handleToggleDetails = () => setShowDetails(v => !v)
 
-  // Title / company direction
-  const titleDir   = isHebrewLocale || getTextDirection(job.title)   === 'rtl' ? 'rtl' : 'ltr'
-  const companyDir = isHebrewLocale || getTextDirection(job.company)  === 'rtl' ? 'rtl' : 'ltr'
+  // Title / company direction handled by dir="auto"
 
   return (
     <article
@@ -850,7 +895,7 @@ export function JobCard({
         }`}
       >
         {/* Title + meta */}
-        <div className="flex-1 min-w-0" dir={titleDir}>
+        <div className="flex-1 min-w-0" dir="auto" style={{ textAlign: 'start', unicodeBidi: 'plaintext' }}>
           <div className="flex items-center gap-2.5 flex-wrap">
             <h2 className="text-[15px] font-bold text-slate-900 tracking-tight">
               {job.is_new && (
@@ -861,7 +906,12 @@ export function JobCard({
               )}
               {job.title}
             </h2>
-            {job.match_score >= 75 && (
+            {job.match_score >= 85 && (
+              <span className="bg-emerald-50 text-emerald-700 text-[11px] font-semibold px-2 py-0.5 rounded-lg ring-1 ring-inset ring-emerald-600/20 shrink-0">
+                Exceptional Match
+              </span>
+            )}
+            {job.match_score >= 70 && job.match_score < 85 && (
               <span className="bg-teal-50 text-teal-700 text-[11px] font-semibold px-2 py-0.5 rounded-lg ring-1 ring-inset ring-teal-600/20 shrink-0">
                 Strong Match
               </span>
@@ -875,23 +925,53 @@ export function JobCard({
               </span>
             )}
           </div>
-          <p className="text-[12.5px] text-slate-400 mt-1" dir={companyDir}>
+          {/* [Company] · [Location] · [Workplace Type] · [Time Ago] */}
+          <p className="text-[12.5px] text-slate-400 mt-1" dir="auto" style={{ textAlign: 'start', unicodeBidi: 'plaintext' }}>
             {job.company || 'Unknown Company'}
             {job.location && <> · {job.location}</>}
-            {job.posted_at && <> · <span className="tabular-nums">{job.posted_at}</span></>}
+            {workplaceType && <> · {workplaceType}</>}
+            {postedLabel && <> · <span className="tabular-nums">{postedLabel}</span></>}
           </p>
+          {/* Strength badges — top strengths for this role, subtle by design */}
+          {strengths.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+              {strengths.map(s => <StrengthBadge key={s} label={s} />)}
+            </div>
+          )}
         </div>
 
         {/* Score numeral — hidden and replaced with Analyze CTA when JD is absent */}
         {job.score_is_proxy && (!job.jd_text || job.jd_text.trim().length < 300) ? (
           <AnalyzeJobButton jobId={job.job_id} />
         ) : (
-          <div className="flex items-baseline gap-0.5 shrink-0">
-            <span className="text-2xl font-bold text-slate-900 tracking-tight tabular-nums">
-              {job.match_score > 0 ? job.match_score.toFixed(1) : '—'}
-            </span>
-            <span className="text-[10px] font-semibold text-slate-400 ml-0.5">/100</span>
-          </div>
+          (() => {
+            const band = scoreBand(job.match_score)
+            // Thin-JD-capped composite (§2.3 DESIGN_SYSTEM_V2.md): still marked
+            // provisional by the backend even though jd_text cleared the 300-char
+            // AnalyzeJobButton gate above — never dress up an un-hydrated score.
+            const isProvisional = job.score_is_proxy && job.match_score > 0 && job.match_score < 30
+            return (
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                <div className={`inline-flex items-baseline gap-0.5 px-2.5 py-1 rounded-lg ${
+                  job.match_score > 0 ? band.bg : 'bg-slate-100'
+                }`}>
+                  <span className={`text-2xl font-bold tracking-tight tabular-nums ${
+                    job.match_score > 0 ? band.text : 'text-slate-400'
+                  }`}>
+                    {job.match_score > 0 ? job.match_score.toFixed(1) : '—'}
+                  </span>
+                  <span className={`text-[10px] font-semibold ml-0.5 ${
+                    job.match_score > 0 ? band.text : 'text-slate-400'
+                  }`}>/100</span>
+                </div>
+                {isProvisional && (
+                  <span className="text-[10px] font-medium text-slate-400 text-end max-w-[130px] leading-tight">
+                    Awaiting full description — provisional score.
+                  </span>
+                )}
+              </div>
+            )
+          })()
         )}
 
         {/* Expand chevron — signals interactivity */}
@@ -940,6 +1020,24 @@ export function JobCard({
                 className="border border-violet-200 text-violet-700 bg-violet-50 hover:bg-violet-100"
               >
                 Outreach
+              </ActionBtn>
+
+              <ActionBtn
+                onClick={e => { (e as React.MouseEvent).stopPropagation(); setShowPitch(true) }}
+                className="border border-teal-200 text-teal-700 bg-teal-50 hover:bg-teal-100"
+              >
+                Direct Pitch
+              </ActionBtn>
+
+              <ActionBtn
+                onClick={e => { (e as React.MouseEvent).stopPropagation(); setShowInterview(true) }}
+                disabled={!hasJD}
+                title={hasJD
+                  ? 'Practice a targeted interview question with Ariel'
+                  : 'Fetch the full job description first'}
+                className="border border-violet-200 text-violet-700 bg-white hover:bg-violet-50"
+              >
+                Mock Interview
               </ActionBtn>
 
               {/* Secondary: source, save, skip */}
@@ -1033,19 +1131,36 @@ export function JobCard({
                     </p>
                   )}
 
-                  {/* ATS Keyword Gap Analysis */}
+                  {/* ATS Breakdown — keywords injected / excluded + confidence snapshot */}
                   <div className="pt-3 border-t border-slate-100">
                     <button
                       onClick={e => { e.stopPropagation(); setShowAtsPanel(p => !p) }}
                       className="flex items-center gap-1.5 text-[12px] font-medium text-slate-500 hover:text-slate-800 transition"
                     >
                       <span className="text-[10px]">{showAtsPanel ? '▼' : '▶'}</span>
-                      ATS Keyword Gap Analysis
+                      ATS Breakdown
                       {!hasJD && <span className="text-[10px] text-amber-500 ml-0.5">(fetch JD first)</span>}
                     </button>
                     {showAtsPanel && (
                       <div className="mt-2">
-                        <AtsKeywordsPanel jobId={job.job_id} hasJd={hasJD} />
+                        <AtsKeywordsPanel jobId={job.job_id} hasJd={hasJD} userId={userId} />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Active Skills Gap Analysis (JOB-59) */}
+                  <div className="pt-3 border-t border-slate-100">
+                    <button
+                      onClick={e => { e.stopPropagation(); setShowSkillsGap(p => !p) }}
+                      className="flex items-center gap-1.5 text-[12px] font-medium text-slate-500 hover:text-slate-800 transition"
+                    >
+                      <span className="text-[10px]">{showSkillsGap ? '▼' : '▶'}</span>
+                      Skills Gap Analysis
+                      {!hasJD && <span className="text-[10px] text-amber-500 ml-0.5">(fetch JD first)</span>}
+                    </button>
+                    {showSkillsGap && (
+                      <div className="mt-2">
+                        <SkillsGapPanel jobId={job.job_id} hasJd={hasJD} />
                       </div>
                     )}
                   </div>
@@ -1059,6 +1174,12 @@ export function JobCard({
 
       {showOutreach && (
         <OutreachModal job={job} onClose={() => setShowOutreach(false)} />
+      )}
+      {showPitch && (
+        <DirectPitchModal job={job} onClose={() => setShowPitch(false)} />
+      )}
+      {showInterview && (
+        <InterviewSimulatorModal job={job} onClose={() => setShowInterview(false)} />
       )}
     </article>
   )

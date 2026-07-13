@@ -565,6 +565,50 @@ export async function fetchJobOutreach(jobId: string): Promise<JobOutreachRespon
   return get<JobOutreachResponse>(`/api/outreach/${jobId}`)
 }
 
+// ── Direct Pitch Generator (JOB-64) ───────────────────────────────────────────
+// Stateless — not persisted server-side; the frontend holds/edits the text.
+
+export interface PitchResponse {
+  job_id:     string
+  pitch:      string
+  word_count: number
+}
+
+/** POST — generate a short direct recruiter pitch for a job. */
+export async function generateDirectPitch(jobId: string): Promise<PitchResponse> {
+  return postEmpty<PitchResponse>(`/api/outreach/pitch/${jobId}`)
+}
+
+// ── Ariel Mock Interview Simulator (JOB-61) ───────────────────────────────────
+// Stateless: the modal holds the session (question + answer) locally.
+
+export interface InterviewQuestionResponse {
+  job_id:   string
+  question: string
+}
+
+export interface InterviewFeedbackResponse {
+  job_id:   string
+  feedback: string
+}
+
+/** POST — one targeted mock-interview question for this job. */
+export async function generateInterviewQuestion(jobId: string): Promise<InterviewQuestionResponse> {
+  return postEmpty<InterviewQuestionResponse>(`/api/jobs/${jobId}/interview/question`)
+}
+
+/** POST — constructive feedback on the candidate's answer. */
+export async function evaluateInterviewAnswer(
+  jobId: string,
+  question: string,
+  answer: string,
+): Promise<InterviewFeedbackResponse> {
+  return post<{ question: string; answer: string }, InterviewFeedbackResponse>(
+    `/api/jobs/${jobId}/interview/answer`,
+    { question, answer },
+  )
+}
+
 // ── CRM Kanban ────────────────────────────────────────────────────────────────
 
 export async function fetchCrmBoard(): Promise<CrmBoard> {
@@ -661,6 +705,18 @@ export async function fetchAnalyticsOverview(): Promise<AnalyticsOverview> {
 
 export async function fetchAtsKeywords(jobId: string): Promise<AtsKeywordsResponse> {
   return post<Record<string, never>, AtsKeywordsResponse>(`/api/jobs/${jobId}/ats-keywords`, {})
+}
+
+// ── Active Skills Gap Analysis (JOB-59) ───────────────────────────────────────
+// Stateless — free-text LLM analysis, not persisted.
+
+export interface SkillsGapResponse {
+  job_id:   string
+  analysis: string
+}
+
+export async function fetchSkillsGap(jobId: string): Promise<SkillsGapResponse> {
+  return post<Record<string, never>, SkillsGapResponse>(`/api/jobs/${jobId}/skills-gap`, {})
 }
 
 // ── LinkedIn scraper status ───────────────────────────────────────────────────

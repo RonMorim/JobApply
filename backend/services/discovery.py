@@ -103,7 +103,7 @@ async def _enrich_job(match: JobMatch, user_id: str) -> None:
         from backend.services.match_score_service import compute_match_score_async
         from backend.services.user_profile import get_profile
 
-        cv_proxy = _build_profile_cv_proxy(get_profile(user_id))
+        cv_proxy = _build_profile_cv_proxy(get_profile(user_id), user_id=user_id)
         result   = await compute_match_score_async(
             cv_data            = cv_proxy,
             jd_text            = jd_text,

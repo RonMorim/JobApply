@@ -335,10 +335,22 @@ def get_skill_proficiencies(user_id: str) -> dict[str, str]:
     """
     try:
         profile = load(user_id)
-        metrics = profile.get("metrics", {})
+        return extract_skill_proficiencies(profile.get("metrics", {}))
+    except Exception as exc:
+        logger.warning("[master_profile] get_skill_proficiencies failed: %s", exc)
+        return {}
+
+
+def extract_skill_proficiencies(metrics: dict) -> dict[str, str]:
+    """
+    Pure form of get_skill_proficiencies: parse proficiency levels straight
+    from a metrics dict, no store round-trip. Used by callers that already
+    hold the loaded document (profile_baseline_service) and by tests.
+    """
+    try:
         result: dict[str, str] = {}
 
-        for key, entry in metrics.items():
+        for key, entry in (metrics or {}).items():
             if not key.startswith("verify_"):
                 continue
 
@@ -371,7 +383,7 @@ def get_skill_proficiencies(user_id: str) -> dict[str, str]:
         return result
 
     except Exception as exc:
-        logger.warning("[master_profile] get_skill_proficiencies failed: %s", exc)
+        logger.warning("[master_profile] extract_skill_proficiencies failed: %s", exc)
         return {}
 
 
