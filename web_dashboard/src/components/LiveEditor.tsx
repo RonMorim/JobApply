@@ -1,9 +1,17 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { TOKENS } from '@/lib/tokens'
+import type { ParsedCV, ParsedSkillCategory, GeneratedField } from '@/lib/cv'
+import { updateFieldById, updateSkillItemsById } from '@/lib/cvParser'
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Wire format ───────────────────────────────────────────────────────────
+// The raw JSON shape the backend actually sends/accepts (/api/resumes/tailor's
+// `cv_data`, fetchMatchScore, renderPdf, saveCv, ...). LiveEditor itself no
+// longer speaks this shape directly — see lib/cvParser.ts's parseCv() /
+// toLiveEditorCvData() for the conversion at the I/O boundary — but it stays
+// exported from here since it's still the wire type other call sites pass
+// around raw CV JSON with.
 
 export interface CvData {
   title:        string
@@ -29,9 +37,8 @@ export interface CvData {
 }
 
 export interface LiveEditorProps {
-  cvData:           CvData
-  originalCvData:   CvData
-  onChange:         (updated: CvData) => void
+  cv:               ParsedCV
+  onChange:         (updated: ParsedCV) => void
   onReset:          () => void
   isDirty:          boolean
   isSaving:         boolean
@@ -59,24 +66,31 @@ function SaveIcon() {
   )
 }
 
-// ── Small text field (auto-expanding textarea) ────────────────────────────────
-
-// Generated-content marker (Meridian V2 §6.1): a field showing Ariel's
-// original, untouched output carries the amethyst left border + aiSubtle
-// fill — "the machine's fingerprints." The moment the user edits it away
-// from the AI-generated original, `highlight` takes over with the existing
-// amber "you changed this" treatment — a different, equally valid signal.
+// ── Generated-content marker (Meridian V2 §6.1) ──────────────────────────────
+// A field's own `isAiGenerated` flag is the single source of truth for the
+// marker — it's already correctly maintained by cvParser.ts's
+// updateFieldById()/resetToOriginal() (true = pristine, untouched Ariel
+// output → amethyst; false = user_edit → the amber "you changed this"
+// treatment). This component never re-derives that signal from `origin`
+// itself — reading two places for one fact is how they drift.
 const AI_MARKER_BORDER = '#7C3AED'   // ja.ai
 const AI_MARKER_BG     = '#F5F3FF'   // ja.aiSubtle
+const EDITED_BORDER     = 'oklch(0.75 0.14 80)'
+const EDITED_BG         = 'oklch(0.98 0.02 80)'
+
+// ── Small text field (auto-expanding textarea) ────────────────────────────────
+// Operates on a single GeneratedField<string> — the same field object that
+// lives at `bullet.text`, `experience.role`, `education.degree`, etc. — so
+// every editable leaf in the CV gets identical Amethyst-marker behavior from
+// one place, keyed by the field's own stable id rather than its position.
 
 function EditableField({
-  value, onChange, rows = 2, mono = false, highlight = false,
+  field, onChange, rows = 2, mono = false,
 }: {
-  value:     string
-  onChange:  (v: string) => void
-  rows?:     number
-  mono?:     boolean
-  highlight?:boolean
+  field:    GeneratedField<string>
+  onChange: (id: string, value: string) => void
+  rows?:    number
+  mono?:    boolean
 }) {
   const ref = useRef<HTMLTextAreaElement>(null)
 
@@ -86,30 +100,32 @@ function EditableField({
     if (!el) return
     el.style.height = 'auto'
     el.style.height = `${el.scrollHeight}px`
-  }, [value])
+  }, [field.value])
 
-  const borderColor = highlight ? 'oklch(0.75 0.14 80)' : AI_MARKER_BORDER
+  const isEdited    = !field.isAiGenerated
+  const markerColor = isEdited ? EDITED_BORDER : AI_MARKER_BORDER
+  const markerBg    = isEdited ? EDITED_BG : AI_MARKER_BG
 
   return (
     <textarea
       ref={ref}
-      value={value}
+      value={field.value}
       rows={rows}
       dir="auto"
-      onChange={e => onChange(e.target.value)}
+      onChange={e => onChange(field.id, e.target.value)}
       style={{
         width: '100%',
         resize: 'none',
         overflow: 'hidden',
         border: `1px solid ${TOKENS.color.line}`,
-        borderLeft: `2px solid ${borderColor}`,
+        borderLeft: `2px solid ${markerColor}`,
         borderRadius: 6,
         padding: '5px 8px',
         fontSize: mono ? 11 : 11.5,
         fontFamily: mono ? '"SF Mono", "Fira Mono", monospace' : 'inherit',
         lineHeight: 1.5,
         color: TOKENS.color.ink2,
-        background: highlight ? 'oklch(0.98 0.02 80)' : AI_MARKER_BG,
+        background: markerBg,
         outline: 'none',
         transition: 'border-color 0.15s, background 0.15s',
         textAlign: 'start',
@@ -150,29 +166,32 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 // ── Skill tag editor ──────────────────────────────────────────────────────────
+// Skill items are plain string[] on a ParsedSkillCategory — never AI-marked
+// prose (they're structured tags, not generated text) — updates are keyed by
+// the category's own stable id via updateSkillItemsById(), not its index.
 
 function SkillCategoryEditor({
-  label, items, onChange,
-}: { label: string; items: string[]; onChange: (items: string[]) => void }) {
-  const [inputVal, setInputVal] = useState('')
+  category, onChange,
+}: { category: ParsedSkillCategory; onChange: (categoryId: string, items: string[]) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null)
 
-  const remove = (i: number) => onChange(items.filter((_, idx) => idx !== i))
+  const remove = (i: number) => onChange(category.id, category.items.filter((_, idx) => idx !== i))
 
   const add = () => {
-    const v = inputVal.trim()
-    if (v && !items.includes(v)) onChange([...items, v])
-    setInputVal('')
+    const v = (inputRef.current?.value ?? '').trim()
+    if (v && !category.items.includes(v)) onChange(category.id, [...category.items, v])
+    if (inputRef.current) inputRef.current.value = ''
   }
 
   return (
     <div style={{ marginBottom: 10 }}>
       <p style={{ fontSize: 10, fontWeight: 600, color: TOKENS.color.muted,
         textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 5 }}>
-        {label}
+        {category.label}
       </p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 5px', marginBottom: 6 }}>
-        {items.map((item, i) => (
-          <span key={i} style={{
+        {category.items.map((item, i) => (
+          <span key={item} style={{
             display: 'flex', alignItems: 'center', gap: 4,
             fontSize: 10.5, fontWeight: 500,
             padding: '2px 7px', borderRadius: 5,
@@ -191,8 +210,7 @@ function SkillCategoryEditor({
       </div>
       <div style={{ display: 'flex', gap: 5 }}>
         <input
-          value={inputVal}
-          onChange={e => setInputVal(e.target.value)}
+          ref={inputRef}
           onKeyDown={e => e.key === 'Enter' && add()}
           placeholder="Add skill…"
           dir="auto"
@@ -220,30 +238,25 @@ function SkillCategoryEditor({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function LiveEditor({
-  cvData, originalCvData, onChange, onReset, isDirty, isSaving, onSave,
+  cv, onChange, onReset, isDirty, isSaving, onSave,
 }: LiveEditorProps) {
 
-  // ── Deep-update helpers ───────────────────────────────────────────────────
+  // ── ID-based update handlers ──────────────────────────────────────────────
+  // No array indices anywhere below: every edit is routed through the field's
+  // own stable id via cvParser.ts's updateFieldById()/updateSkillItemsById(),
+  // which locate the target by id, apply the edit, and mark it
+  // `origin: 'user_edit'` (flipping isAiGenerated false) while leaving every
+  // other field's id, factIds, and skillTags untouched. If an id is somehow
+  // stale (should not happen — see cvParser.ts's resilience note), the update
+  // is a logged no-op rather than a crash.
 
-  const setSummary = useCallback((v: string) => {
-    onChange({ ...cvData, summary: v })
-  }, [cvData, onChange])
+  const setFieldValue = useCallback((fieldId: string, value: string) => {
+    onChange(updateFieldById(cv, fieldId, value))
+  }, [cv, onChange])
 
-  const setBullet = useCallback((expIdx: number, bulletIdx: number, v: string) => {
-    const experience = cvData.experience.map((exp, ei) =>
-      ei === expIdx
-        ? { ...exp, bullets: exp.bullets.map((b, bi) => bi === bulletIdx ? v : b) }
-        : exp
-    )
-    onChange({ ...cvData, experience })
-  }, [cvData, onChange])
-
-  const setSkillItems = useCallback((catIdx: number, items: string[]) => {
-    const categories = (cvData.skills?.categories ?? []).map((cat, ci) =>
-      ci === catIdx ? { ...cat, items } : cat
-    )
-    onChange({ ...cvData, skills: { categories } })
-  }, [cvData, onChange])
+  const setSkillItems = useCallback((categoryId: string, items: string[]) => {
+    onChange(updateSkillItemsById(cv, categoryId, items))
+  }, [cv, onChange])
 
   // ── Auto-save: debounced 30s after last change ────────────────────────────
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -252,7 +265,7 @@ export function LiveEditor({
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(onSave, 30_000)
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }
-  }, [cvData, isDirty, onSave])
+  }, [cv, isDirty, onSave])
 
   return (
     <div style={{
@@ -312,42 +325,32 @@ export function LiveEditor({
 
       {/* ── Summary ── */}
       <Section title="Professional Summary">
-        <EditableField
-          value={cvData.summary}
-          onChange={setSummary}
-          rows={4}
-          highlight={cvData.summary !== originalCvData.summary}
-        />
+        <EditableField field={cv.summary} onChange={setFieldValue} rows={4} />
       </Section>
 
       {/* ── Experience bullets ── */}
       <Section title="Experience">
-        {cvData.experience.map((exp, ei) => (
-          <div key={ei} style={{ marginBottom: 14 }}>
+        {cv.experience.map(exp => (
+          <div key={exp.id} style={{ marginBottom: 14 }}>
             <div style={{
               display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
               marginBottom: 6,
             }}>
               <p style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.color.ink }}>
-                {exp.role}
+                {exp.role.value}
               </p>
               <p style={{ fontSize: 10.5, color: TOKENS.color.muted, fontStyle: 'italic' }}>
-                {exp.company} · {exp.dates}
+                {exp.company.value} · {exp.dates.value}
               </p>
             </div>
-            {exp.bullets.map((bullet, bi) => (
-              <div key={bi} style={{ display: 'flex', gap: 6, marginBottom: 5, alignItems: 'flex-start' }}>
+            {exp.bullets.map(bullet => (
+              <div key={bullet.id} style={{ display: 'flex', gap: 6, marginBottom: 5, alignItems: 'flex-start' }}>
                 <span style={{
                   marginTop: 7, flexShrink: 0, width: 5, height: 5, borderRadius: '50%',
                   background: TOKENS.color.subtle,
                 }} />
                 <div style={{ flex: 1 }}>
-                  <EditableField
-                    value={bullet}
-                    onChange={v => setBullet(ei, bi, v)}
-                    rows={2}
-                    highlight={bullet !== (originalCvData.experience[ei]?.bullets[bi] ?? '')}
-                  />
+                  <EditableField field={bullet.text} onChange={setFieldValue} rows={2} />
                 </div>
               </div>
             ))}
@@ -356,7 +359,7 @@ export function LiveEditor({
       </Section>
 
       {/* ── Military Service (read-only — always injected from verified profile) ── */}
-      {cvData.military?.role && (
+      {cv.military?.role && (
         <Section title="Military Service">
           <div style={{
             display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
@@ -367,17 +370,17 @@ export function LiveEditor({
           }}>
             <div>
               <span style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.color.ink }}>
-                {cvData.military.role}
+                {cv.military.role}
               </span>
               <span style={{
                 fontSize: 11, color: TOKENS.color.muted,
                 fontStyle: 'italic', marginLeft: 6,
               }}>
-                {cvData.military.unit}
+                {cv.military.unit}
               </span>
             </div>
             <span style={{ fontSize: 10.5, color: TOKENS.color.muted }}>
-              {cvData.military.dates}
+              {cv.military.dates}
             </span>
           </div>
           <p style={{
@@ -390,25 +393,19 @@ export function LiveEditor({
       )}
 
       {/* ── Volunteering — hidden entirely when absent or empty ── */}
-      {cvData.volunteering && cvData.volunteering.trim().length > 0 && (
+      {cv.volunteering.value && cv.volunteering.value.trim().length > 0 && (
         <Section title="Volunteering">
-          <EditableField
-            value={cvData.volunteering}
-            onChange={v => onChange({ ...cvData, volunteering: v })}
-            rows={2}
-            highlight={cvData.volunteering !== originalCvData.volunteering}
-          />
+          <EditableField field={cv.volunteering} onChange={setFieldValue} rows={2} />
         </Section>
       )}
 
       {/* ── Skills ── */}
       <Section title="Skills">
-        {(cvData.skills?.categories ?? []).map((cat, ci) => (
+        {cv.skills.map(category => (
           <SkillCategoryEditor
-            key={ci}
-            label={cat.label}
-            items={cat.items}
-            onChange={items => setSkillItems(ci, items)}
+            key={category.id}
+            category={category}
+            onChange={setSkillItems}
           />
         ))}
       </Section>
