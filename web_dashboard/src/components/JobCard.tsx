@@ -2,6 +2,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { ApiFeedJob, JobSourceType, ReasonKind } from '@/lib/apiTypes'
 import { markJobApplied, refreshFeedScores, fetchJobJd, ensureFreshToken, getAuthHeaders } from '@/lib/api'
+import { getScoreBand as scoreBand } from '@/lib/scoreBand'
 import { ProbeModal, type ProbeState } from './TrustDashboard'
 
 const IS_DEV = process.env.NODE_ENV === 'development'
@@ -49,15 +50,6 @@ function LinkedInIcon({ s = 13 }: { s?: number }) {
 }
 
 // RTL detection no longer needed due to dir="auto"
-
-// ── Score grade color ─────────────────────────────────────────────────────────
-// Dynamic text color for the ATS match numeral: green ≥ 80, amber 60–79, red < 60.
-
-function scoreTextColor(score: number): string {
-  if (score >= 80) return 'text-emerald-600'
-  if (score >= 60) return 'text-amber-500'
-  return 'text-rose-600'
-}
 
 // ── Workplace type from the unstructured location string ─────────────────────
 // Returns null when the type is already spelled out inside the location text
@@ -743,9 +735,9 @@ function AgentAnalysisBox({ job, userId }: { job: ApiFeedJob; userId?: string })
 
       {analysisReady ? (
         <>
-          {/* Amethyst left border — the AI-voice marker: Ariel wrote this */}
+          {/* Generated-content marker (Meridian V2 §6.1) — amethyst left border + bg-ja-aiSubtle: Ariel wrote this */}
           <div
-            className="rounded-lg px-4 py-3 bg-slate-50 border border-slate-200 border-l-[3px] border-l-violet-500"
+            className="rounded-lg px-4 py-3 bg-ja-aiSubtle border border-l-2 border-slate-200 border-l-ja-ai"
           >
             <p dir="auto" className="text-[13px] text-slate-600 leading-relaxed max-w-3xl [unicode-bidi:plaintext] text-start">
               {raw}
@@ -914,7 +906,12 @@ export function JobCard({
               )}
               {job.title}
             </h2>
-            {job.match_score >= 75 && (
+            {job.match_score >= 85 && (
+              <span className="bg-emerald-50 text-emerald-700 text-[11px] font-semibold px-2 py-0.5 rounded-lg ring-1 ring-inset ring-emerald-600/20 shrink-0">
+                Exceptional Match
+              </span>
+            )}
+            {job.match_score >= 70 && job.match_score < 85 && (
               <span className="bg-teal-50 text-teal-700 text-[11px] font-semibold px-2 py-0.5 rounded-lg ring-1 ring-inset ring-teal-600/20 shrink-0">
                 Strong Match
               </span>
@@ -947,14 +944,34 @@ export function JobCard({
         {job.score_is_proxy && (!job.jd_text || job.jd_text.trim().length < 300) ? (
           <AnalyzeJobButton jobId={job.job_id} />
         ) : (
-          <div className="flex items-baseline gap-0.5 shrink-0">
-            <span className={`text-2xl font-bold tracking-tight tabular-nums ${
-              job.match_score > 0 ? scoreTextColor(job.match_score) : 'text-slate-400'
-            }`}>
-              {job.match_score > 0 ? job.match_score.toFixed(1) : '—'}
-            </span>
-            <span className="text-[10px] font-semibold text-slate-400 ml-0.5">/100</span>
-          </div>
+          (() => {
+            const band = scoreBand(job.match_score)
+            // Thin-JD-capped composite (§2.3 DESIGN_SYSTEM_V2.md): still marked
+            // provisional by the backend even though jd_text cleared the 300-char
+            // AnalyzeJobButton gate above — never dress up an un-hydrated score.
+            const isProvisional = job.score_is_proxy && job.match_score > 0 && job.match_score < 30
+            return (
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                <div className={`inline-flex items-baseline gap-0.5 px-2.5 py-1 rounded-lg ${
+                  job.match_score > 0 ? band.bg : 'bg-slate-100'
+                }`}>
+                  <span className={`text-2xl font-bold tracking-tight tabular-nums ${
+                    job.match_score > 0 ? band.text : 'text-slate-400'
+                  }`}>
+                    {job.match_score > 0 ? job.match_score.toFixed(1) : '—'}
+                  </span>
+                  <span className={`text-[10px] font-semibold ml-0.5 ${
+                    job.match_score > 0 ? band.text : 'text-slate-400'
+                  }`}>/100</span>
+                </div>
+                {isProvisional && (
+                  <span className="text-[10px] font-medium text-slate-400 text-end max-w-[130px] leading-tight">
+                    Awaiting full description — provisional score.
+                  </span>
+                )}
+              </div>
+            )
+          })()
         )}
 
         {/* Expand chevron — signals interactivity */}

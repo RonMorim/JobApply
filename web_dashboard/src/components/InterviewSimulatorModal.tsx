@@ -28,10 +28,10 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** Slate box with the amethyst left border — the AI-voice marker (Ariel wrote this). */
+/** Generated-content marker (Meridian V2 §6.1) — amethyst left border + bg-ja-aiSubtle (Ariel wrote this). */
 function ArielBlock({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-lg px-4 py-3 bg-slate-50 border border-slate-200 border-l-[3px] border-l-violet-500">
+    <div className="rounded-lg px-4 py-3 bg-ja-aiSubtle border border-l-2 border-slate-200 border-l-ja-ai">
       {children}
     </div>
   )
@@ -129,13 +129,13 @@ export function InterviewSimulatorModal({ job, onClose }: InterviewSimulatorModa
 
   return (
     <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 z-40 bg-slate-900/30 backdrop-blur-[2px]" onClick={onClose} />
+      {/* Backdrop — Meridian V2 §3.2 scrim */}
+      <div className="fixed inset-0 z-40 bg-slate-900/55 backdrop-blur-[4px]" onClick={onClose} />
 
       {/* Panel */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
         <div
-          className="w-full max-w-xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white shadow-floating pointer-events-auto flex flex-col"
+          className="w-full max-w-xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white shadow-floating pointer-events-auto flex flex-col animate-modal-in"
           onClick={e => e.stopPropagation()}
         >
           {/* Header */}

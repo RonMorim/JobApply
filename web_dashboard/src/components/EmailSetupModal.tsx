@@ -361,11 +361,11 @@ export function EmailSetupModal({ open, onClose }: EmailSetupModalProps) {
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
-      style={{ background: 'rgba(15, 23, 42, 0.45)', backdropFilter: 'blur(4px)' }}
+      style={{ background: 'rgba(15, 23, 42, 0.55)', backdropFilter: 'blur(4px)' }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
-        className="relative w-full max-w-[520px] max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-floating border border-slate-200"
+        className="relative w-full max-w-[520px] max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-floating border border-slate-200 animate-modal-in"
         style={{ boxShadow: '0 24px 64px rgba(0,0,0,0.18)' }}
       >
         {/* ── Header ── */}

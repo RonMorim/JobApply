@@ -234,13 +234,14 @@ export function ReportDrawer({ job, onClose }: ReportDrawerProps) {
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop — Meridian V2 §3.2 scrim */}
       <div
         onClick={onClose}
         className="fixed inset-0 z-40 transition-opacity duration-300"
         style={{
-          background:  'rgba(15,23,42,0.35)',
-          opacity:     isOpen ? 1 : 0,
+          background:    'rgba(15,23,42,0.55)',
+          backdropFilter: 'blur(4px)',
+          opacity:       isOpen ? 1 : 0,
           pointerEvents: isOpen ? 'auto' : 'none',
         }}
       />

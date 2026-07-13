@@ -78,16 +78,16 @@ function CardDetailModal({ card, currentStage, onClose, onMove, moving }: CardMo
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop — Meridian V2 §3.2 scrim */}
       <div
-        className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[2px]"
+        className="fixed inset-0 z-40 bg-slate-900/55 backdrop-blur-[4px]"
         onClick={onClose}
       />
 
       {/* Panel */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
         <div
-          className="w-full max-w-md rounded-2xl bg-white shadow-floating pointer-events-auto flex flex-col"
+          className="w-full max-w-md rounded-2xl bg-white shadow-floating pointer-events-auto flex flex-col animate-modal-in"
           style={{ boxShadow: '0 24px 64px rgba(15,23,42,0.22)' }}
           onClick={e => e.stopPropagation()}
         >
@@ -259,7 +259,7 @@ function KanbanCard({
             <div
               role="menu"
               onClick={e => e.stopPropagation()}
-              className="absolute right-0 top-7 z-30 w-44 rounded-xl bg-white border border-slate-100 shadow-floating py-1"
+              className="absolute right-0 top-7 z-30 w-44 rounded-xl bg-white/85 backdrop-blur-xl border border-white/60 shadow-floating py-1"
             >
               <p className="px-3 pt-1.5 pb-1 text-[9.5px] font-bold uppercase tracking-widest text-slate-400">
                 Move to…

@@ -88,13 +88,13 @@ export function DirectPitchModal({ job, onClose }: DirectPitchModalProps) {
 
   return (
     <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 z-40 bg-slate-900/30 backdrop-blur-[2px]" onClick={onClose} />
+      {/* Backdrop — Meridian V2 §3.2 scrim */}
+      <div className="fixed inset-0 z-40 bg-slate-900/55 backdrop-blur-[4px]" onClick={onClose} />
 
       {/* Panel */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
         <div
-          className="w-full max-w-lg rounded-2xl bg-white shadow-floating pointer-events-auto flex flex-col"
+          className="w-full max-w-lg rounded-2xl bg-white shadow-floating pointer-events-auto flex flex-col animate-modal-in"
           onClick={e => e.stopPropagation()}
         >
           {/* Header */}

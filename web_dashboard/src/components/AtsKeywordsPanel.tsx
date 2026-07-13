@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { fetchAtsKeywords, ensureFreshToken, getAuthHeaders } from '@/lib/api'
+import { getScoreBand } from '@/lib/scoreBand'
 import type { AtsKeywordsResponse } from '@/lib/apiTypes'
 
 // ── ATS Breakdown ─────────────────────────────────────────────────────────────
@@ -64,10 +65,11 @@ interface TrustEntity {
   confidence_score: number
 }
 
+// Solid dot color pulled from the same 5-tier Meridian V2 band (§2.3) as
+// every other score-magnitude indicator — swaps the pale `text-*` shade for
+// its saturated `bg-*` equivalent since a 6px dot needs to read at a glance.
 function confidenceDot(score: number): string {
-  if (score >= 70) return 'bg-emerald-500'
-  if (score >= 40) return 'bg-amber-400'
-  return 'bg-slate-300'
+  return getScoreBand(score).text.replace('text-', 'bg-')
 }
 
 function ConfidenceSnapshot({ entities }: { entities: TrustEntity[] }) {
@@ -79,7 +81,7 @@ function ConfidenceSnapshot({ entities }: { entities: TrustEntity[] }) {
         {entities.map(e => (
           <span key={e.entity_id} className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 tabular-nums">
             <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${confidenceDot(e.confidence_score)}`} />
-            {e.name} ({e.confidence_score.toFixed(0)}%)
+            {e.name} ({e.confidence_score.toFixed(1)}%)
           </span>
         ))}
       </div>

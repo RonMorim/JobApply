@@ -194,7 +194,7 @@ export function OutreachModal({ job, onClose }: Props) {
       onClick={e => e.target === e.currentTarget && onClose()}
     >
       <div
-        className="relative w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white shadow-floating flex flex-col"
+        className="relative w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white shadow-floating flex flex-col animate-modal-in"
         style={{ border: '1px solid rgba(0,0,0,0.08)' }}
       >
         {/* Header */}

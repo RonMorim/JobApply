@@ -882,15 +882,16 @@ function OverlayShell({
     <>
       {isOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[1px] sm:hidden"
+          className="fixed inset-0 z-40 bg-slate-900/55 backdrop-blur-[4px] sm:hidden"
           onClick={onBackdropClick}
         />
       )}
+      {/* Ariel overlay — Meridian V2 §6.1 names this specifically as light-glass */}
       <div
         role="dialog"
         aria-label={ariaLabel}
         aria-modal="true"
-        className="fixed bottom-0 right-0 z-50 flex flex-col w-full sm:bottom-6 sm:rounded-2xl overflow-hidden transition-all duration-300 ease-out bg-white"
+        className="fixed bottom-0 right-0 z-50 flex flex-col w-full sm:bottom-6 sm:rounded-2xl overflow-hidden transition-all duration-[250ms] ease-out bg-white/85 backdrop-blur-xl border border-white/60"
         style={{
           height:        isOpen ? `${size.height}px` : '0px',
           width:         isDesktop ? `${size.width}px` : undefined,

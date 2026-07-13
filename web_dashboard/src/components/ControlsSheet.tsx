@@ -274,7 +274,8 @@ export function ControlsSheet({ open, onClose, settings, setSettings }: Props) {
 
   return (
     <div className="fixed inset-0 z-50" onClick={onClose}>
-      <div className="absolute inset-0 bg-slate-900/20 backdrop-blur-[2px]" />
+      {/* Backdrop — Meridian V2 §3.2 scrim */}
+      <div className="absolute inset-0 bg-slate-900/55 backdrop-blur-[4px]" />
 
       <aside
         onClick={e => e.stopPropagation()}

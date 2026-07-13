@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { getGreetingName } from '@/lib/nameUtils'
 import { TOKENS } from '@/lib/tokens'
+import { getScoreBand } from '@/lib/scoreBand'
 import type { ApiFeedJob, ScoreBreakdown } from '@/lib/apiTypes'
 import { Skeleton } from './ui/Skeleton'
 import { SparkIcon, UserBadgeIcon, FileIcon, SlidersIcon, ArrowIcon, SearchIcon, BoltIcon, CheckIcon } from './icons'
@@ -298,16 +299,12 @@ function QuickActions({ newCount, savedCount, onGo }: {
 // Score badge — a filled, tinted square so the match score reads as a
 // deliberate metric chip rather than loose text. Brand teal/emerald only.
 function ScorePip({ score }: { score: number }) {
-  const color =
-    score >= 80 ? TOKENS.color.success :
-    score >= 60 ? TOKENS.color.primary :
-    score >= 40 ? TOKENS.color.warn    :
-                  TOKENS.color.danger
+  const band = getScoreBand(score)
 
   return (
-    <div className="flex flex-col items-center justify-center shrink-0 rounded-xl h-11 w-11 bg-white border border-slate-100">
-      <span className="text-[14px] font-bold tabular-nums leading-none" style={{ color }}>
-        {score.toFixed(0)}
+    <div className={`flex flex-col items-center justify-center shrink-0 rounded-xl h-11 w-11 border border-slate-100 ${band.bg}`}>
+      <span className={`text-[13px] font-bold tabular-nums leading-none ${band.text}`}>
+        {score.toFixed(1)}
       </span>
       <span className="text-[8px] font-semibold uppercase tracking-wide mt-0.5 text-slate-400">
         ATS
@@ -373,11 +370,20 @@ function TopMatchSkeleton({ opacity }: { opacity: number }) {
 // profile_trust_score), mirrored down from <TrustDashboard onScoreChange>
 // so this card doesn't fire its own duplicate /trust-score request.
 
+// Gamified engagement copy stays encouraging even at low scores, but the
+// underlying threshold and color always come from the shared Meridian V2
+// score band (§2.3) — never a separate ad hoc scale.
+const CONFIDENCE_TIER_LABEL: Record<ReturnType<typeof getScoreBand>['key'], string> = {
+  exceptional: 'Excellent',
+  strong:      'Strong',
+  moderate:    'Building',
+  weak:        'Getting started',
+  poor:        'Just started',
+}
+
 function confidenceTier(pct: number): { label: string; color: string } {
-  if (pct >= 80) return { label: 'Strong',      color: TOKENS.color.success }
-  if (pct >= 60) return { label: 'Good',        color: TOKENS.color.primary }
-  if (pct >= 40) return { label: 'Building',    color: TOKENS.color.warn    }
-  return              { label: 'Just started', color: TOKENS.color.danger  }
+  const band = getScoreBand(pct)
+  return { label: CONFIDENCE_TIER_LABEL[band.key], color: band.hexFg }
 }
 
 function ConfidenceGauge({ pct, color }: { pct: number | null; color: string }) {
@@ -404,7 +410,7 @@ function ConfidenceGauge({ pct, color }: { pct: number | null; color: string }) 
         {pct === null ? (
           <Skeleton className="h-5 w-8 rounded" />
         ) : (
-          <span className="text-[18px] font-bold tabular-nums text-slate-900">{pct}</span>
+          <span className="text-[15px] font-bold tabular-nums" style={{ color }}>{pct.toFixed(1)}</span>
         )}
       </div>
     </div>
@@ -505,7 +511,8 @@ function ConfidenceScoreCard({ score, breakdown, onImprove }: {
   breakdown:  ScoreBreakdown | null
   onImprove:  () => void
 }) {
-  const pct  = score !== null ? Math.round(Math.min(100, Math.max(0, score))) : null
+  // 1-decimal precision throughout (.ai_rules) — no early rounding to an int.
+  const pct  = score !== null ? Math.min(100, Math.max(0, score)) : null
   const tier = pct !== null ? confidenceTier(pct) : null
   // Loading is defined by the OVERALL score not yet being in — not by whether
   // the breakdown happens to be present. This keeps the pillars from being

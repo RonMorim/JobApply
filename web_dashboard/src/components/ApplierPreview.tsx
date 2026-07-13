@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { TOKENS } from '@/lib/tokens'
+import { getScoreBand } from '@/lib/scoreBand'
 import type { Job } from '@/lib/data'
 import type { ApiFeedJob, MatchScoreResult, TemplateInfo } from '@/lib/apiTypes'
 import { fetchTemplates, renderPdf, fetchMatchScore, fetchCachedCV, markJobApplied, ensureFreshToken, getAuthHeaders, saveCv } from '@/lib/api'
@@ -105,14 +106,7 @@ function pdfDataUrl(b64: string) {
 // ── JobInfoCard ───────────────────────────────────────────────────────────────
 
 function JobInfoCard({ job }: { job: Job }) {
-  const scoreBg =
-    job.score >= 85 ? 'oklch(0.95 0.04 155)' :
-    job.score >= 70 ? TOKENS.color.primarySoft :
-                      'oklch(0.97 0.03 80)'
-  const scoreFg =
-    job.score >= 85 ? 'oklch(0.38 0.11 155)' :
-    job.score >= 70 ? TOKENS.color.primary :
-                      'oklch(0.48 0.12 80)'
+  const band = getScoreBand(job.score)
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 mb-5"
       style={{ boxShadow: TOKENS.shadow.card }}>
@@ -131,9 +125,9 @@ function JobInfoCard({ job }: { job: Job }) {
             {job.location}
           </p>
           <div className="mt-2">
-            <span className="inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full"
-              style={{ background: scoreBg, color: scoreFg }}>
-              {job.score}% match
+            <span className="inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full tabular-nums"
+              style={{ background: band.hexBg, color: band.hexFg }}>
+              {job.score.toFixed(1)}% match
             </span>
           </div>
         </div>
@@ -683,7 +677,7 @@ export function ApplierPreview({ job, feedJob, onClose, onApplied }: ApplierPrev
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(15,23,42,0.55)', backdropFilter: 'blur(4px)' }}>
-      <div className="relative flex w-full max-w-5xl rounded-2xl overflow-hidden"
+      <div className="relative flex w-full max-w-5xl rounded-2xl overflow-hidden animate-modal-in"
         style={{
           height:     'min(90vh, 760px)',
           background: TOKENS.color.surface,

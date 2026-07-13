@@ -221,8 +221,7 @@ export function PhoneInput({
       {/* Dropdown */}
       {open && (
         <div
-          className="absolute z-50 left-0 mt-1.5 w-72 rounded-xl bg-white overflow-hidden"
-          style={{ boxShadow: '0 4px 6px -1px rgba(0,0,0,0.07), 0 20px 40px -4px rgba(15,23,42,0.14)', border: '1px solid #f1f5f9' }}
+          className="absolute z-50 left-0 mt-1.5 w-72 rounded-xl bg-white/85 backdrop-blur-xl border border-white/60 shadow-floating overflow-hidden"
           role="listbox"
           aria-label="Select country"
         >

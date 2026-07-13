@@ -321,10 +321,10 @@ function UploadZone({ sessionId, claim, docType, onVerified, onClose }: UploadZo
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(15,23,42,0.6)', backdropFilter: 'blur(4px)' }}
+      style={{ background: 'rgba(15,23,42,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={e => e.target === e.currentTarget && onClose()}
     >
-      <div className="w-full max-w-md rounded-2xl bg-white shadow-floating p-6 flex flex-col gap-4">
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-floating p-6 flex flex-col gap-4 animate-modal-in">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-[14px] font-semibold text-slate-900">Upload Verification Document</p>

@@ -61,6 +61,14 @@ function SaveIcon() {
 
 // ── Small text field (auto-expanding textarea) ────────────────────────────────
 
+// Generated-content marker (Meridian V2 §6.1): a field showing Ariel's
+// original, untouched output carries the amethyst left border + aiSubtle
+// fill — "the machine's fingerprints." The moment the user edits it away
+// from the AI-generated original, `highlight` takes over with the existing
+// amber "you changed this" treatment — a different, equally valid signal.
+const AI_MARKER_BORDER = '#7C3AED'   // ja.ai
+const AI_MARKER_BG     = '#F5F3FF'   // ja.aiSubtle
+
 function EditableField({
   value, onChange, rows = 2, mono = false, highlight = false,
 }: {
@@ -80,6 +88,8 @@ function EditableField({
     el.style.height = `${el.scrollHeight}px`
   }, [value])
 
+  const borderColor = highlight ? 'oklch(0.75 0.14 80)' : AI_MARKER_BORDER
+
   return (
     <textarea
       ref={ref}
@@ -91,21 +101,32 @@ function EditableField({
         width: '100%',
         resize: 'none',
         overflow: 'hidden',
-        border: `1px solid ${highlight ? 'oklch(0.75 0.14 80)' : TOKENS.color.line}`,
+        border: `1px solid ${TOKENS.color.line}`,
+        borderLeft: `2px solid ${borderColor}`,
         borderRadius: 6,
         padding: '5px 8px',
         fontSize: mono ? 11 : 11.5,
         fontFamily: mono ? '"SF Mono", "Fira Mono", monospace' : 'inherit',
         lineHeight: 1.5,
         color: TOKENS.color.ink2,
-        background: highlight ? 'oklch(0.98 0.02 80)' : TOKENS.color.bg,
+        background: highlight ? 'oklch(0.98 0.02 80)' : AI_MARKER_BG,
         outline: 'none',
         transition: 'border-color 0.15s, background 0.15s',
         textAlign: 'start',
         unicodeBidi: 'plaintext',
       }}
-      onFocus={e => { e.currentTarget.style.borderColor = TOKENS.color.primary }}
-      onBlur={e => { e.currentTarget.style.borderColor = highlight ? 'oklch(0.75 0.14 80)' : TOKENS.color.line }}
+      // Only the top/right/bottom sides respond to focus — the left marker
+      // color is the AI/edited-state signal and must stay visible while typing.
+      onFocus={e => {
+        e.currentTarget.style.borderTopColor    = TOKENS.color.primary
+        e.currentTarget.style.borderRightColor  = TOKENS.color.primary
+        e.currentTarget.style.borderBottomColor = TOKENS.color.primary
+      }}
+      onBlur={e => {
+        e.currentTarget.style.borderTopColor    = TOKENS.color.line
+        e.currentTarget.style.borderRightColor  = TOKENS.color.line
+        e.currentTarget.style.borderBottomColor = TOKENS.color.line
+      }}
     />
   )
 }
