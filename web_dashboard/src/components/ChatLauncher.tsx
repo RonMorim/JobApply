@@ -48,7 +48,7 @@ export function ChatLauncher() {
       onClick={() => openChat()}
       title="Open Ariel — your career agent"
       aria-label="Open Ariel career agent"
-      className="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 h-12 px-4 rounded-full text-white shadow-lg transition-all duration-200 active:scale-95 hover:opacity-90"
+      className="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 h-12 px-4 rounded-full text-white transition-all duration-200 active:scale-95 hover:opacity-90"
       style={{
         background: TOKENS.color.primary,
         boxShadow:  '0 4px 20px rgba(13,148,136,0.40)',

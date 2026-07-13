@@ -827,7 +827,7 @@ function ManualReviewModal({ entity, onClose, onDone }: ManualReviewModalProps) 
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
-        className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden"
+        className="bg-white rounded-2xl w-full max-w-md shadow-floating overflow-hidden"
         style={{ boxShadow: '0 24px 64px rgba(15,23,42,0.22)' }}
       >
         {/* Header */}
@@ -1100,7 +1100,7 @@ export function ProbeModal({ probe: initialProbe, onClose, onDone }: ProbeModalP
       onClick={e => { if (e.target === e.currentTarget && !probe.done) onClose() }}
     >
       <div
-        className="bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden"
+        className="bg-white rounded-2xl w-full max-w-lg shadow-floating overflow-hidden"
         style={{ boxShadow: '0 24px 64px rgba(15,23,42,0.22)' }}
       >
         {/* Teal accent bar */}

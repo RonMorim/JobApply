@@ -365,7 +365,7 @@ export function EmailSetupModal({ open, onClose }: EmailSetupModalProps) {
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
-        className="relative w-full max-w-[520px] max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl border border-slate-200"
+        className="relative w-full max-w-[520px] max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-floating border border-slate-200"
         style={{ boxShadow: '0 24px 64px rgba(0,0,0,0.18)' }}
       >
         {/* ── Header ── */}

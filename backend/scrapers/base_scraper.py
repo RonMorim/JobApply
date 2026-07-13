@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from models.job import DetailedAnalysis, JobMatch
+from backend.scrapers.proxy_manager import ProxyManager
+from backend.scrapers.parsing_engine import ParsingEngine
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +104,8 @@ class BaseScraper(ABC):
     def __init__(self, company_name: str, company_url: str) -> None:
         self.company_name = company_name
         self.company_url  = company_url
+        self.proxy_manager = ProxyManager()
+        self.parser = ParsingEngine()
 
     @property
     def source_type(self) -> str:

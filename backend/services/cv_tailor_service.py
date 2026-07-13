@@ -28,6 +28,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from backend.utilities.ai_scrubber import scrub_dict
 from pathlib import Path
 from typing import Optional
 
@@ -423,6 +424,7 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False, *, use
     # ── 5. Parse and normalise ────────────────────────────────────────────────
     try:
         raw_dict = _extract_json(raw_text)
+        raw_dict = scrub_dict(raw_dict)
     except ValueError as exc:
         logger.error("[cv_tailor] JSON extraction failed: %s", exc)
         raise RuntimeError(f"Model returned unparseable output: {exc}") from exc

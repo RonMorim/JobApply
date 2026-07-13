@@ -87,7 +87,7 @@ function CardDetailModal({ card, currentStage, onClose, onMove, moving }: CardMo
       {/* Panel */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
         <div
-          className="w-full max-w-md rounded-2xl bg-white shadow-2xl pointer-events-auto flex flex-col"
+          className="w-full max-w-md rounded-2xl bg-white shadow-floating pointer-events-auto flex flex-col"
           style={{ boxShadow: '0 24px 64px rgba(15,23,42,0.22)' }}
           onClick={e => e.stopPropagation()}
         >
@@ -182,44 +182,116 @@ function CardDetailModal({ card, currentStage, onClose, onMove, moving }: CardMo
 
 function KanbanCard({
   card,
+  currentStage,
   onDragStart,
   isMoving,
   onOpen,
+  onQuickMove,
 }: {
-  card:        CrmCard
-  onDragStart: (card: CrmCard) => void
-  isMoving:    boolean
-  onOpen:      (card: CrmCard) => void
+  card:         CrmCard
+  currentStage: string
+  onDragStart:  (card: CrmCard) => void
+  isMoving:     boolean
+  onOpen:       (card: CrmCard) => void
+  onQuickMove:  (card: CrmCard, toStage: string) => void
 }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // Close the quick-move menu on outside click or Escape
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
+
   return (
     <div
       draggable
       onDragStart={e => { e.stopPropagation(); onDragStart(card) }}
       onClick={() => onOpen(card)}
       className={`
-        group bg-white rounded-2xl border border-slate-100
-        hover:border-slate-200 hover:shadow-md
+        group relative bg-white rounded-2xl border border-slate-100
+        hover:border-slate-200 hover:shadow-elevation-2
         transition-all duration-150 cursor-pointer active:cursor-grabbing
         select-none p-3.5
         ${isMoving ? 'opacity-40 scale-95' : ''}
       `}
     >
-      {/* Title + drag hint */}
+      {/* Title + quick-move menu trigger */}
       <div className="flex items-start justify-between gap-2 mb-2">
         <p className="text-[12px] font-semibold text-slate-900 leading-snug line-clamp-2 flex-1">
           {card.title}
         </p>
-        <svg
-          className="shrink-0 mt-0.5 text-slate-300 group-hover:text-slate-400 transition-colors"
-          width={10} height={14} viewBox="0 0 10 14" fill="currentColor"
-        >
-          <circle cx="2.5" cy="2.5"  r="1.5" />
-          <circle cx="7.5" cy="2.5"  r="1.5" />
-          <circle cx="2.5" cy="7"    r="1.5" />
-          <circle cx="7.5" cy="7"    r="1.5" />
-          <circle cx="2.5" cy="11.5" r="1.5" />
-          <circle cx="7.5" cy="11.5" r="1.5" />
-        </svg>
+        <div className="relative shrink-0" ref={menuRef}>
+          <button
+            onClick={e => { e.stopPropagation(); setMenuOpen(v => !v) }}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label="Move to stage"
+            title="Move to…"
+            className={`mt-0.5 w-5 h-6 flex items-center justify-center rounded transition-colors ${
+              menuOpen
+                ? 'text-slate-600 bg-slate-100'
+                : 'text-slate-300 group-hover:text-slate-400 hover:!text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            <svg width={10} height={14} viewBox="0 0 10 14" fill="currentColor">
+              <circle cx="2.5" cy="2.5"  r="1.5" />
+              <circle cx="7.5" cy="2.5"  r="1.5" />
+              <circle cx="2.5" cy="7"    r="1.5" />
+              <circle cx="7.5" cy="7"    r="1.5" />
+              <circle cx="2.5" cy="11.5" r="1.5" />
+              <circle cx="7.5" cy="11.5" r="1.5" />
+            </svg>
+          </button>
+
+          {/* Quick "Move to…" dropdown — same mutation as drag-and-drop (doMove) */}
+          {menuOpen && (
+            <div
+              role="menu"
+              onClick={e => e.stopPropagation()}
+              className="absolute right-0 top-7 z-30 w-44 rounded-xl bg-white border border-slate-100 shadow-floating py-1"
+            >
+              <p className="px-3 pt-1.5 pb-1 text-[9.5px] font-bold uppercase tracking-widest text-slate-400">
+                Move to…
+              </p>
+              {ALL_STAGES.map(({ key, label }) => {
+                const isCurrent = key === currentStage
+                const s = stageStyle(key)
+                return (
+                  <button
+                    key={key}
+                    role="menuitem"
+                    disabled={isCurrent}
+                    onClick={e => {
+                      e.stopPropagation()
+                      setMenuOpen(false)
+                      onQuickMove(card, key)
+                    }}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-[11.5px] text-left transition ${
+                      isCurrent ? 'text-slate-300 cursor-default' : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.dot}`} />
+                    {label}
+                    {isCurrent && (
+                      <span className="ml-auto text-[9px] font-semibold text-slate-300">CURRENT</span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       <p className="text-[11px] font-medium text-slate-500 mb-2 truncate">
@@ -248,19 +320,21 @@ function KanbanColumn({
   onDragStart,
   onDrop,
   onOpenCard,
+  onQuickMove,
 }: {
   col:         CrmColumn
   movingId:    string | null
   onDragStart: (card: CrmCard) => void
   onDrop:      (targetStage: string) => void
   onOpenCard:  (card: CrmCard, stage: string) => void
+  onQuickMove: (card: CrmCard, toStage: string) => void
 }) {
   const [isDragOver, setIsDragOver] = useState(false)
   const s = stageStyle(col.stage)
 
   return (
     <div
-      className="flex flex-col min-w-[200px] flex-1 max-w-[240px]"
+      className="flex flex-col w-[260px] min-w-[240px] shrink-0"
       onDragOver={e => { e.preventDefault(); setIsDragOver(true) }}
       onDragLeave={() => setIsDragOver(false)}
       onDrop={() => { setIsDragOver(false); onDrop(col.stage) }}
@@ -277,10 +351,11 @@ function KanbanColumn({
         </span>
       </div>
 
-      {/* Cards container */}
+      {/* Cards container — scrolls vertically within the column so a long
+          pipeline stage never stretches the whole board */}
       <div
         className={`
-          flex-1 min-h-[400px] rounded-b-xl border border-t-0
+          flex-1 min-h-[400px] max-h-[70vh] overflow-y-auto rounded-b-xl border border-t-0
           transition-all duration-150
           flex flex-col gap-2 p-2
           ${isDragOver
@@ -298,9 +373,11 @@ function KanbanColumn({
           <KanbanCard
             key={card.application_id}
             card={card}
+            currentStage={col.stage}
             onDragStart={onDragStart}
             isMoving={movingId === card.application_id}
             onOpen={c => onOpenCard(c, col.stage)}
+            onQuickMove={onQuickMove}
           />
         ))}
         {isDragOver && (
@@ -323,7 +400,8 @@ export function ApplicationsKanban({ onRefresh }: { onRefresh?: () => void }) {
   const [loading,  setLoading]  = useState(true)
   const [error,    setError]    = useState<string | null>(null)
   const [movingId, setMovingId] = useState<string | null>(null)
-  const [toast,    setToast]    = useState<string | null>(null)
+  // Toast with an optional Undo action (used by the move-success toast)
+  const [toast,    setToast]    = useState<{ message: string; undo?: () => void } | null>(null)
 
   // Modal state
   const [modalCard,  setModalCard]  = useState<CrmCard | null>(null)
@@ -346,10 +424,11 @@ export function ApplicationsKanban({ onRefresh }: { onRefresh?: () => void }) {
 
   useEffect(() => { load() }, [load])
 
-  // Toast auto-dismiss
+  // Toast auto-dismiss — actionable toasts (Undo) linger longer so the user
+  // has time to notice and click; plain confirmations stay short.
   useEffect(() => {
     if (!toast) return
-    const t = setTimeout(() => setToast(null), 2500)
+    const t = setTimeout(() => setToast(null), toast.undo ? 5000 : 2500)
     return () => clearTimeout(t)
   }, [toast])
 
@@ -357,8 +436,26 @@ export function ApplicationsKanban({ onRefresh }: { onRefresh?: () => void }) {
     draggedCard.current = card
   }, [])
 
-  const doMove = useCallback(async (card: CrmCard, targetStage: string) => {
-    if (!board || targetStage === card.application_id) return
+  // Ref mirror of doMove so the Undo closure inside a toast can call the
+  // latest version without doMove depending on itself (useCallback can't
+  // self-reference).
+  const doMoveRef = useRef<
+    ((card: CrmCard, targetStage: string, opts?: { isUndo?: boolean }) => Promise<void>) | null
+  >(null)
+
+  const doMove = useCallback(async (
+    card: CrmCard,
+    targetStage: string,
+    opts: { isUndo?: boolean } = {},
+  ) => {
+    if (!board) return
+
+    // Capture the card's origin column BEFORE the optimistic update — this is
+    // what Undo reverses to. Dropping a card onto its own column is a no-op.
+    const previousStage = board.columns
+      .find(col => col.cards.some(c => c.application_id === card.application_id))
+      ?.stage ?? null
+    if (previousStage === targetStage) return
 
     // Optimistic update
     setBoard(prev => {
@@ -377,15 +474,29 @@ export function ApplicationsKanban({ onRefresh }: { onRefresh?: () => void }) {
     try {
       await moveCrmCard(card.application_id, targetStage)
       const label = ALL_STAGES.find(s => s.key === targetStage)?.label ?? targetStage
-      setToast(`Moved to ${label}`)
+      if (opts.isUndo) {
+        // Terminal confirmation — no undo-of-undo chains.
+        setToast({ message: `Move undone — back in ${label}` })
+      } else {
+        setToast({
+          message: `Moved to ${label}`,
+          // Reverse mutation: same doMove path (optimistic update + API +
+          // failure rollback), from the new stage back to the origin.
+          undo: previousStage
+            ? () => { void doMoveRef.current?.(card, previousStage, { isUndo: true }) }
+            : undefined,
+        })
+      }
       onRefresh?.()
     } catch {
-      setToast('Move failed — reloading…')
+      setToast({ message: 'Move failed — reloading…' })
       await load()
     } finally {
       setMovingId(null)
     }
   }, [board, load, onRefresh])
+
+  doMoveRef.current = doMove
 
   const handleDrop = useCallback(async (targetStage: string) => {
     const card = draggedCard.current
@@ -455,8 +566,9 @@ export function ApplicationsKanban({ onRefresh }: { onRefresh?: () => void }) {
         </button>
       </div>
 
-      {/* Board */}
-      <div className="flex gap-3 overflow-x-auto pb-4">
+      {/* Board — nowrap + horizontal scroll so trailing columns (e.g. Rejected)
+          are always reachable; pb-4 keeps the scrollbar off the column cards */}
+      <div className="flex flex-nowrap gap-3 overflow-x-auto pb-4">
         {board.columns.map(col => (
           <KanbanColumn
             key={col.stage}
@@ -465,6 +577,7 @@ export function ApplicationsKanban({ onRefresh }: { onRefresh?: () => void }) {
             onDragStart={handleDragStart}
             onDrop={handleDrop}
             onOpenCard={handleOpenCard}
+            onQuickMove={doMove}
           />
         ))}
       </div>
@@ -480,11 +593,23 @@ export function ApplicationsKanban({ onRefresh }: { onRefresh?: () => void }) {
         />
       )}
 
-      {/* Toast */}
+      {/* Toast — with actionable Undo for card moves */}
       {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl shadow-lg text-[13px] font-medium text-white"
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 rounded-xl shadow-floating text-[13px] font-medium text-white"
           style={{ background: TOKENS.color.success }}>
-          {toast}
+          {toast.message}
+          {toast.undo && (
+            <button
+              onClick={() => {
+                const undo = toast.undo
+                setToast(null)   // dismiss immediately; the undo move raises its own toast
+                undo?.()
+              }}
+              className="shrink-0 h-6 px-2.5 rounded-lg bg-white/20 hover:bg-white/30 text-white text-[11.5px] font-semibold transition active:scale-95"
+            >
+              Undo
+            </button>
+          )}
         </div>
       )}
     </div>

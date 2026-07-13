@@ -10,7 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from sqlalchemy import (
-    Boolean, Column, Float, Integer, String, Text, create_engine, text
+    Boolean, Column, Float, Integer, String, Text, UniqueConstraint,
+    create_engine, text,
 )
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.types import JSON
@@ -90,6 +91,12 @@ class JobRow(Base):
     enrichment_failures   = Column(Integer, nullable=False, default=0)
     # Phase 3 — generated hiring-manager outreach message; persists across reloads.
     outreach_text         = Column(Text,    nullable=True)
+
+    # JOB-20: Dynamic culture fit scoring dimensions
+    culture_delta         = Column(Float,   nullable=True)
+    culture_alignment     = Column(Float,   nullable=True)
+    culture_category      = Column(String,  nullable=True)
+    culture_note          = Column(String,  nullable=True)
 
 
 class ProfileInterviewRow(Base):
@@ -469,6 +476,38 @@ class ShadowScoreRow(Base):
     created_at     = Column(String,  nullable=False)
 
 
+class MatchTriggerRow(Base):
+    """
+    High-match trigger events (JOB-43).
+
+    One row per (user, job) pair whose LLM-validated composite score crossed
+    HIGH_MATCH_THRESHOLD. The UNIQUE(user_id, job_id) constraint is the
+    exactly-once guarantee: re-scoring the same job — same, higher, or lower —
+    can never emit a second trigger, because the INSERT simply conflicts.
+
+    `status` lifecycle: 'pending' → 'consumed'. Downstream channels
+    (UI Notifications bell, Mobile push/SMS, WhatsApp, CV Adaptation Flow)
+    read pending rows via match_trigger_service.fetch_pending_triggers() and
+    acknowledge via mark_triggers_consumed() — they must NOT delete rows,
+    since the row itself is the dedup record.
+    """
+    __tablename__ = "match_triggers"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    user_id      = Column(String,  nullable=False, index=True)
+    job_id       = Column(String,  nullable=False)
+    score        = Column(Float,   nullable=False)               # 1-decimal composite at trigger time
+    threshold    = Column(Float,   nullable=False)               # threshold in force when fired
+    payload_json = Column(Text,    nullable=False, default="{}") # title/company/why_ron for notifications
+    status       = Column(String,  nullable=False, default="pending", index=True)
+    created_at   = Column(String,  nullable=False)
+    consumed_at  = Column(String,  nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "job_id", name="uq_match_trigger_user_job"),
+    )
+
+
 class CompanyIntelRow(Base):
     """
     Cached CompanyProfile from the Company Intelligence Agent.
@@ -483,6 +522,50 @@ class CompanyIntelRow(Base):
     company_key   = Column(String, primary_key=True)              # normalized lowercase name
     display_name  = Column(String, nullable=False)
     profile_json  = Column(Text,   nullable=False, default="{}")  # CompanyProfile dump
+    researched_at = Column(String, nullable=False)                # ISO 8601 UTC
+
+
+class JobFeedbackRow(Base):
+    """
+    User thumbs-up / thumbs-down feedback on job matches (JOB-57).
+
+    One row per (user, job) — re-rating updates the row in place (latest
+    opinion wins), enforced by UNIQUE(user_id, job_id). snapshot_json freezes
+    the job's characteristics at rating time (match score, culture axis/
+    category, pace, work model) so preference learning keeps working even if
+    the job row is later re-scored, archived, or purged.
+    """
+    __tablename__ = "job_feedback"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    user_id       = Column(String,  nullable=False, index=True)
+    job_id        = Column(String,  nullable=False)
+    feedback_type = Column(String,  nullable=False)               # thumbs_up | thumbs_down
+    reason        = Column(Text,    nullable=True)                # optional free-text why
+    snapshot_json = Column(Text,    nullable=False, default="{}") # job characteristics at rating time
+    created_at    = Column(String,  nullable=False)
+    updated_at    = Column(String,  nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "job_id", name="uq_job_feedback_user_job"),
+    )
+
+
+class CompanyCultureRow(Base):
+    """
+    Cached CompanyCultureProfile from the Company Culture Agent (JOB-19).
+
+    One row per normalized company name — most companies post multiple roles,
+    so repeat postings from the same employer reuse the cached profile instead
+    of re-running research. Distinct from company_intel (financial vibe for CV
+    tailoring): this table holds the culture/persona dimension consumed by the
+    Dynamic Matching Score (JOB-20).
+    """
+    __tablename__ = "company_culture"
+
+    company_key   = Column(String, primary_key=True)              # normalized lowercase name
+    display_name  = Column(String, nullable=False)
+    profile_json  = Column(Text,   nullable=False, default="{}")  # CompanyCultureProfile dump
     researched_at = Column(String, nullable=False)                # ISO 8601 UTC
 
 
@@ -847,6 +930,18 @@ def _migrate_confidence_matrix(conn) -> None:
                 "ALTER TABLE profile_entities "
                 "ADD COLUMN manual_review_required INTEGER NOT NULL DEFAULT 0"
             ))
+
+    # ── Migration 005: add culture fit columns to jobs (JOB-20) ───────────────
+    if "jobs" in tables:
+        existing_job_cols = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(jobs)"))
+        }
+        if "culture_delta" not in existing_job_cols:
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN culture_delta REAL"))
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN culture_alignment REAL"))
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN culture_category TEXT"))
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN culture_note TEXT"))
 
     conn.commit()
 

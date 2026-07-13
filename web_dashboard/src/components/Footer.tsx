@@ -21,7 +21,7 @@ export function Footer() {
   return (
     <>
       {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 bg-slate-900 text-white text-[13px] font-medium px-5 py-3 rounded-xl shadow-2xl max-w-sm text-center">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 bg-slate-900 text-white text-[13px] font-medium px-5 py-3 rounded-xl shadow-floating max-w-sm text-center">
           <span>🚧</span>
           <span>{COMING_SOON_MSG}</span>
         </div>

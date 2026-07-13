@@ -41,7 +41,7 @@ function KpiCard({
 }) {
   return (
     <div
-      className="flex-1 bg-white rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-all duration-200"
+      className="flex-1 bg-white rounded-xl border border-slate-100 shadow-elevation-1 hover:shadow-elevation-2 transition-all duration-200"
       style={{ minWidth: 180, padding: '20px 24px 18px' }}
     >
       {/* Label row */}
@@ -172,7 +172,7 @@ function CompanyRow({
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div
-      className="flex-1 bg-white rounded-xl border border-slate-100 shadow-sm"
+      className="flex-1 bg-white rounded-xl border border-slate-100 shadow-elevation-1"
       style={{ minWidth: 300, padding: '22px 26px' }}
     >
       <p style={{
@@ -211,14 +211,14 @@ function Skeleton() {
       {/* KPI skeleton */}
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
         {[1, 2, 3].map(i => (
-          <div key={i} className="flex-1 bg-white rounded-xl border border-slate-100 shadow-sm animate-pulse"
+          <div key={i} className="flex-1 bg-white rounded-xl border border-slate-100 shadow-elevation-1 animate-pulse"
             style={{ minWidth: 180, height: 110 }} />
         ))}
       </div>
       {/* Panel skeleton */}
       <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
         {[1, 2, 3].map(i => (
-          <div key={i} className="flex-1 bg-white rounded-xl border border-slate-100 shadow-sm animate-pulse"
+          <div key={i} className="flex-1 bg-white rounded-xl border border-slate-100 shadow-elevation-1 animate-pulse"
             style={{ minWidth: 260, height: 260 }} />
         ))}
       </div>

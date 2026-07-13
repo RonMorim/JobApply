@@ -334,7 +334,7 @@ export function VerifyFitModal({
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
-        className="relative w-full max-w-xl flex flex-col rounded-2xl bg-white shadow-2xl"
+        className="relative w-full max-w-xl flex flex-col rounded-2xl bg-white shadow-floating"
         style={{ height: 'min(92vh, 680px)', boxShadow: '0 24px 80px rgba(15,23,42,0.20)' }}
       >
         {/* ── Header ── */}

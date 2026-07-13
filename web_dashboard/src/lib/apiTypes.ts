@@ -13,6 +13,12 @@ export interface MatchScoreResult {
   missing_skills:      string[]
   suggestions:         string[]
   llm_validated:       boolean
+
+  // ── JOB-20: Dynamic culture fit scoring dimensions ───────────────────────
+  culture_delta:       number | null
+  culture_alignment:   number | null
+  culture_category:    string | null
+  culture_note:        string | null
 }
 
 export interface TemplateInfo {
@@ -159,6 +165,12 @@ export interface ApiFeedJob {
   has_tailored_cv:       boolean
   /** How many times s2 LLM enrichment returned a non-substantive result. */
   enrichment_failures:   number
+
+  // ── JOB-20: Dynamic culture fit scoring dimensions ───────────────────────
+  culture_delta:         number | null
+  culture_alignment:     number | null
+  culture_category:      string | null
+  culture_note:          string | null
 }
 
 export interface JobAnalysisState {

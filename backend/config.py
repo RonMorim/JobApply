@@ -64,6 +64,13 @@ EMAIL_WEBHOOK_SECRET: str = os.getenv("EMAIL_WEBHOOK_SECRET", "")
 # explicitly set to "production".
 ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
 
+# High-match trigger threshold (JOB-43). A newly-computed, LLM-validated
+# composite match score at or above this value emits a one-time trigger event
+# consumable by the notification channels (bell dropdown, push/SMS, WhatsApp).
+# The UI bell (Header.tsx) independently filters at score >= 85 — keep the two
+# aligned when tuning. See backend/services/match_trigger_service.py.
+HIGH_MATCH_THRESHOLD: float = float(os.getenv("HIGH_MATCH_THRESHOLD", "85.0"))
+
 
 def _env_bool(name: str, *, default: bool = False) -> bool:
     """Parse a boolean-ish env var: 'true'/'1'/'yes' (case-insensitive) → True."""

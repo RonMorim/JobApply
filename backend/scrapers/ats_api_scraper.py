@@ -14,14 +14,14 @@ scraper in that case.
 """
 from __future__ import annotations
 
-import html
 import logging
 import re
 from typing import Optional
 from urllib.parse import urlparse
 
 import requests
-from bs4 import BeautifulSoup
+
+from backend.scrapers.parsing_engine import ParsingEngine
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +42,11 @@ def _html_to_text(raw_html: str) -> str:
     """
     Convert an HTML fragment to plain text.
 
-    Greenhouse/Lever JSON payloads sometimes HTML-entity-encode the markup
-    itself (e.g. `&lt;div&gt;` instead of `<div>`), so unescape entities
-    before parsing — otherwise BeautifulSoup treats the whole thing as a
-    single text node and tags leak into the output verbatim.
+    Delegates to the shared ParsingEngine (Core Scraping Architecture) —
+    it handles the entity-encoded markup Greenhouse/Lever payloads sometimes
+    ship (e.g. `&lt;div&gt;` instead of `<div>`).
     """
-    if not raw_html:
-        return ""
-    unescaped = html.unescape(raw_html)
-    return BeautifulSoup(unescaped, "html.parser").get_text(separator="\n").strip()
+    return ParsingEngine.html_to_text(raw_html)
 
 
 # ── Greenhouse ────────────────────────────────────────────────────────────────

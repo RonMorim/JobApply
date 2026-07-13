@@ -41,6 +41,7 @@ from backend.services.db import ENGINE, MasterProfileRow
 from backend.agents.ariel_tools import ARIEL_TOOLS, execute_tool
 from backend.services.user_profile import USER_PROFILE, get_profile, format_profile_compact
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
+from backend.utilities.ai_scrubber import AIScrubberBuffer, clean_ai_text
 
 logger = logging.getLogger(__name__)
 # All chat routes hit the LLM → strict per-caller budget.
@@ -219,6 +220,8 @@ async def _stream_response(
         # input_json_delta events, so we buffer them and parse once the block closes.
         pending_tool_name: Optional[str]  = None
         pending_tool_json: str            = ""
+        
+        scrubber = AIScrubberBuffer()
 
         async with client.messages.stream(
             model=_MODEL,
@@ -239,7 +242,9 @@ async def _stream_response(
                 elif etype == "content_block_delta":
                     delta = event.delta
                     if delta.type == "text_delta" and delta.text:
-                        yield _sse_chunk(delta.text)
+                        cleaned = scrubber.process_chunk(delta.text)
+                        if cleaned:
+                            yield _sse_chunk(cleaned)
                     elif delta.type == "input_json_delta":
                         pending_tool_json += delta.partial_json
 
@@ -253,6 +258,9 @@ async def _stream_response(
                         pending_tool_name = None
                         pending_tool_json = ""
 
+        final_cleaned = scrubber.flush()
+        if final_cleaned:
+            yield _sse_chunk(final_cleaned)
         yield _sse_done()
 
     except anthropic.APIStatusError as exc:
@@ -730,6 +738,7 @@ async def _ariel_tool_loop_then_stream(
             for block in text_blocks:
                 text = getattr(block, "text", "") or ""
                 if text:
+                    text = clean_ai_text(text)
                     # Chunk into ~80-char pieces so the client renders progressively
                     for i in range(0, len(text), 80):
                         yield _sse_chunk(text[i:i + 80])
@@ -764,6 +773,7 @@ async def _ariel_tool_loop_then_stream(
     # Reached only when the model kept requesting tools up to _MAX_TOOL_LOOPS.
     # Make one final streaming call with tool_choice=none to force a text reply.
     try:
+        scrubber = AIScrubberBuffer()
         async with client.messages.stream(
             model       = _ARIEL_MODEL,
             max_tokens  = _ARIEL_MAX_TOKENS,
@@ -775,7 +785,13 @@ async def _ariel_tool_loop_then_stream(
                 if event.type == "content_block_delta":
                     delta = event.delta
                     if delta.type == "text_delta" and delta.text:
-                        yield _sse_chunk(delta.text)
+                        cleaned = scrubber.process_chunk(delta.text)
+                        if cleaned:
+                            yield _sse_chunk(cleaned)
+        
+        final_cleaned = scrubber.flush()
+        if final_cleaned:
+            yield _sse_chunk(final_cleaned)
         yield _sse_done()
     except anthropic.APIStatusError as exc:
         logger.error("[ariel/private] Anthropic API error in final stream: %s", exc)
@@ -1250,6 +1266,7 @@ async def _stream_public_reply(
 ) -> AsyncIterator[str]:
     """Plain text-only SSE stream — Eliya has no tools."""
     try:
+        scrubber = AIScrubberBuffer()
         async with client.messages.stream(
             model      = _ELIYA_MODEL,
             max_tokens = _ELIYA_MAX_TOKENS,
@@ -1260,7 +1277,13 @@ async def _stream_public_reply(
                 if event.type == "content_block_delta":
                     delta = event.delta
                     if delta.type == "text_delta" and delta.text:
-                        yield _sse_chunk(delta.text)
+                        cleaned = scrubber.process_chunk(delta.text)
+                        if cleaned:
+                            yield _sse_chunk(cleaned)
+                            
+        final_cleaned = scrubber.flush()
+        if final_cleaned:
+            yield _sse_chunk(final_cleaned)
         yield _sse_done()
     except anthropic.APIStatusError as exc:
         logger.error("[chat/public] Anthropic API error: %s", exc)

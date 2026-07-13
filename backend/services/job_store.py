@@ -88,6 +88,10 @@ def _to_row(job: JobMatch) -> JobRow:
         score=job.score,
         confidence_score=job.confidence_score,
         culture_fit_score=job.culture_fit_score,
+        culture_delta=job.culture_delta,
+        culture_alignment=job.culture_alignment,
+        culture_category=job.culture_category,
+        culture_note=job.culture_note,
         trajectory_alignment=job.trajectory_alignment,
         company_dna_inference=job.company_dna_inference,
         investigation_points=list(job.investigation_points),
@@ -132,6 +136,10 @@ def _from_row(row: JobRow) -> JobMatch:
         score=row.score,
         confidence_score=row.confidence_score,
         culture_fit_score=row.culture_fit_score,
+        culture_delta=row.culture_delta,
+        culture_alignment=row.culture_alignment,
+        culture_category=row.culture_category,
+        culture_note=row.culture_note,
         trajectory_alignment=row.trajectory_alignment or "",
         company_dna_inference=row.company_dna_inference or "",
         investigation_points=list(row.investigation_points or []),
@@ -651,6 +659,10 @@ def update_enrichment_result(
     is_proxy: bool,
     reasons: list[dict],
     why_ron: Optional[str] = None,
+    culture_delta: Optional[float] = None,
+    culture_alignment: Optional[float] = None,
+    culture_category: Optional[str] = None,
+    culture_note: Optional[str] = None,
     increment_failure: bool = False,
 ) -> int:
     """
@@ -676,6 +688,14 @@ def update_enrichment_result(
         row.reasons        = reasons
         if why_ron is not None:
             row.why_ron = why_ron
+        if culture_delta is not None:
+            row.culture_delta = culture_delta
+        if culture_alignment is not None:
+            row.culture_alignment = culture_alignment
+        if culture_category is not None:
+            row.culture_category = culture_category
+        if culture_note is not None:
+            row.culture_note = culture_note
         if increment_failure:
             row.enrichment_failures = int(row.enrichment_failures or 0) + 1
 

@@ -202,51 +202,17 @@ def _dev_jd_override(job: JobMatch) -> str | None:
     return None
 
 
-def _build_profile_cv_proxy(profile: dict) -> dict:
+def _build_profile_cv_proxy(profile: dict, user_id: str = "default") -> dict:
     """
-    Convert a USER_PROFILE dict into a minimal cv_data structure accepted by
-    compute_match_score_async.  Keeps each experience entry's details as a
-    single bullet so the experience-backed zone gate functions correctly.
+    Convert a USER_PROFILE dict into the cv_data structure accepted by
+    compute_match_score_async.  Delegates to profile_baseline_service (JOB-18)
+    so the matcher input is assembled by the same deep-profiling logic that
+    powers the baseline snapshot — including the USER'S OWN chat-derived
+    supplemental facts (pass user_id; the old zero-arg build_full_text() call
+    always returned the legacy 'default' singleton).
     """
-    experience = []
-    for exp in profile.get("experience", []):
-        company = exp.get("company", exp.get("unit", ""))
-        role    = exp.get("role", "")
-        details = exp.get("details", "")
-
-        nested_roles = exp.get("roles", [])
-        if nested_roles:
-            for nr in nested_roles:
-                nr_details = nr.get("details", "")
-                experience.append({
-                    "role":    nr.get("title", role),
-                    "company": company,
-                    "bullets": [nr_details] if nr_details else [],
-                })
-        else:
-            experience.append({
-                "role":    role,
-                "company": company,
-                "bullets": [details] if details else [],
-            })
-
-    skills_list = profile.get("skills", [])
-
-    supplemental_text = ""
-    try:
-        from backend.services.user_profile import build_full_text
-        supplemental_text = build_full_text()
-    except Exception:
-        pass
-
-    return {
-        "title":      "",
-        "summary":    supplemental_text,
-        "experience": experience,
-        "skills": {
-            "categories": [{"label": "Skills", "items": skills_list}]
-        },
-    }
+    from backend.services.profile_baseline_service import build_cv_data
+    return build_cv_data(profile, user_id=user_id)
 
 
 def _match_skill_tags(matched_skills: list[str]) -> list[dict]:
@@ -476,7 +442,7 @@ async def refresh_user_scores(user_id: str) -> int:
         len(pending), len(all_feed), user_id, len(retired),
     )
 
-    cv_proxy      = _build_profile_cv_proxy(get_profile(user_id))
+    cv_proxy      = _build_profile_cv_proxy(get_profile(user_id), user_id=user_id)
     proficiencies = get_skill_proficiencies(user_id)
     if proficiencies:
         logger.info("[feed_service] s2 proficiency context: %s", list(proficiencies.keys()))
@@ -582,6 +548,7 @@ async def refresh_user_scores(user_id: str) -> int:
                     job_title           = job.title,
                     company_name        = job.company or "",
                     entity_scores       = entity_scores,
+                    job_id              = job.job_id,   # enables high-match trigger (JOB-43)
                 )
 
                 # Re-use the s1 local proxy score when available to avoid
@@ -598,6 +565,7 @@ async def refresh_user_scores(user_id: str) -> int:
                         result.management_score,
                         ats_base        = result.ats_score,
                         knockout_failed = result.knockout_failed,
+                        culture_delta   = result.culture_delta,   # JOB-20: never drop the culture term on rebuild
                     )
                     result = type(result)(
                         **{**result.__dict__,
@@ -623,6 +591,10 @@ async def refresh_user_scores(user_id: str) -> int:
                     is_proxy          = not has_analysis,
                     reasons           = skill_tags + prof_tags,
                     why_ron           = result.why_ron if has_analysis else None,
+                    culture_delta     = result.culture_delta,
+                    culture_alignment = result.culture_alignment,
+                    culture_category  = result.culture_category,
+                    culture_note      = result.culture_note,
                     increment_failure = not has_analysis,
                 )
 
@@ -723,7 +695,7 @@ async def force_rescore_all(user_id: str) -> int:
         logger.info("[feed_service] s4: no jobs for user_id=%s", user_id)
         return 0
 
-    cv_proxy      = _build_profile_cv_proxy(get_profile(user_id))
+    cv_proxy      = _build_profile_cv_proxy(get_profile(user_id), user_id=user_id)
     proficiencies = get_skill_proficiencies(user_id)
     if proficiencies:
         logger.info("[feed_service] s4 proficiency context: %s", proficiencies)

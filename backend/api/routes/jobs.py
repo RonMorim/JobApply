@@ -11,7 +11,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from backend.api.deps import CurrentUser, get_current_user, require_admin
+from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, require_admin
 from models.job import DetailedAnalysis, JobMatch, RawJobPosting, ReasonTag
 import backend.services.job_store as job_store
 from backend.services import feed_service
@@ -463,7 +463,7 @@ async def fetch_single_jd(
         )
         from backend.services.match_score_service import compute_match_score_async
 
-        cv_proxy      = _build_profile_cv_proxy(get_profile(user.user_id))
+        cv_proxy      = _build_profile_cv_proxy(get_profile(user.user_id), user_id=user.user_id)
         proficiencies = get_skill_proficiencies(user.user_id)
         result        = await compute_match_score_async(
             cv_proxy, jd_text,
@@ -899,7 +899,7 @@ async def analyze_job(
         from backend.services.match_score_service import compute_match_score_async
         from backend.services.user_profile import get_profile
 
-        cv_proxy = _build_profile_cv_proxy(get_profile(user.user_id))
+        cv_proxy = _build_profile_cv_proxy(get_profile(user.user_id), user_id=user.user_id)
         result   = await compute_match_score_async(
             cv_data            = cv_proxy,
             jd_text            = jd_text,
@@ -1203,6 +1203,52 @@ async def get_job_analysis(
     )
 
 
+# ── Job match feedback (thumbs up / down, JOB-57) ────────────────────────────
+
+class JobFeedbackRequest(BaseModel):
+    feedback_type: str                      # "thumbs_up" | "thumbs_down"
+    reason:        Optional[str] = None     # optional free-text why
+
+
+class JobFeedbackResponse(BaseModel):
+    job_id:              str
+    feedback_type:       str
+    preference_learning: dict
+
+
+@router.post("/{job_id}/feedback", response_model=JobFeedbackResponse)
+async def submit_job_feedback(
+    job_id: str,
+    body:   JobFeedbackRequest,
+    user:   CurrentUser = Depends(get_current_user),
+):
+    """
+    Record thumbs-up/down on a job match and run soft-preference learning
+    over the user's feedback history (feedback_service). Re-rating the same
+    job updates the previous rating (latest opinion wins).
+    """
+    from backend.services.feedback_service import VALID_FEEDBACK_TYPES, record_feedback
+
+    if body.feedback_type not in VALID_FEEDBACK_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid feedback_type '{body.feedback_type}'. "
+                   f"Must be one of: {list(VALID_FEEDBACK_TYPES)}",
+        )
+    job = job_store.get_by_id(job_id, user.user_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+
+    result = record_feedback(
+        user.user_id, job_id, body.feedback_type, body.reason, job=job,
+    )
+    return JobFeedbackResponse(
+        job_id              = job_id,
+        feedback_type       = body.feedback_type,
+        preference_learning = result["preference_learning"],
+    )
+
+
 # ── Job status update ─────────────────────────────────────────────────────────
 
 _VALID_STATUSES = {"new", "saved", "ignored", "applied"}
@@ -1268,6 +1314,153 @@ async def get_ats_keywords(job_id: str, user: CurrentUser = Depends(get_current_
         raise HTTPException(status_code=500, detail="ATS keyword extraction failed")
 
     return AtsKeywordsResponse(**result)
+
+
+# ── Active Skills Gap Analysis (JOB-59) ───────────────────────────────────────
+
+class SkillsGapResponse(BaseModel):
+    job_id:   str
+    analysis: str   # free-text bullet-style gap analysis from the LLM
+
+
+@router.post("/{job_id}/skills-gap", response_model=SkillsGapResponse)
+async def get_skills_gap(job_id: str, user: CurrentUser = Depends(get_current_user)):
+    """
+    Compare a job's JD text against the candidate's profile and return a
+    concise, actionable list of explicitly missing skills/requirements.
+
+    Stateless — not persisted, mirrors the ATS keyword extraction contract
+    but returns free-text LLM analysis rather than structured keyword lists.
+    Returns 400 if the job has no JD text (fetch the JD first).
+    """
+    job = job_store.get_by_id(job_id, user.user_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found.")
+
+    jd_text = (job.jd_text or "").strip()
+    if not jd_text:
+        raise HTTPException(status_code=400, detail="Job has no JD text — fetch the full description first.")
+
+    try:
+        from backend.services.skills_gap_service import analyze_skills_gap
+        from backend.services.user_profile import build_full_text
+
+        analysis = analyze_skills_gap(jd_text, build_full_text(user.user_id))
+    except Exception as exc:
+        logger.exception("[skills-gap] Failed for job_id=%s: %s", job_id, exc)
+        raise HTTPException(status_code=500, detail="Skills gap analysis failed")
+
+    return SkillsGapResponse(job_id=job_id, analysis=analysis)
+
+
+# ── Ariel Mock Interview Simulator (JOB-61) ───────────────────────────────────
+#
+# Two stateless, job-anchored endpoints over services/interview_simulator.py:
+#   POST /{job_id}/interview/question  → one targeted question for this JD
+#   POST /{job_id}/interview/answer    → constructive feedback on the answer
+# The frontend holds the session (question + answer) locally; nothing is
+# persisted. Both are LLM calls → per-route llm_rate_limit budget, and the
+# sync service functions run in the threadpool so they never block the loop.
+
+class InterviewQuestionResponse(BaseModel):
+    job_id:   str
+    question: str
+
+
+class InterviewAnswerRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=2_000)
+    answer:   str = Field(..., min_length=1, max_length=8_000)
+
+
+class InterviewFeedbackResponse(BaseModel):
+    job_id:   str
+    feedback: str
+
+
+def _interview_job_context(job_id: str, user_id: str) -> tuple[JobMatch, str]:
+    """Shared guardrails: (job, jd_text) or raise the appropriate HTTPException."""
+    job = job_store.get_by_id(job_id, user_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found.")
+    jd_text = (job.jd_text or "").strip()
+    if not jd_text:
+        raise HTTPException(status_code=400, detail="Job has no JD text — fetch the full description first.")
+    return job, jd_text
+
+
+def _raise_for_service_sentinel(text: str) -> None:
+    """interview_simulator returns error strings instead of raising — map them."""
+    if text.startswith("API Key missing"):
+        raise HTTPException(status_code=503, detail="LLM unavailable — ANTHROPIC_API_KEY is not configured.")
+    if text.startswith("Failed to generate") or text.startswith("Failed to evaluate"):
+        raise HTTPException(status_code=502, detail="Interview simulator failed. Please try again shortly.")
+
+
+@router.post(
+    "/{job_id}/interview/question",
+    response_model=InterviewQuestionResponse,
+    dependencies=[Depends(llm_rate_limit)],
+)
+async def generate_mock_interview_question(
+    job_id: str,
+    user:   CurrentUser = Depends(get_current_user),
+) -> InterviewQuestionResponse:
+    """
+    Generate ONE targeted mock-interview question for this job, grounded in
+    the JD, the candidate's profile, and their known gaps for the role
+    (stored negative reason tags + critical gaps — no extra LLM call).
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    from backend.services.interview_simulator import generate_interview_question
+    from backend.services.user_profile import build_full_text
+
+    job, jd_text = _interview_job_context(job_id, user.user_id)
+
+    # Known gaps from data already on the job — cheap, no second LLM call.
+    gap_parts = [r.label for r in job.reasons if r.kind == "neg"]
+    gap_parts += job.detailed_analysis.critical_gaps
+    skills_gap = "; ".join(dict.fromkeys(p.strip() for p in gap_parts if p.strip())) or "(none identified)"
+
+    try:
+        question = await run_in_threadpool(
+            generate_interview_question, jd_text, build_full_text(user.user_id), skills_gap,
+        )
+    except Exception as exc:
+        logger.exception("[interview] question generation failed for job_id=%s: %s", job_id, exc)
+        raise HTTPException(status_code=502, detail="Interview simulator failed. Please try again shortly.")
+
+    _raise_for_service_sentinel(question)
+    return InterviewQuestionResponse(job_id=job_id, question=question)
+
+
+@router.post(
+    "/{job_id}/interview/answer",
+    response_model=InterviewFeedbackResponse,
+    dependencies=[Depends(llm_rate_limit)],
+)
+async def evaluate_mock_interview_answer(
+    job_id: str,
+    body:   InterviewAnswerRequest,
+    user:   CurrentUser = Depends(get_current_user),
+) -> InterviewFeedbackResponse:
+    """Evaluate the candidate's answer to a mock-interview question for this job."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from backend.services.interview_simulator import evaluate_interview_answer
+
+    _job, jd_text = _interview_job_context(job_id, user.user_id)
+
+    try:
+        feedback = await run_in_threadpool(
+            evaluate_interview_answer, body.question, body.answer, jd_text,
+        )
+    except Exception as exc:
+        logger.exception("[interview] answer evaluation failed for job_id=%s: %s", job_id, exc)
+        raise HTTPException(status_code=502, detail="Interview simulator failed. Please try again shortly.")
+
+    _raise_for_service_sentinel(feedback)
+    return InterviewFeedbackResponse(job_id=job_id, feedback=feedback)
 
 
 # ── DEV-only: full job state flush ───────────────────────────────────────────

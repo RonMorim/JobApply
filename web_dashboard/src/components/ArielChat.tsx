@@ -513,7 +513,7 @@ function HistoryPanel({
       <div
         className={`
           absolute top-0 right-0 bottom-0 z-30 w-72
-          bg-white border-l border-slate-100 shadow-xl
+          bg-white border-l border-slate-100 shadow-floating
           flex flex-col
           transition-transform duration-250 ease-out
           ${isOpen ? 'translate-x-0' : 'translate-x-full'}

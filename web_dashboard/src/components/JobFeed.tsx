@@ -124,7 +124,7 @@ function Spinner({ size = 18 }: { size?: number }) {
 function Toast({ message, tone = 'success' }: { message: string; tone?: 'success' | 'error' }) {
   return (
     <div
-      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl shadow-lg text-[13px] font-medium text-white"
+      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl shadow-floating text-[13px] font-medium text-white"
       style={{ background: tone === 'success' ? TOKENS.color.success : TOKENS.color.danger }}
     >
       {message}

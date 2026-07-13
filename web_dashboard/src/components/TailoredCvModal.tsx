@@ -446,7 +446,7 @@ export function TailoredCvModal({ job, onClose, onGeneratePdf }: TailoredCvModal
 
       {/* Panel — slides in from the right */}
       <div
-        className="fixed inset-y-0 right-0 z-50 flex flex-col bg-slate-50 shadow-2xl"
+        className="fixed inset-y-0 right-0 z-50 flex flex-col bg-slate-50 shadow-floating"
         style={{ width: 'min(600px, 100vw)' }}
       >
         {/* ── Header ───────────────────────────────────────────────────────── */}

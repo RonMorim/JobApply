@@ -73,6 +73,21 @@ def _sync_self_assertion(user_id: str, entity_type: str, name: str, raw_content:
         )
 
 
+def _refresh_baseline(user_id: str) -> None:
+    """
+    Rebuild the persisted profiling baseline after a profile mutation, so
+    every profiling interaction updates the central User Profile record
+    (CLAUDE.md global rule / JOB-18). Best-effort, same contract as
+    _sync_self_assertion: a snapshot failure never makes a successful
+    profile edit look like it failed.
+    """
+    try:
+        from backend.services.profile_baseline_service import refresh_baseline_snapshot
+        refresh_baseline_snapshot(user_id)
+    except Exception as exc:
+        logger.error("[ariel_tools] _refresh_baseline failed user=%s: %s", user_id, exc)
+
+
 def _empty_master_profile() -> dict:
     """Return the canonical empty master_profile structure."""
     return {
@@ -505,6 +520,7 @@ def _handle_update_experience(
             user_id, "experience", f"{role} at {company}",
             " ".join(bullets),
         )
+        _refresh_baseline(user_id)
 
         logger.info(
             "[ariel_tools] update_experience user=%s %s '%s' @ '%s'",
@@ -608,6 +624,9 @@ def _handle_update_skills(
             else:
                 update_failures.append(f"{skill_name} (update error)")
 
+        if added or removed or updated:
+            _refresh_baseline(user_id)
+
         logger.info(
             "[ariel_tools] update_skills user=%s +%d -%d ~%d (skipped %d, failed %d)",
             user_id, len(added), len(removed), len(updated), len(skipped),
@@ -684,6 +703,8 @@ def _handle_update_career_goals(
         row.master_profile      = profile
         row.updated_at          = _now_iso()
         session.commit()
+
+        _refresh_baseline(user_id)
 
         logger.info(
             "[ariel_tools] update_career_goals user=%s fields=%s",
