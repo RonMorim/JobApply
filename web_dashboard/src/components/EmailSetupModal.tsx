@@ -36,9 +36,6 @@ const IS_DEV =
   (window.location.hostname === 'localhost' ||
    window.location.hostname === '127.0.0.1')
 
-// Local backend base URL for dev simulations
-const LOCAL_API = 'http://localhost:8000'
-
 // ── Step number badge ─────────────────────────────────────────────────────────
 
 function StepBadge({ n, done = false }: { n: number; done?: boolean }) {
@@ -333,7 +330,7 @@ export function EmailSetupModal({ open, onClose }: EmailSetupModalProps) {
     ].join('\n')
 
     try {
-      const res = await fetch(`${LOCAL_API}/api/webhooks/inbound-email`, {
+      const res = await fetch('/api/webhooks/inbound-email', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
