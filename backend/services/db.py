@@ -669,20 +669,37 @@ def _migrate_confidence_matrix(conn) -> None:
     # All six tables are created by Base.metadata.create_all() above if the DB
     # is fresh.  For existing DBs the tables won't be in the ORM metadata yet,
     # so we run the raw CREATE TABLE IF NOT EXISTS statements here.
+    # NOTE on the "CREATE TABLE IF NOT EXISTS" fallbacks below (profile_entities,
+    # ariel_sessions, conversation_events, evidence_records, confidence_audit_log,
+    # ariel_gap_queue): every one of these tables also has an ORM class earlier in
+    # this file, so Base.metadata.create_all() (called before this function, in
+    # init_db()) already creates the FULL, current-schema table on any DB where
+    # "tables" is captured fresh — these raw strings only run for legacy DBs that
+    # predate the ORM class. Kept in sync with their ORM class column-for-column
+    # (JOB-91) so that IF a raw-DDL branch or the rename/recreate dance below ever
+    # does execute, it produces the exact schema the ORM (and the rest of this
+    # migration function) expects — a drift here previously caused
+    # sqlite3.OperationalError on fresh deployments (see evidence_records below).
     if "profile_entities" not in tables:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS profile_entities (
-                entity_id              TEXT PRIMARY KEY,
-                user_id                TEXT NOT NULL,
-                entity_type            TEXT NOT NULL,
-                name                   TEXT NOT NULL,
-                normalized_name        TEXT NOT NULL,
-                confidence_score       REAL NOT NULL DEFAULT 0.0,
-                verification_status    TEXT NOT NULL DEFAULT 'unverified',
-                manual_review_required INTEGER NOT NULL DEFAULT 0,
-                last_evidence_at       TEXT,
-                created_at             TEXT NOT NULL,
-                updated_at             TEXT NOT NULL,
+                entity_id               TEXT PRIMARY KEY,
+                user_id                 TEXT NOT NULL,
+                tenant_id               TEXT,
+                entity_type             TEXT NOT NULL,
+                name                    TEXT NOT NULL,
+                normalized_name         TEXT NOT NULL,
+                confidence_score        REAL NOT NULL DEFAULT 0.0,
+                verification_status     TEXT NOT NULL DEFAULT 'unverified',
+                manual_review_required  INTEGER NOT NULL DEFAULT 0,
+                skill_tier              TEXT,
+                architecture_confidence REAL NOT NULL DEFAULT 0.0,
+                syntax_confidence       REAL NOT NULL DEFAULT 0.0,
+                verification_level      TEXT NOT NULL DEFAULT 'UNVERIFIED',
+                last_evidence_at        TEXT,
+                proficiency_level       TEXT,
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL,
                 UNIQUE (user_id, normalized_name, entity_type)
             )
         """))
@@ -694,6 +711,7 @@ def _migrate_confidence_matrix(conn) -> None:
             CREATE TABLE IF NOT EXISTS ariel_sessions (
                 session_id              TEXT PRIMARY KEY,
                 user_id                 TEXT NOT NULL,
+                tenant_id               TEXT,
                 session_type            TEXT NOT NULL,
                 target_job_id           TEXT,
                 target_entities         TEXT,
@@ -713,6 +731,7 @@ def _migrate_confidence_matrix(conn) -> None:
                 event_id                TEXT PRIMARY KEY,
                 session_id              TEXT NOT NULL REFERENCES ariel_sessions (session_id),
                 user_id                 TEXT NOT NULL,
+                tenant_id               TEXT,
                 star_situation          TEXT,
                 star_task               TEXT,
                 star_action             TEXT,
@@ -728,11 +747,27 @@ def _migrate_confidence_matrix(conn) -> None:
     # Full CREATE DDL for evidence_records — includes all source_type values.
     # base_weight is REAL (not constrained to positive) so negative_flag rows
     # can store negative weights.
+    #
+    # JOB-91: this string previously had 11 columns while EvidenceRecordRow
+    # (the ORM class) has 13 — missing tenant_id and is_ai_assisted. On a
+    # fresh deployment, Base.metadata.create_all() already builds the full
+    # 13-column table from the ORM class BEFORE this function runs, so
+    # "evidence_records" is already in `tables` and this CREATE TABLE string
+    # is skipped — but the ORM never emits a CHECK constraint, so the
+    # freshly-created table's sqlite_master SQL never contains the literal
+    # text "negative_flag". Migration 003 below used that substring as its
+    # "is this schema stale?" test, so it always misfired on a brand-new DB,
+    # rebuilding the table via this (drifted, 11-column) DDL and then
+    # crashing on `INSERT INTO evidence_records SELECT * FROM
+    # evidence_records_old` (13 columns selected, 11-column target) with
+    # sqlite3.OperationalError. Keeping this DDL column-for-column identical
+    # to EvidenceRecordRow removes that mismatch.
     _EVIDENCE_RECORDS_DDL = """
         CREATE TABLE evidence_records (
             evidence_id     TEXT PRIMARY KEY,
             entity_id       TEXT NOT NULL REFERENCES profile_entities (entity_id),
             user_id         TEXT NOT NULL,
+            tenant_id       TEXT,
             source_type     TEXT NOT NULL
                                 CHECK (source_type IN (
                                     'cv_parse', 'self_assertion',
@@ -748,7 +783,8 @@ def _migrate_confidence_matrix(conn) -> None:
             hard_expires_at TEXT,
             session_id      TEXT REFERENCES ariel_sessions (session_id),
             event_id        TEXT REFERENCES conversation_events (event_id),
-            extra_metadata  TEXT
+            extra_metadata  TEXT,
+            is_ai_assisted  INTEGER NOT NULL DEFAULT 0
         )
     """
 
@@ -764,14 +800,20 @@ def _migrate_confidence_matrix(conn) -> None:
             text("SELECT sql FROM sqlite_master WHERE type='table' AND name='evidence_records'")
         ).fetchone()
         if schema_row and "negative_flag" not in schema_row[0]:
-            # Recreate the table with the updated CHECK constraint.
-            # SQLite requires a 3-step rename-create-copy-drop dance.
+        # Recreate the table with the updated CHECK constraint.
+        # SQLite requires a 3-step rename-create-copy-drop dance.
             conn.execute(text("PRAGMA foreign_keys=OFF"))
             conn.execute(text("ALTER TABLE evidence_records RENAME TO evidence_records_old"))
             conn.execute(text(_EVIDENCE_RECORDS_DDL))
             conn.execute(text("""
                 INSERT INTO evidence_records
-                SELECT * FROM evidence_records_old
+                    (evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
+                     raw_content, verified_at, hard_expires_at, session_id,
+                     event_id, extra_metadata, is_ai_assisted)
+                SELECT evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
+                       raw_content, verified_at, hard_expires_at, session_id,
+                       event_id, extra_metadata, is_ai_assisted
+                FROM evidence_records_old
             """))
             conn.execute(text("DROP TABLE evidence_records_old"))
             conn.execute(text("PRAGMA foreign_keys=ON"))
@@ -790,10 +832,10 @@ def _migrate_confidence_matrix(conn) -> None:
             conn.execute(text(_EVIDENCE_RECORDS_DDL))
             conn.execute(text("""
                 INSERT INTO evidence_records
-                    (evidence_id, entity_id, user_id, source_type, base_weight,
+                    (evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
                      raw_content, verified_at, hard_expires_at, session_id,
                      event_id, extra_metadata)
-                SELECT evidence_id, entity_id, user_id, source_type, base_weight,
+                SELECT evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
                        raw_content, verified_at, hard_expires_at, session_id,
                        event_id, metadata
                 FROM evidence_records_old
@@ -852,10 +894,10 @@ def _migrate_confidence_matrix(conn) -> None:
             conn.execute(text(_EVIDENCE_RECORDS_DDL))
             conn.execute(text("""
                 INSERT INTO evidence_records
-                    (evidence_id, entity_id, user_id, source_type, base_weight,
+                    (evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
                      raw_content, verified_at, hard_expires_at, session_id,
                      event_id, extra_metadata, is_ai_assisted)
-                SELECT evidence_id, entity_id, user_id, source_type, base_weight,
+                SELECT evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
                        raw_content, verified_at, hard_expires_at, session_id,
                        event_id, extra_metadata, is_ai_assisted
                 FROM evidence_records_old
@@ -886,6 +928,7 @@ def _migrate_confidence_matrix(conn) -> None:
                 log_id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 entity_id       TEXT NOT NULL REFERENCES profile_entities (entity_id),
                 user_id         TEXT NOT NULL,
+                tenant_id       TEXT,
                 old_score       REAL NOT NULL,
                 new_score       REAL NOT NULL,
                 delta           REAL NOT NULL,
@@ -903,6 +946,7 @@ def _migrate_confidence_matrix(conn) -> None:
             CREATE TABLE IF NOT EXISTS ariel_gap_queue (
                 gap_id              TEXT PRIMARY KEY,
                 user_id             TEXT NOT NULL,
+                tenant_id           TEXT,
                 entity_id           TEXT NOT NULL REFERENCES profile_entities (entity_id),
                 job_id              TEXT,
                 current_confidence  REAL NOT NULL,
