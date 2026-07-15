@@ -75,6 +75,11 @@ class JobRow(Base):
     jd_structured         = Column(Text,    nullable=True)
     # Multi-user & feed columns
     user_id               = Column(String,  nullable=False, default='default', index=True)
+    # Forward-compatible tenant scoping (Infra & Multi-Tenant Architecture).
+    # Nullable during rollout; backfilled to match user_id (1 account == 1
+    # tenant today). Not yet enforced at the query layer — see
+    # docs/multi-tenant-erd.md §"What tenant_id does NOT do yet".
+    tenant_id              = Column(String,  nullable=True, index=True)
     source_type           = Column(String,  nullable=False, default='other')
     company_website_url   = Column(String,  nullable=True)
     status                = Column(String,  nullable=False, default='new')
@@ -121,6 +126,7 @@ class ProfileInterviewRow(Base):
     session_id     = Column(String, primary_key=True)
     # Multi-tenant owner — added in v2; existing rows migrated to 'default'
     user_id        = Column(String, nullable=False, default="default", index=True)
+    tenant_id      = Column(String, nullable=True, index=True)   # see JobRow.tenant_id docstring
     messages       = Column(JSON, nullable=False, default=list)
     draft_profile  = Column(JSON, nullable=True)
     confidence_map = Column(JSON, nullable=True)
@@ -159,6 +165,7 @@ class ApplicationRow(Base):
     application_id = Column(String, primary_key=True)
     # Multi-tenant owner — added in v2; existing rows migrated to 'default'
     user_id        = Column(String, nullable=False, default="default", index=True)
+    tenant_id      = Column(String, nullable=True, index=True)   # see JobRow.tenant_id docstring
     job_id         = Column(String, nullable=False, index=True)
     title          = Column(String, nullable=False)
     company        = Column(String, nullable=False)
@@ -185,6 +192,7 @@ class RecruiterReplyDraftRow(Base):
 
     draft_id      = Column(String, primary_key=True)
     user_id       = Column(String, nullable=False, index=True)
+    tenant_id     = Column(String, nullable=True, index=True)   # see JobRow.tenant_id docstring
     job_id        = Column(String, nullable=False, index=True)
     # Sanitized excerpt of the inbound email the draft responds to (audit trail)
     email_excerpt = Column(Text,   nullable=False, default="")
@@ -373,6 +381,7 @@ class MasterProfileRow(Base):
     __tablename__ = "master_profiles"
 
     user_id            = Column(String, primary_key=True)
+    tenant_id          = Column(String, nullable=True, index=True)   # see JobRow.tenant_id docstring
     # Verified email from the Supabase JWT — lower-cased. Used by
     # POST /api/auth/sync-user to link accounts across auth providers
     # (email login vs Google OAuth) when Supabase issues a different `sub`
@@ -397,6 +406,7 @@ class ProfileEntityRow(Base):
 
     entity_id              = Column(String,  primary_key=True)
     user_id                = Column(String,  nullable=False, index=True)
+    tenant_id              = Column(String,  nullable=True, index=True)   # see JobRow.tenant_id docstring
     entity_type            = Column(String,  nullable=False)   # skill|trait|domain|experience
     name                   = Column(String,  nullable=False)
     normalized_name        = Column(String,  nullable=False)
@@ -440,6 +450,7 @@ class EvidenceRecordRow(Base):
     evidence_id     = Column(String,  primary_key=True)
     entity_id       = Column(String,  nullable=False, index=True)
     user_id         = Column(String,  nullable=False, index=True)
+    tenant_id       = Column(String,  nullable=True, index=True)   # see JobRow.tenant_id docstring
     source_type     = Column(String,  nullable=False)
     base_weight     = Column(Float,   nullable=False)
     raw_content     = Column(Text,    nullable=True)
@@ -468,6 +479,7 @@ class ShadowScoreRow(Base):
 
     id             = Column(Integer, primary_key=True, autoincrement=True)
     user_id        = Column(String,  nullable=False, index=True)
+    tenant_id      = Column(String,  nullable=True, index=True)   # see JobRow.tenant_id docstring
     job_title      = Column(String,  nullable=True)
     company        = Column(String,  nullable=True)
     existing_score = Column(Float,   nullable=False)   # what the frontend received
@@ -495,6 +507,7 @@ class MatchTriggerRow(Base):
 
     id           = Column(Integer, primary_key=True, autoincrement=True)
     user_id      = Column(String,  nullable=False, index=True)
+    tenant_id    = Column(String,  nullable=True, index=True)   # see JobRow.tenant_id docstring
     job_id       = Column(String,  nullable=False)
     score        = Column(Float,   nullable=False)               # 1-decimal composite at trigger time
     threshold    = Column(Float,   nullable=False)               # threshold in force when fired
@@ -539,6 +552,7 @@ class JobFeedbackRow(Base):
 
     id            = Column(Integer, primary_key=True, autoincrement=True)
     user_id       = Column(String,  nullable=False, index=True)
+    tenant_id     = Column(String,  nullable=True, index=True)   # see JobRow.tenant_id docstring
     job_id        = Column(String,  nullable=False)
     feedback_type = Column(String,  nullable=False)               # thumbs_up | thumbs_down
     reason        = Column(Text,    nullable=True)                # optional free-text why
@@ -575,6 +589,7 @@ class ArielSessionRow(Base):
 
     session_id             = Column(String, primary_key=True)
     user_id                = Column(String, nullable=False, index=True)
+    tenant_id              = Column(String, nullable=True, index=True)   # see JobRow.tenant_id docstring
     session_type           = Column(String, nullable=False)
     target_job_id          = Column(String, nullable=True, index=True)
     target_entities        = Column(Text,   nullable=True)    # JSON array
@@ -593,6 +608,7 @@ class ConversationEventRow(Base):
     event_id              = Column(String, primary_key=True)
     session_id            = Column(String, nullable=False, index=True)
     user_id               = Column(String, nullable=False, index=True)
+    tenant_id             = Column(String, nullable=True, index=True)   # see JobRow.tenant_id docstring
     star_situation        = Column(Text,   nullable=True)
     star_task             = Column(Text,   nullable=True)
     star_action           = Column(Text,   nullable=True)
@@ -610,6 +626,7 @@ class ConfidenceAuditLogRow(Base):
     log_id         = Column(Integer, primary_key=True, autoincrement=True)
     entity_id      = Column(String,  nullable=False, index=True)
     user_id        = Column(String,  nullable=False, index=True)
+    tenant_id      = Column(String,  nullable=True, index=True)   # see JobRow.tenant_id docstring
     old_score      = Column(Float,   nullable=False)
     new_score      = Column(Float,   nullable=False)
     delta          = Column(Float,   nullable=False)
@@ -626,6 +643,7 @@ class ArielGapQueueRow(Base):
 
     gap_id              = Column(String, primary_key=True)
     user_id             = Column(String, nullable=False, index=True)
+    tenant_id           = Column(String, nullable=True, index=True)   # see JobRow.tenant_id docstring
     entity_id           = Column(String, nullable=False)
     job_id              = Column(String, nullable=True,  index=True)
     current_confidence  = Column(Float,  nullable=False)
@@ -651,20 +669,37 @@ def _migrate_confidence_matrix(conn) -> None:
     # All six tables are created by Base.metadata.create_all() above if the DB
     # is fresh.  For existing DBs the tables won't be in the ORM metadata yet,
     # so we run the raw CREATE TABLE IF NOT EXISTS statements here.
+    # NOTE on the "CREATE TABLE IF NOT EXISTS" fallbacks below (profile_entities,
+    # ariel_sessions, conversation_events, evidence_records, confidence_audit_log,
+    # ariel_gap_queue): every one of these tables also has an ORM class earlier in
+    # this file, so Base.metadata.create_all() (called before this function, in
+    # init_db()) already creates the FULL, current-schema table on any DB where
+    # "tables" is captured fresh — these raw strings only run for legacy DBs that
+    # predate the ORM class. Kept in sync with their ORM class column-for-column
+    # (JOB-91) so that IF a raw-DDL branch or the rename/recreate dance below ever
+    # does execute, it produces the exact schema the ORM (and the rest of this
+    # migration function) expects — a drift here previously caused
+    # sqlite3.OperationalError on fresh deployments (see evidence_records below).
     if "profile_entities" not in tables:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS profile_entities (
-                entity_id              TEXT PRIMARY KEY,
-                user_id                TEXT NOT NULL,
-                entity_type            TEXT NOT NULL,
-                name                   TEXT NOT NULL,
-                normalized_name        TEXT NOT NULL,
-                confidence_score       REAL NOT NULL DEFAULT 0.0,
-                verification_status    TEXT NOT NULL DEFAULT 'unverified',
-                manual_review_required INTEGER NOT NULL DEFAULT 0,
-                last_evidence_at       TEXT,
-                created_at             TEXT NOT NULL,
-                updated_at             TEXT NOT NULL,
+                entity_id               TEXT PRIMARY KEY,
+                user_id                 TEXT NOT NULL,
+                tenant_id               TEXT,
+                entity_type             TEXT NOT NULL,
+                name                    TEXT NOT NULL,
+                normalized_name         TEXT NOT NULL,
+                confidence_score        REAL NOT NULL DEFAULT 0.0,
+                verification_status     TEXT NOT NULL DEFAULT 'unverified',
+                manual_review_required  INTEGER NOT NULL DEFAULT 0,
+                skill_tier              TEXT,
+                architecture_confidence REAL NOT NULL DEFAULT 0.0,
+                syntax_confidence       REAL NOT NULL DEFAULT 0.0,
+                verification_level      TEXT NOT NULL DEFAULT 'UNVERIFIED',
+                last_evidence_at        TEXT,
+                proficiency_level       TEXT,
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL,
                 UNIQUE (user_id, normalized_name, entity_type)
             )
         """))
@@ -676,6 +711,7 @@ def _migrate_confidence_matrix(conn) -> None:
             CREATE TABLE IF NOT EXISTS ariel_sessions (
                 session_id              TEXT PRIMARY KEY,
                 user_id                 TEXT NOT NULL,
+                tenant_id               TEXT,
                 session_type            TEXT NOT NULL,
                 target_job_id           TEXT,
                 target_entities         TEXT,
@@ -695,6 +731,7 @@ def _migrate_confidence_matrix(conn) -> None:
                 event_id                TEXT PRIMARY KEY,
                 session_id              TEXT NOT NULL REFERENCES ariel_sessions (session_id),
                 user_id                 TEXT NOT NULL,
+                tenant_id               TEXT,
                 star_situation          TEXT,
                 star_task               TEXT,
                 star_action             TEXT,
@@ -710,11 +747,27 @@ def _migrate_confidence_matrix(conn) -> None:
     # Full CREATE DDL for evidence_records — includes all source_type values.
     # base_weight is REAL (not constrained to positive) so negative_flag rows
     # can store negative weights.
+    #
+    # JOB-91: this string previously had 11 columns while EvidenceRecordRow
+    # (the ORM class) has 13 — missing tenant_id and is_ai_assisted. On a
+    # fresh deployment, Base.metadata.create_all() already builds the full
+    # 13-column table from the ORM class BEFORE this function runs, so
+    # "evidence_records" is already in `tables` and this CREATE TABLE string
+    # is skipped — but the ORM never emits a CHECK constraint, so the
+    # freshly-created table's sqlite_master SQL never contains the literal
+    # text "negative_flag". Migration 003 below used that substring as its
+    # "is this schema stale?" test, so it always misfired on a brand-new DB,
+    # rebuilding the table via this (drifted, 11-column) DDL and then
+    # crashing on `INSERT INTO evidence_records SELECT * FROM
+    # evidence_records_old` (13 columns selected, 11-column target) with
+    # sqlite3.OperationalError. Keeping this DDL column-for-column identical
+    # to EvidenceRecordRow removes that mismatch.
     _EVIDENCE_RECORDS_DDL = """
         CREATE TABLE evidence_records (
             evidence_id     TEXT PRIMARY KEY,
             entity_id       TEXT NOT NULL REFERENCES profile_entities (entity_id),
             user_id         TEXT NOT NULL,
+            tenant_id       TEXT,
             source_type     TEXT NOT NULL
                                 CHECK (source_type IN (
                                     'cv_parse', 'self_assertion',
@@ -730,7 +783,8 @@ def _migrate_confidence_matrix(conn) -> None:
             hard_expires_at TEXT,
             session_id      TEXT REFERENCES ariel_sessions (session_id),
             event_id        TEXT REFERENCES conversation_events (event_id),
-            extra_metadata  TEXT
+            extra_metadata  TEXT,
+            is_ai_assisted  INTEGER NOT NULL DEFAULT 0
         )
     """
 
@@ -746,14 +800,20 @@ def _migrate_confidence_matrix(conn) -> None:
             text("SELECT sql FROM sqlite_master WHERE type='table' AND name='evidence_records'")
         ).fetchone()
         if schema_row and "negative_flag" not in schema_row[0]:
-            # Recreate the table with the updated CHECK constraint.
-            # SQLite requires a 3-step rename-create-copy-drop dance.
+        # Recreate the table with the updated CHECK constraint.
+        # SQLite requires a 3-step rename-create-copy-drop dance.
             conn.execute(text("PRAGMA foreign_keys=OFF"))
             conn.execute(text("ALTER TABLE evidence_records RENAME TO evidence_records_old"))
             conn.execute(text(_EVIDENCE_RECORDS_DDL))
             conn.execute(text("""
                 INSERT INTO evidence_records
-                SELECT * FROM evidence_records_old
+                    (evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
+                     raw_content, verified_at, hard_expires_at, session_id,
+                     event_id, extra_metadata, is_ai_assisted)
+                SELECT evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
+                       raw_content, verified_at, hard_expires_at, session_id,
+                       event_id, extra_metadata, is_ai_assisted
+                FROM evidence_records_old
             """))
             conn.execute(text("DROP TABLE evidence_records_old"))
             conn.execute(text("PRAGMA foreign_keys=ON"))
@@ -772,10 +832,10 @@ def _migrate_confidence_matrix(conn) -> None:
             conn.execute(text(_EVIDENCE_RECORDS_DDL))
             conn.execute(text("""
                 INSERT INTO evidence_records
-                    (evidence_id, entity_id, user_id, source_type, base_weight,
+                    (evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
                      raw_content, verified_at, hard_expires_at, session_id,
                      event_id, extra_metadata)
-                SELECT evidence_id, entity_id, user_id, source_type, base_weight,
+                SELECT evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
                        raw_content, verified_at, hard_expires_at, session_id,
                        event_id, metadata
                 FROM evidence_records_old
@@ -834,10 +894,10 @@ def _migrate_confidence_matrix(conn) -> None:
             conn.execute(text(_EVIDENCE_RECORDS_DDL))
             conn.execute(text("""
                 INSERT INTO evidence_records
-                    (evidence_id, entity_id, user_id, source_type, base_weight,
+                    (evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
                      raw_content, verified_at, hard_expires_at, session_id,
                      event_id, extra_metadata, is_ai_assisted)
-                SELECT evidence_id, entity_id, user_id, source_type, base_weight,
+                SELECT evidence_id, entity_id, user_id, tenant_id, source_type, base_weight,
                        raw_content, verified_at, hard_expires_at, session_id,
                        event_id, extra_metadata, is_ai_assisted
                 FROM evidence_records_old
@@ -868,6 +928,7 @@ def _migrate_confidence_matrix(conn) -> None:
                 log_id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 entity_id       TEXT NOT NULL REFERENCES profile_entities (entity_id),
                 user_id         TEXT NOT NULL,
+                tenant_id       TEXT,
                 old_score       REAL NOT NULL,
                 new_score       REAL NOT NULL,
                 delta           REAL NOT NULL,
@@ -885,6 +946,7 @@ def _migrate_confidence_matrix(conn) -> None:
             CREATE TABLE IF NOT EXISTS ariel_gap_queue (
                 gap_id              TEXT PRIMARY KEY,
                 user_id             TEXT NOT NULL,
+                tenant_id           TEXT,
                 entity_id           TEXT NOT NULL REFERENCES profile_entities (entity_id),
                 job_id              TEXT,
                 current_confidence  REAL NOT NULL,
@@ -946,6 +1008,143 @@ def _migrate_confidence_matrix(conn) -> None:
     conn.commit()
 
 
+# ── Multi-tenant scoping inventory ────────────────────────────────────────────
+#
+# Every table listed here already carries `user_id` as its isolation key —
+# see docs/multi-tenant-erd.md for the full table-by-table classification.
+# `tenant_id` (added by _migrate_tenant_id below) is forward-compatible only:
+# it is NOT yet consumed by any query filter, because there is no tenant
+# concept above `user_id` in CurrentUser (backend/api/deps.py) yet — one
+# account is one tenant for now. When an org/workspace concept lands,
+# query-layer filtering composes alongside the existing user_id filter at
+# each call site (mechanical, not a redesign — every call site already takes
+# user_id as an explicit parameter, never a global).
+#
+# `ariel_probe_log` has no ORM class (created via raw DDL in
+# _migrate_confidence_matrix) but is tenant-scoped and handled below too.
+TENANT_SCOPED_TABLES: tuple[str, ...] = (
+    "jobs", "profile_interviews", "applications", "recruiter_reply_drafts",
+    "master_profiles", "profile_entities", "evidence_records",
+    "shadow_match_scores", "match_triggers", "job_feedback",
+    "ariel_sessions", "conversation_events", "confidence_audit_log",
+    "ariel_gap_queue", "ariel_probe_log",
+)
+
+# Intentionally global / shared across all tenants — never add tenant_id here
+# without a deliberate product decision (see docs/multi-tenant-erd.md):
+#   kv_store        — process-level operational flags, not user data.
+#   company_intel   — company research cache; identical regardless of viewer.
+#   company_culture — company culture-fit cache; identical regardless of viewer.
+GLOBAL_TABLES: tuple[str, ...] = ("kv_store", "company_intel", "company_culture")
+
+
+def _migrate_tenant_id(conn) -> None:
+    """
+    Additive, idempotent migration: add a nullable `tenant_id` column to every
+    table in TENANT_SCOPED_TABLES that doesn't already have one, backfill it
+    from that table's own `user_id` (one account == one tenant, today), and
+    index it.
+
+    Safe to run on every startup against a live, populated DB — every step is
+    guarded by an existence check, matching the pattern already used
+    throughout this file's _migrate()/_migrate_confidence_matrix().
+
+    WAL/-shm note: SQLite's WAL mode allows ALTER TABLE ADD COLUMN as a normal
+    write transaction, but a schema change while a large, un-checkpointed WAL
+    file is outstanding can make the change slower to become visible to other
+    connections and inflates -wal file growth. We checkpoint before starting
+    (flush any prior writers' backlog so we're altering a clean base file) and
+    again after committing (so the new schema + backfill land in jobs.db
+    itself immediately, not left pending in -wal for an indeterminate time).
+    """
+    conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+
+    existing_tables = {
+        row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+    }
+
+    for table in TENANT_SCOPED_TABLES:
+        if table not in existing_tables:
+            # Table doesn't exist yet on this DB (e.g. fresh install where
+            # create_all()/a later migration will create it already carrying
+            # tenant_id via the ORM model) — nothing to backfill.
+            continue
+
+        cols = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+        if "tenant_id" not in cols:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN tenant_id TEXT"))
+
+        # Backfill is safe to re-run: only touches rows where tenant_id is
+        # still NULL, so partially-migrated or re-run states converge safely.
+        if "user_id" in cols:
+            conn.execute(text(
+                f"UPDATE {table} SET tenant_id = user_id WHERE tenant_id IS NULL AND user_id IS NOT NULL"
+            ))
+
+        conn.execute(text(
+            f"CREATE INDEX IF NOT EXISTS ix_{table}_tenant_id ON {table} (tenant_id)"
+        ))
+        # Composite index for the two highest-traffic tables — mirrors the
+        # (user_id, status) / (user_id, applied) composites the JOB-6 indexing
+        # pass already added for these exact tables.
+        if table in ("jobs", "applications"):
+            conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS ix_{table}_tenant_user "
+                f"ON {table} (tenant_id, user_id)"
+            ))
+
+    conn.commit()
+    conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+    conn.commit()
+
+
+def _rollback_tenant_id(conn) -> None:
+    """
+    Rollback for _migrate_tenant_id(): drops the `tenant_id` column (and its
+    indexes, which SQLite drops automatically with the column) from every
+    table in TENANT_SCOPED_TABLES that has one.
+
+    Requires SQLite >= 3.35 (native ALTER TABLE ... DROP COLUMN, shipped
+    2021). Verified present in this environment (3.43.2). On an older SQLite
+    this raises rather than silently corrupting data — the manual fallback is
+    the same rename/recreate/copy/drop dance already used elsewhere in this
+    file for evidence_records (see migration 003/004/008 above), applied to
+    each affected table with tenant_id omitted from the recreated schema.
+
+    Not wired into init_db() / _migrate() — this is an explicit, manually
+    invoked escape hatch, never run automatically.
+    """
+    import sqlite3
+    if sqlite3.sqlite_version_info < (3, 35, 0):
+        raise RuntimeError(
+            f"_rollback_tenant_id requires SQLite >= 3.35 for native DROP COLUMN "
+            f"(found {sqlite3.sqlite_version}). Use the manual rename/recreate "
+            f"procedure documented in this function's docstring instead."
+        )
+
+    conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+
+    existing_tables = {
+        row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+    }
+    for table in TENANT_SCOPED_TABLES:
+        if table not in existing_tables:
+            continue
+        cols = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+        if "tenant_id" in cols:
+            # Indexes referencing tenant_id must be dropped explicitly first —
+            # SQLite's DROP COLUMN does not implicitly drop them and errors
+            # ("error in index ... after drop column") if they're left in place.
+            conn.execute(text(f"DROP INDEX IF EXISTS ix_{table}_tenant_id"))
+            if table in ("jobs", "applications"):
+                conn.execute(text(f"DROP INDEX IF EXISTS ix_{table}_tenant_user"))
+            conn.execute(text(f"ALTER TABLE {table} DROP COLUMN tenant_id"))
+
+    conn.commit()
+    conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+    conn.commit()
+
+
 def init_db() -> None:
     """Create all tables if they don't already exist, then apply any pending migrations."""
     Base.metadata.create_all(ENGINE)
@@ -954,3 +1153,4 @@ def init_db() -> None:
     # no ALTER TABLE migrations needed since it's a new table.
     with ENGINE.connect() as conn:
         _migrate_confidence_matrix(conn)
+        _migrate_tenant_id(conn)

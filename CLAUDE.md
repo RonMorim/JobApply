@@ -14,7 +14,7 @@ uvicorn backend.main:app --reload
 ```
 - All intra-backend imports must use the `backend.` prefix (e.g. `from backend.services import db`) — bare `api.*`/`services.*`/`config` imports load a second, independent module instance (duplicated rate-limit buckets, JWKS caches, DB engines). `backend/main.py` enforces this by inserting the project root onto `sys.path`.
 - Env vars come from `backend/.env` (not root `.env`): `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `SUPABASE_URL`, `SUPABASE_JWT_SECRET`.
-- Single test: `pytest backend/tests/test_profile_trust.py` (no pytest.ini/pyproject config — pytest isn't pinned in requirements.txt, install separately if missing).
+- Single test: `pytest backend/tests/test_profile_trust.py`. Test-only deps (`pytest`, `pytest-asyncio`) live in `backend/requirements-dev.txt`, not `backend/requirements.txt` — install with `pip install -r backend/requirements-dev.txt` (this also pulls in `requirements.txt` via `-r`). `backend/pytest.ini` sets `asyncio_mode = auto`; a venv missing `pytest-asyncio` will fail every `@pytest.mark.asyncio` test with "Unknown pytest.mark.asyncio" rather than skip cleanly, so this step is easy to silently miss — see `docs/environment-setup.md`.
 
 **Frontend** (Next.js, run from `web_dashboard/`):
 ```bash

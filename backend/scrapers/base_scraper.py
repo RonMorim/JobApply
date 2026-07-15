@@ -32,6 +32,17 @@ def make_job_id(url: str, prefix: str = "scraped") -> str:
     return f"{prefix}-{digest}"
 
 
+def make_tenant_job_id(job_id: str, user_id: str) -> str:
+    """
+    Salt a content-derived job_id with its owning user so two different users
+    scraping the same posting never collide on the jobs table's job_id PK
+    (JOB-92). Deterministic per (job_id, user_id) — safe to recompute on every
+    save; the same user re-scraping the same URL always lands on the same row.
+    """
+    salt = hashlib.sha1(user_id.encode()).hexdigest()[:8]
+    return f"{job_id}-{salt}"
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
