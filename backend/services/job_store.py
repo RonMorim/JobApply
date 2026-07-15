@@ -187,28 +187,67 @@ def save(job: JobMatch) -> None:
 
 
 def _upgrade_source_fields(row: JobRow, job: JobMatch) -> None:
-    """Overwrite source-origin fields on an existing row with higher-priority data."""
+    """
+    Overwrite source-origin fields on an existing row with higher-priority data.
+
+    Only ever called on a row already owned by job.user_id — see the
+    same-user/cross-tenant split in save_with_source_priority(). row.user_id
+    is deliberately NOT touched here: it must never move a row between
+    tenants (JOB-92).
+    """
     row.source_type         = job.source_type
     row.apply_url           = job.apply_url or row.apply_url
     row.company_website_url = job.company_website_url or row.company_website_url
     if job.jd_text:
         row.jd_text = job.jd_text
-    if job.user_id:
-        row.user_id = job.user_id
+
+
+def _fresh_row_for_user(job: JobMatch, cross_tenant_match: Optional[JobRow] = None) -> JobRow:
+    """
+    Build a brand-new row for job.user_id.
+
+    If cross_tenant_match is given (an existing row matched by apply_url/
+    dedup_key/title+company but owned by a DIFFERENT user), borrow its
+    shared/source-origin fields when it outranks the incoming source —
+    read-only. cross_tenant_match itself is never mutated, and none of its
+    private analysis (score, status, applied, why_ron, tailored_cv, ...) is
+    copied. This is what lets a second user benefit from another tenant's
+    higher-priority scrape without that tenant's row being reassigned (JOB-92).
+    """
+    if cross_tenant_match is not None:
+        if _source_rank(cross_tenant_match.source_type) > _source_rank(job.source_type):
+            job = job.model_copy(update={
+                "source_type":         cross_tenant_match.source_type,
+                "apply_url":           cross_tenant_match.apply_url or job.apply_url,
+                "company_website_url": cross_tenant_match.company_website_url or job.company_website_url,
+            })
+        job = job.model_copy(update={
+            "jd_text": job.jd_text or cross_tenant_match.jd_text,
+            "locale":  job.locale or cross_tenant_match.locale,
+        })
+    return _to_row(job)
 
 
 def save_with_source_priority(job: JobMatch) -> bool:
     """
     Upsert with source priority: company_site > linkedin > other.
 
-    1. Exact apply_url match — upgrade source fields if incoming has higher priority.
-    2. dedup_key match — same job cross-posted on multiple boards; keep higher-priority
-       source, merge locale/jd_text if the existing row lacks them.
-    3. (title, company) match with a lower-priority source — migrate to new source
-       (handles LinkedIn → company_site upgrades).
+    Every match step below checks the CALLING USER's own rows first. A match
+    belonging to a different user is never mutated or reassigned — instead a
+    brand-new row is inserted for the incoming user, optionally enriched
+    (read-only) from the other user's higher-priority shared fields. This is
+    the JOB-92 fix: previously these lookups ignored user_id entirely, so a
+    higher-priority save from one user could silently reassign another
+    user's row (and their private score/status/analysis) to itself.
+
+    1. Exact apply_url match — same-user: upgrade in place. Different-user:
+       clone a fresh row for the incoming user.
+    2. dedup_key match — same job cross-posted on multiple boards. Same rules.
+    3. (title, company) match with a lower-priority source (company_site
+       upgrades). Same rules.
     4. No match — fresh insert.
 
-    Returns True only when a brand-new row was inserted.
+    Returns True only when a brand-new row was inserted for job.user_id.
     """
     incoming_rank = _source_rank(job.source_type)
     job_dedup_key = canonical_dedup_key(job.title, job.company, job.location)
@@ -216,50 +255,65 @@ def save_with_source_priority(job: JobMatch) -> bool:
     with Session(ENGINE) as session:
         # ── 1. Exact URL match ────────────────────────────────────────────────
         if job.apply_url:
-            existing = (
+            same_user = (
                 session.query(JobRow)
-                .filter(JobRow.apply_url == job.apply_url)
+                .filter(JobRow.apply_url == job.apply_url, JobRow.user_id == job.user_id)
                 .first()
             )
-            if existing:
-                if incoming_rank > _source_rank(existing.source_type):
-                    _upgrade_source_fields(existing, job)
+            if same_user:
+                if incoming_rank > _source_rank(same_user.source_type):
+                    _upgrade_source_fields(same_user, job)
                     session.commit()
                     logger.debug(
                         "[job_store] Source upgraded %s → %s for job_id=%s",
-                        existing.source_type, job.source_type, existing.job_id,
+                        same_user.source_type, job.source_type, same_user.job_id,
                     )
                 # Always backfill locale if missing
-                if not existing.locale and job.locale:
-                    existing.locale = job.locale
+                if not same_user.locale and job.locale:
+                    same_user.locale = job.locale
                     session.commit()
-                return False  # already existed
+                return False  # already existed for this user
+
+            other_user = (
+                session.query(JobRow)
+                .filter(JobRow.apply_url == job.apply_url, JobRow.user_id != job.user_id)
+                .first()
+            )
+            if other_user:
+                session.add(_fresh_row_for_user(job, other_user))
+                session.commit()
+                logger.info(
+                    "[job_store] Cross-tenant apply_url match for '%s @ %s' — "
+                    "cloned a private row for user_id=%s (ownership NOT reassigned)",
+                    job.title, job.company, job.user_id,
+                )
+                return True
 
         # ── 2. Cross-board dedup_key match ────────────────────────────────────
         # Catches the same job posted on Drushim, AllJobs, LinkedIn etc.
         # The higher-priority source wins; the lower-priority record is skipped.
-        dup_key_row = (
+        same_user_dup = (
             session.query(JobRow)
-            .filter(JobRow.dedup_key == job_dedup_key)
+            .filter(JobRow.dedup_key == job_dedup_key, JobRow.user_id == job.user_id)
             .first()
         )
-        if dup_key_row:
-            existing_rank = _source_rank(dup_key_row.source_type)
+        if same_user_dup:
+            existing_rank = _source_rank(same_user_dup.source_type)
             if incoming_rank > existing_rank:
-                _upgrade_source_fields(dup_key_row, job)
+                _upgrade_source_fields(same_user_dup, job)
                 session.commit()
                 logger.info(
                     "[job_store] dedup_key hit: upgraded '%s @ %s' source %s→%s",
-                    job.title, job.company, dup_key_row.source_type, job.source_type,
+                    job.title, job.company, same_user_dup.source_type, job.source_type,
                 )
             else:
                 # Backfill locale/jd_text if the existing row lacks them
                 changed = False
-                if not dup_key_row.locale and job.locale:
-                    dup_key_row.locale = job.locale
+                if not same_user_dup.locale and job.locale:
+                    same_user_dup.locale = job.locale
                     changed = True
-                if not dup_key_row.jd_text and job.jd_text:
-                    dup_key_row.jd_text = job.jd_text
+                if not same_user_dup.jd_text and job.jd_text:
+                    same_user_dup.jd_text = job.jd_text
                     changed = True
                 if changed:
                     session.commit()
@@ -269,25 +323,61 @@ def save_with_source_priority(job: JobMatch) -> bool:
                 )
             return False
 
+        other_user_dup = (
+            session.query(JobRow)
+            .filter(JobRow.dedup_key == job_dedup_key, JobRow.user_id != job.user_id)
+            .first()
+        )
+        if other_user_dup:
+            session.add(_fresh_row_for_user(job, other_user_dup))
+            session.commit()
+            logger.info(
+                "[job_store] Cross-tenant dedup_key match for '%s @ %s' — "
+                "cloned a private row for user_id=%s (ownership NOT reassigned)",
+                job.title, job.company, job.user_id,
+            )
+            return True
+
         # ── 3. Title + company cross-source dedup (company_site only) ─────────
         if incoming_rank >= _SOURCE_PRIORITY['company_site']:
-            dup = (
+            same_user_tc = (
                 session.query(JobRow)
                 .filter(
                     func.lower(JobRow.title)   == job.title.strip().lower(),
                     func.lower(JobRow.company) == job.company.strip().lower(),
                     JobRow.source_type         != 'company_site',
+                    JobRow.user_id             == job.user_id,
                 )
                 .first()
             )
-            if dup:
+            if same_user_tc:
                 logger.info(
                     "[job_store] Upgrading '%s @ %s' source '%s' → 'company_site'",
-                    job.title, job.company, dup.source_type,
+                    job.title, job.company, same_user_tc.source_type,
                 )
-                _upgrade_source_fields(dup, job)
+                _upgrade_source_fields(same_user_tc, job)
                 session.commit()
                 return False
+
+            other_user_tc = (
+                session.query(JobRow)
+                .filter(
+                    func.lower(JobRow.title)   == job.title.strip().lower(),
+                    func.lower(JobRow.company) == job.company.strip().lower(),
+                    JobRow.source_type         != 'company_site',
+                    JobRow.user_id             != job.user_id,
+                )
+                .first()
+            )
+            if other_user_tc:
+                session.add(_fresh_row_for_user(job, other_user_tc))
+                session.commit()
+                logger.info(
+                    "[job_store] Cross-tenant title+company match for '%s @ %s' — "
+                    "cloned a private row for user_id=%s (ownership NOT reassigned)",
+                    job.title, job.company, job.user_id,
+                )
+                return True
 
         # ── 4. Fresh insert ───────────────────────────────────────────────────
         session.merge(_to_row(job))

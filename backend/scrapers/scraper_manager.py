@@ -27,7 +27,7 @@ import logging
 from typing import Dict, Optional, Type
 
 from models.job import JobMatch
-from backend.scrapers.base_scraper import BaseScraper
+from backend.scrapers.base_scraper import BaseScraper, make_tenant_job_id
 import backend.services.job_store as job_store
 
 logger = logging.getLogger(__name__)
@@ -202,9 +202,15 @@ class ScraperManager:
                     job.title, job.company,
                 )
                 continue
-            # Stamp the correct owner before persisting
+            # Stamp the correct owner before persisting. job_id is salted with
+            # user_id here too — it's a deterministic hash of the apply URL
+            # alone (make_job_id), so two different users scraping the same
+            # posting would otherwise collide on the jobs table's PK (JOB-92).
             if user_id is not None:
-                job = job.model_copy(update={"user_id": user_id})
+                job = job.model_copy(update={
+                    "user_id": user_id,
+                    "job_id": make_tenant_job_id(job.job_id, user_id),
+                })
             try:
                 is_new = job_store.save_with_source_priority(job)
                 if is_new:

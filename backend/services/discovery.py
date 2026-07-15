@@ -31,6 +31,7 @@ from backend.config import (
     TARGET_SEARCH_QUERIES,
     MAX_RELEVANT_JOBS,
 )
+from backend.scrapers.base_scraper import make_tenant_job_id
 from backend.scrapers.relevancy import is_title_relevant
 from backend.services import job_store
 import backend.services.agent_store as agent_store
@@ -317,6 +318,10 @@ async def run_discovery_cycle(user_id: str = "default") -> None:
 
             match.category = category
             match.user_id  = user_id
+            # Salt job_id per user — it was built from make_job_id(url) (a
+            # hash of the apply URL alone), which collides across tenants
+            # scraping the same posting (JOB-92).
+            match.job_id   = make_tenant_job_id(match.job_id, user_id)
 
             agent_store.set_active("s3", f"Writing 'Why apply' brief for '{title[:40]}'")
             agent_store.set_active("s4", f"Verifying claims for '{title[:40]}'")
