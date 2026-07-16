@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { TOKENS } from '@/lib/tokens'
 import { Logo } from './ui/Logo'
 import { StatusDot } from './ui/StatusDot'
-import { BellIcon, SlidersIcon, ChevIcon, MailIcon } from './icons'
+import { BellIcon, SlidersIcon, ChevIcon, MailIcon, MenuIcon, XIcon } from './icons'
 import { EmailSetupModal } from './EmailSetupModal'
 import { useAuth } from '@/contexts/AuthContext'
 import { useChat } from '@/contexts/ChatContext'
@@ -39,12 +39,14 @@ interface HeaderProps {
 }
 
 export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) {
-  const [menuOpen,    setMenuOpen]    = useState(false)
-  const [bellOpen,    setBellOpen]    = useState(false)
-  const [emailModal,  setEmailModal]  = useState(false)
+  const [menuOpen,       setMenuOpen]       = useState(false)
+  const [bellOpen,       setBellOpen]       = useState(false)
+  const [emailModal,     setEmailModal]     = useState(false)
+  const [mobileNavOpen,  setMobileNavOpen]  = useState(false)
   const router    = useRouter()
   const pathname  = usePathname()
   const bellRef   = useRef<HTMLDivElement>(null)
+  const menuRef   = useRef<HTMLDivElement>(null)
 
   const { user, signOut } = useAuth()
   const { openEliya, isEliyaOpen } = useChat()
@@ -54,7 +56,8 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
   const highMatchJobs = jobs.filter(j => j.score >= 85)
   const hasHighMatch  = highMatchJobs.length > 0
 
-  // Close bell dropdown when clicking outside
+  // Close bell dropdown on outside tap/click ('mousedown' also fires from a
+  // tap on every mobile browser, so this works for touch and mouse alike).
   useEffect(() => {
     if (!bellOpen) return
     function handleClickOutside(e: MouseEvent) {
@@ -66,34 +69,65 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [bellOpen])
 
+  // Close user menu on outside tap/click. Previously this used onMouseLeave,
+  // which never fires on touch devices — the menu could get stuck open on
+  // mobile. Same click-outside pattern as the bell dropdown above.
+  useEffect(() => {
+    if (!menuOpen) return
+    function handleClickOutside(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [menuOpen])
+
+  // Close the mobile nav panel on route/tab change so it never lingers open
+  // after navigating.
+  useEffect(() => { setMobileNavOpen(false) }, [pathname, tab])
+
   // Suppress tab underlines on any route that isn't the main dashboard.
   const onMainDashboard   = pathname === '/'
   const onAnalytics       = pathname === '/analytics'
   const onCapabilities    = pathname === '/capabilities'
   const activeTab         = onMainDashboard ? (tab ?? null) : null
 
+  const goToTab = (t: Tab) => {
+    // Encode the tab in the URL so it survives any auth-cycle redirect.
+    // searchParams.get('tab') has priority over localStorage in page.tsx,
+    // so even if localStorage is wiped by _onAuthError the user lands back
+    // on the correct tab rather than defaulting to 'overview'.
+    router.push(`/?tab=${t}`)
+    setTab?.(t)
+  }
+
   return (
     <>
     <EmailSetupModal open={emailModal} onClose={() => setEmailModal(false)} />
 
     <header className="w-full bg-white border-b border-slate-100 sticky top-0 z-40">
-      <div className="max-w-[1920px] mx-auto px-12 h-[60px] grid grid-cols-[auto_1fr_auto] items-center gap-8">
+      <div className="max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-12 h-14 md:h-[60px] grid grid-cols-[auto_1fr_auto] items-center gap-3 md:gap-8">
 
-      <Logo />
+      <div className="flex items-center gap-1">
+        {/* Hamburger — mobile/tablet only, opens the stacked nav panel below */}
+        <button
+          onClick={() => setMobileNavOpen(v => !v)}
+          aria-label={mobileNavOpen ? 'Close menu' : 'Open menu'}
+          aria-expanded={mobileNavOpen}
+          className="md:hidden inline-flex items-center justify-center w-11 h-11 -ml-2 rounded-lg text-slate-500 active:bg-slate-100 transition-colors"
+        >
+          {mobileNavOpen ? <XIcon s={18} /> : <MenuIcon s={18} />}
+        </button>
+        <Logo />
+      </div>
 
-      {/* Primary nav — centered, text-only with bottom-border active indicator */}
+      {/* Primary nav — desktop/tablet only, centered, text-only with bottom-border active indicator */}
       <nav className="hidden md:flex items-center justify-center space-x-10 text-sm font-medium text-slate-400 h-full">
         {TABS.map(t => (
           <button
             key={t.id}
-            onClick={() => {
-              // Encode the tab in the URL so it survives any auth-cycle redirect.
-              // searchParams.get('tab') has priority over localStorage in page.tsx,
-              // so even if localStorage is wiped by _onAuthError the user lands back
-              // on the correct tab rather than defaulting to 'overview'.
-              router.push(`/?tab=${t.id}`)
-              setTab?.(t.id)
-            }}
+            onClick={() => goToTab(t.id)}
             className={`h-full pb-0 border-b-2 transition-colors ${
               activeTab === t.id
                 ? 'text-slate-900 border-slate-900'
@@ -122,36 +156,36 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
       </nav>
 
       {/* Right-side utility cluster */}
-      <div className="flex items-center gap-3 justify-end">
+      <div className="flex items-center gap-1 sm:gap-3 justify-end">
         {pathname === '/' && tab === 'feed' && onOpenControls && (
           <button
             onClick={onOpenControls}
-            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md text-[12.5px] font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-200 transition"
+            className="inline-flex items-center gap-1.5 h-11 sm:h-7 px-3 rounded-md text-[12.5px] font-medium text-slate-500 active:bg-slate-100 sm:hover:text-slate-800 sm:hover:bg-slate-50 border border-slate-200 transition-colors"
           >
-            <SlidersIcon s={14} /> Preferences
+            <SlidersIcon s={14} /> <span className="hidden sm:inline">Preferences</span>
           </button>
         )}
 
-        {/* Help — opens Eliya support chat (indigo theme) */}
+        {/* Help — opens Eliya support chat (indigo theme). Color is driven purely
+            by isEliyaOpen state; the hover tint is a plain Tailwind :hover class,
+            not imperative JS — so it's a harmless desktop-only enhancement rather
+            than something the interaction depends on. */}
         <button
           onClick={openEliya}
           title="Help & Support — Ask Eliya"
           aria-label="Help & Support"
-          className="inline-flex items-center justify-center w-8 h-8 rounded-md transition"
-          style={
+          className={`inline-flex items-center justify-center w-11 h-11 sm:w-8 sm:h-8 rounded-md transition-colors ${
             isEliyaOpen
-              ? { color: '#4F46E5', background: '#EEF2FF' }
-              : { color: '#94a3b8' }
-          }
-          onMouseEnter={e => { if (!isEliyaOpen) (e.currentTarget as HTMLButtonElement).style.color = '#4F46E5'; (e.currentTarget as HTMLButtonElement).style.background = '#EEF2FF' }}
-          onMouseLeave={e => { if (!isEliyaOpen) { (e.currentTarget as HTMLButtonElement).style.color = ''; (e.currentTarget as HTMLButtonElement).style.background = '' } }}
+              ? 'text-indigo-600 bg-indigo-50'
+              : 'text-slate-400 active:bg-slate-100 sm:hover:text-indigo-600 sm:hover:bg-indigo-50'
+          }`}
         >
           <HelpIcon s={16} />
         </button>
 
         <button
           onClick={() => setEmailModal(true)}
-          className="inline-flex items-center justify-center w-8 h-8 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition"
+          className="inline-flex items-center justify-center w-11 h-11 sm:w-8 sm:h-8 rounded-md text-slate-400 active:bg-slate-100 sm:hover:text-slate-700 sm:hover:bg-slate-50 transition-colors"
           title="Connect Email Automation"
         >
           <MailIcon s={15} />
@@ -162,17 +196,17 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
           <button
             onClick={() => { setMenuOpen(false); setBellOpen(v => !v) }}
             title="Notifications"
-            className="inline-flex items-center justify-center w-8 h-8 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition"
+            className="inline-flex items-center justify-center w-11 h-11 sm:w-8 sm:h-8 rounded-md text-slate-400 active:bg-slate-100 sm:hover:text-slate-700 sm:hover:bg-slate-50 transition-colors"
           >
             <BellIcon s={16} />
           </button>
           {hasHighMatch && (
-            <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-rose-500 ring-2 ring-white pointer-events-none" />
+            <span className="absolute top-1.5 right-1.5 sm:top-1 sm:right-1 w-1.5 h-1.5 rounded-full bg-rose-500 ring-2 ring-white pointer-events-none" />
           )}
 
           {bellOpen && (
             <div
-              className="absolute right-0 top-11 w-72 rounded-xl bg-white/85 backdrop-blur-xl border border-white/60 shadow-floating overflow-hidden z-50"
+              className="absolute right-0 top-12 sm:top-11 w-72 max-w-[calc(100vw-2rem)] rounded-xl bg-white/85 backdrop-blur-xl border border-white/60 shadow-floating overflow-hidden z-50"
             >
               <div className="px-3 py-2.5 border-b border-slate-50 flex items-center justify-between">
                 <span className="text-[12px] font-semibold text-slate-700">High-match alerts</span>
@@ -192,7 +226,7 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
                     <li key={job.id}>
                       <button
                         onClick={() => setBellOpen(false)}
-                        className="w-full text-left px-3 py-2.5 hover:bg-slate-50 transition flex items-center justify-between gap-3"
+                        className="w-full text-left px-3 py-2.5 active:bg-slate-100 sm:hover:bg-slate-50 transition-colors flex items-center justify-between gap-3"
                       >
                         <div className="min-w-0">
                           <p className="text-[12.5px] font-semibold text-slate-900 truncate">{job.title}</p>
@@ -211,18 +245,17 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
         </div>
 
         {/* User avatar + menu */}
-        <div className="relative">
+        <div className="relative" ref={menuRef}>
           <button
             onClick={() => { setBellOpen(false); setMenuOpen(v => !v) }}
-            className="w-8 h-8 rounded-md bg-slate-100 text-slate-600 flex items-center justify-center text-xs font-bold hover:bg-slate-200 transition"
+            className="w-11 h-11 sm:w-8 sm:h-8 rounded-md bg-slate-100 text-slate-600 flex items-center justify-center text-xs font-bold active:bg-slate-200 sm:hover:bg-slate-200 transition-colors"
           >
             {initials}
           </button>
 
           {menuOpen && (
             <div
-              onMouseLeave={() => setMenuOpen(false)}
-              className="absolute right-0 top-10 w-56 rounded-xl bg-white/85 backdrop-blur-xl border border-white/60 shadow-floating overflow-hidden z-50"
+              className="absolute right-0 top-12 sm:top-10 w-56 rounded-xl bg-white/85 backdrop-blur-xl border border-white/60 shadow-floating overflow-hidden z-50"
             >
               <div className="px-3 py-3 border-b border-slate-50">
                 <div className="text-[13px] font-semibold text-slate-900">{displayName}</div>
@@ -230,12 +263,12 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
               </div>
               <button
                 onClick={() => { setMenuOpen(false); router.push('/profile-builder') }}
-                className="w-full text-left px-3 py-2.5 text-[13px] font-semibold flex items-center gap-2 hover:bg-violet-50 text-violet-700 border-b border-slate-50"
+                className="w-full text-left px-3 py-2.5 text-[13px] font-semibold flex items-center gap-2 active:bg-violet-100 sm:hover:bg-violet-50 text-violet-700 border-b border-slate-50 transition-colors"
               >
                 <span className="text-base leading-none">✦</span>
                 AI Profile Builder
               </button>
-              <button className="w-full text-left px-3 py-2 text-[13px] text-slate-700 hover:bg-slate-50 transition">
+              <button className="w-full text-left px-3 py-2 text-[13px] text-slate-700 active:bg-slate-100 sm:hover:bg-slate-50 transition-colors">
                 Profile & preferences
               </button>
               <div className="border-t border-slate-200" />
@@ -245,7 +278,7 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
                     setMenuOpen(false)
                     await signOut()
                   }}
-                  className="w-full text-left px-3 py-2 text-[11.5px] font-mono text-amber-700 hover:bg-amber-50 transition flex items-center gap-1.5"
+                  className="w-full text-left px-3 py-2 text-[11.5px] font-mono text-amber-700 active:bg-amber-100 sm:hover:bg-amber-50 transition-colors flex items-center gap-1.5"
                   title="Clears all Supabase session storage and forces a clean re-login — use to switch between user profiles in dev"
                 >
                   <span className="text-[10px] bg-amber-100 text-amber-600 font-bold px-1 rounded">DEV</span>
@@ -254,7 +287,7 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
               )}
               <button
                 onClick={() => { setMenuOpen(false); void signOut() }}
-                className="w-full text-left px-3 py-2 text-[13px] text-rose-600 hover:bg-rose-50 transition"
+                className="w-full text-left px-3 py-2 text-[13px] text-rose-600 active:bg-rose-100 sm:hover:bg-rose-50 transition-colors"
               >
                 Sign out
               </button>
@@ -264,6 +297,42 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
       </div>
 
       </div>
+
+      {/* ── Mobile nav panel — boxless stacked list, replaces the hidden desktop nav.
+          Tap-only: no hover states needed since every row is a full-width button. */}
+      {mobileNavOpen && (
+        <nav className="md:hidden border-t border-slate-100 px-4 py-2">
+          {TABS.map(t => (
+            <button
+              key={t.id}
+              onClick={() => goToTab(t.id)}
+              className={`w-full text-left h-11 px-2 rounded-lg text-[14px] font-medium flex items-center transition-colors ${
+                activeTab === t.id
+                  ? 'text-teal-700 bg-teal-50'
+                  : 'text-slate-600 active:bg-slate-50'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+          <Link
+            href="/capabilities"
+            className={`w-full text-left h-11 px-2 rounded-lg text-[14px] font-medium flex items-center transition-colors ${
+              onCapabilities ? 'text-teal-700 bg-teal-50' : 'text-slate-600 active:bg-slate-50'
+            }`}
+          >
+            Capabilities
+          </Link>
+          <Link
+            href="/analytics"
+            className={`w-full text-left h-11 px-2 rounded-lg text-[14px] font-medium flex items-center transition-colors ${
+              onAnalytics ? 'text-teal-700 bg-teal-50' : 'text-slate-600 active:bg-slate-50'
+            }`}
+          >
+            Analytics
+          </Link>
+        </nav>
+      )}
     </header>
     </>
   )
