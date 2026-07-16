@@ -7,8 +7,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend.api.deps import CurrentUser, get_current_user
-from models.user import AutomationSettings, UserProfile
+from backend.api.deps import CurrentUser, get_current_user, require_admin
 from backend.services.db import ENGINE, KVRow
 
 router = APIRouter()
@@ -78,7 +77,7 @@ class GmailVerificationCodeResponse(BaseModel):
 
 
 @router.get("/gmail-verification-code", response_model=GmailVerificationCodeResponse)
-async def get_gmail_verification_code(user: CurrentUser = Depends(get_current_user)) -> GmailVerificationCodeResponse:
+async def get_gmail_verification_code(user: CurrentUser = Depends(require_admin)) -> GmailVerificationCodeResponse:
     """
     Return the most recently captured Gmail forwarding verification code.
 
@@ -107,31 +106,3 @@ async def get_gmail_verification_code(user: CurrentUser = Depends(get_current_us
         return GmailVerificationCodeResponse(code=None, captured_at=None)
 
     return GmailVerificationCodeResponse(code=row.value, captured_at=row.updated_at)
-
-
-@router.get("/automation", response_model=AutomationSettings)
-async def get_automation_settings(user: CurrentUser = Depends(get_current_user)):
-    """Return the current automation settings for the authenticated user."""
-    # TODO: fetch from DB
-    return AutomationSettings()
-
-
-@router.put("/automation", response_model=AutomationSettings)
-async def update_automation_settings(settings: AutomationSettings, user: CurrentUser = Depends(get_current_user)):
-    """Persist updated automation settings."""
-    # TODO: persist to DB, propagate limits to AutoApplierAgent
-    return settings
-
-
-@router.get("/profile", response_model=UserProfile)
-async def get_profile(user: CurrentUser = Depends(get_current_user)):
-    """Return the authenticated user's structured profile."""
-    # TODO: fetch from DB
-    return UserProfile()
-
-
-@router.put("/profile", response_model=UserProfile)
-async def update_profile(profile: UserProfile, user: CurrentUser = Depends(get_current_user)):
-    """Update the user's profile (triggers re-scoring of existing matches)."""
-    # TODO: persist to DB, enqueue re-score task
-    return profile

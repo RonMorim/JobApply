@@ -264,3 +264,25 @@ def set_paused(agent_id: str) -> None:
 def set_resumed(agent_id: str) -> None:
     ensure_user_seeded("default")
     _patch_all(agent_id, state="idle", current_task=None)
+
+
+def set_paused_for_user(user_id: str, agent_id: str) -> None:
+    ensure_user_seeded(user_id)
+    store = _USER_STORES[user_id]
+    if agent_id in store:
+        agent = store[agent_id]
+        store[agent_id] = agent.model_copy(update={
+            "state":        "paused",
+            "current_task": None,
+        })
+
+
+def set_resumed_for_user(user_id: str, agent_id: str) -> None:
+    ensure_user_seeded(user_id)
+    store = _USER_STORES[user_id]
+    if agent_id in store:
+        agent = store[agent_id]
+        store[agent_id] = agent.model_copy(update={
+            "state":        "idle",
+            "current_task": None,
+        })

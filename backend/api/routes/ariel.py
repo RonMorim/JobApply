@@ -193,11 +193,14 @@ async def respond_to_probe(
         raise HTTPException(status_code=403, detail="Entity does not belong to you.")
 
     # ── Accumulate the answer in session transcript_json ─────────────────────
+    # Filtered by user_id (not just session_id) so a caller can never read or
+    # write another user's session transcript — mismatch is indistinguishable
+    # from "not found".
     import json as _json
     with ENGINE.begin() as conn:
         row = conn.execute(
-            text("SELECT transcript_json FROM ariel_sessions WHERE session_id = :sid"),
-            {"sid": req.session_id},
+            text("SELECT transcript_json FROM ariel_sessions WHERE session_id = :sid AND user_id = :uid"),
+            {"sid": req.session_id, "uid": user.user_id},
         ).fetchone()
 
         if row is None:
@@ -207,8 +210,8 @@ async def respond_to_probe(
         transcript[f"turn_{req.turn}"] = req.answer
 
         conn.execute(
-            text("UPDATE ariel_sessions SET transcript_json = :tj WHERE session_id = :sid"),
-            {"tj": _json.dumps(transcript), "sid": req.session_id},
+            text("UPDATE ariel_sessions SET transcript_json = :tj WHERE session_id = :sid AND user_id = :uid"),
+            {"tj": _json.dumps(transcript), "sid": req.session_id, "uid": user.user_id},
         )
 
     entity_dict = {
