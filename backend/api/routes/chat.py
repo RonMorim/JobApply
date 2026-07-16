@@ -41,6 +41,7 @@ from backend.services.db import ENGINE, MasterProfileRow
 from backend.agents.ariel_tools import ARIEL_TOOLS, execute_tool
 from backend.services.user_profile import USER_PROFILE, get_profile, format_profile_compact
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
+from backend.services.llm_client import call_llm, stream_llm, LLMCallError
 from backend.utilities.ai_scrubber import AIScrubberBuffer, clean_ai_text
 
 logger = logging.getLogger(__name__)
@@ -61,8 +62,9 @@ if not _ANTHROPIC_KEY or not _ANTHROPIC_KEY.startswith("sk-ant-"):
         "is restarted."
     )
 
-def _get_anthropic_client() -> anthropic.AsyncAnthropic:
-    """Return a client, or raise HTTPException 503 when the key is absent."""
+def _check_anthropic_key() -> None:
+    """Raise HTTPException 503 when the key is absent. call_llm/stream_llm use
+    the shared llm_client module client, so no per-request client is built here."""
     if not _ANTHROPIC_KEY or not _ANTHROPIC_KEY.startswith("sk-ant-"):
         raise HTTPException(
             status_code=503,
@@ -71,7 +73,6 @@ def _get_anthropic_client() -> anthropic.AsyncAnthropic:
                 "Add the key to backend/.env and restart the server."
             ),
         )
-    return anthropic.AsyncAnthropic(api_key=_ANTHROPIC_KEY)
 
 # ── Tool definitions ───────────────────────────────────────────────────────────
 
@@ -192,7 +193,7 @@ def _sse_tool_call(name: str, input: dict) -> str:
 async def _stream_response(
     messages:    List[ChatMessage],
     system:      str,
-    client:      anthropic.AsyncAnthropic,
+    user_id:     str,
 ) -> AsyncIterator[str]:
     """
     Stream claude-sonnet-4-6 replies as SSE.
@@ -223,12 +224,14 @@ async def _stream_response(
         
         scrubber = AIScrubberBuffer()
 
-        async with client.messages.stream(
+        async with stream_llm(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
             system=system,
             messages=api_messages,
             tools=_TOOLS,
+            purpose="chat_stream",
+            user_id=user_id,
         ) as stream:
             async for event in stream:
                 etype = event.type
@@ -290,10 +293,10 @@ async def chat_stream(
     )
 
     system = _build_system_prompt(body.job_context)
-    client = _get_anthropic_client()
+    _check_anthropic_key()
 
     return StreamingResponse(
-        _stream_response(body.messages, system, client),
+        _stream_response(body.messages, system, user.user_id),
         media_type="text/event-stream",
         headers={
             # Prevent proxy / CDN buffering — critical for SSE to work end-to-end
@@ -687,7 +690,6 @@ def _build_ariel_system(pinned_messages: list[ChatMessage], user_id: str) -> str
 async def _ariel_tool_loop_then_stream(
     messages:       list[dict[str, Any]],
     system:         str,
-    client:         anthropic.AsyncAnthropic,
     user_id:        str,
     db_session:     Session,
 ) -> AsyncIterator[str]:
@@ -712,21 +714,20 @@ async def _ariel_tool_loop_then_stream(
     # ── Phase 1: synchronous tool-use loop ────────────────────────────────────
     for loop_idx in range(_MAX_TOOL_LOOPS):
         try:
-            response = await client.messages.create(
+            result_llm = await call_llm(
                 model      = _ARIEL_MODEL,
                 max_tokens = _ARIEL_MAX_TOKENS,
                 system     = system,
                 messages   = loop_messages,
                 tools      = ARIEL_TOOLS,
+                purpose    = "ariel_private_tool_loop",
+                user_id    = user_id,
             )
-        except anthropic.APIStatusError as exc:
-            logger.error("[ariel/private] Anthropic API error in tool loop: %s", exc)
-            yield _sse_error(f"AI service error ({exc.status_code}). Please try again.")
-            return
-        except Exception as exc:
-            logger.exception("[ariel/private] Unexpected error in tool loop")
+        except LLMCallError:
+            logger.exception("[ariel/private] LLM call failed in tool loop")
             yield _sse_error("An unexpected error occurred. Please try again.")
             return
+        response = result_llm.raw
 
         # Partition response blocks
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
@@ -774,12 +775,14 @@ async def _ariel_tool_loop_then_stream(
     # Make one final streaming call with tool_choice=none to force a text reply.
     try:
         scrubber = AIScrubberBuffer()
-        async with client.messages.stream(
+        async with stream_llm(
             model       = _ARIEL_MODEL,
             max_tokens  = _ARIEL_MAX_TOKENS,
             system      = system,
             messages    = loop_messages,
             tool_choice = {"type": "none"},
+            purpose     = "ariel_private_final_stream",
+            user_id     = user_id,
         ) as stream:
             async for event in stream:
                 if event.type == "content_block_delta":
@@ -1151,10 +1154,10 @@ async def ariel_private(
         {"role": "user", "content": user_content},
     ]
 
-    client = _get_anthropic_client()
+    _check_anthropic_key()
 
     return StreamingResponse(
-        _ariel_tool_loop_then_stream(messages, system, client, user.user_id, db_session),
+        _ariel_tool_loop_then_stream(messages, system, user.user_id, db_session),
         media_type="text/event-stream",
         headers={
             "Cache-Control":     "no-cache",
@@ -1276,16 +1279,16 @@ def _build_public_user_content(
 async def _stream_public_reply(
     messages: list[dict],
     system:   str,
-    client:   anthropic.AsyncAnthropic,
 ) -> AsyncIterator[str]:
     """Plain text-only SSE stream — Eliya has no tools."""
     try:
         scrubber = AIScrubberBuffer()
-        async with client.messages.stream(
+        async with stream_llm(
             model      = _ELIYA_MODEL,
             max_tokens = _ELIYA_MAX_TOKENS,
             system     = system,
             messages   = messages,
+            purpose    = "chat_public_eliya",
         ) as stream:
             async for event in stream:
                 if event.type == "content_block_delta":
@@ -1342,10 +1345,10 @@ async def eliya_public_chat(body: PublicChatRequest, request: Request) -> Stream
     ]
 
     system = harden_system_prompt(_ELIYA_SYSTEM_PROMPT)
-    client = _get_anthropic_client()
+    _check_anthropic_key()
 
     return StreamingResponse(
-        _stream_public_reply(messages, system, client),
+        _stream_public_reply(messages, system),
         media_type="text/event-stream",
         headers={
             "Cache-Control":     "no-cache",
