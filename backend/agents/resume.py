@@ -20,6 +20,7 @@ from typing import Optional
 
 import anthropic
 
+from backend.services.llm_client import call_llm
 from backend.services.user_profile import USER_PROFILE
 from models.job import JobMatch
 
@@ -669,9 +670,7 @@ class ResumeAgent:
     async def _analyse_image(self, img_bytes: bytes, media_type: str) -> str:
         """Send an image to Claude Vision for layout analysis."""
         b64 = base64.standard_b64encode(img_bytes).decode()
-        msg = await self._client.messages.create(
-            model=_MODEL,
-            max_tokens=600,
+        result = await call_llm(
             messages=[{
                 "role": "user",
                 "content": [
@@ -679,8 +678,11 @@ class ResumeAgent:
                     {"type": "text", "text": self._STYLE_ANALYSIS_PROMPT},
                 ],
             }],
+            model=_MODEL,
+            max_tokens=600,
+            purpose="resume_analyse_image",
         )
-        return msg.content[0].text.strip()
+        return result.text.strip()
 
     async def _analyse_pdf(self, pdf_bytes: bytes) -> str:
         """
@@ -774,12 +776,13 @@ class ResumeAgent:
             + self._STYLE_ANALYSIS_PROMPT
         )
 
-        msg = await self._client.messages.create(
+        result = await call_llm(
+            messages=[{"role": "user", "content": prompt}],
             model=_MODEL,
             max_tokens=600,
-            messages=[{"role": "user", "content": prompt}],
+            purpose="resume_analyse_docx",
         )
-        return msg.content[0].text.strip()
+        return result.text.strip()
 
     async def _analyse_gaps(
         self,
@@ -817,12 +820,13 @@ class ResumeAgent:
             "No markdown, no explanation, no code fences — raw JSON only."
         )
 
-        msg = await self._client.messages.create(
+        result = await call_llm(
+            messages=[{"role": "user", "content": prompt}],
             model=_MODEL,
             max_tokens=600,
-            messages=[{"role": "user", "content": prompt}],
+            purpose="resume_analyse_gaps",
         )
-        raw = msg.content[0].text.strip()
+        raw = result.text.strip()
 
         try:
             data = json.loads(raw)
@@ -886,12 +890,13 @@ ATS COMPLIANCE RULES (non-negotiable):
 
 OUTPUT: The complete HTML document only. No markdown. No explanation. No code fences."""
 
-        msg = await self._client.messages.create(
+        result = await call_llm(
+            messages=[{"role": "user", "content": prompt}],
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
+            purpose="resume_generate_html",
         )
-        html = msg.content[0].text.strip()
+        html = result.text.strip()
 
         # Strip accidental markdown fences if model adds them
         if html.startswith("```"):
