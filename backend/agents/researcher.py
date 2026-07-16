@@ -32,9 +32,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 from dotenv import load_dotenv
 
+from backend.services.llm_client import call_llm
 from backend.services.web_search import search, SearchResult
 from backend.services.user_profile import USER_PROFILE, build_full_text
 
@@ -191,10 +191,8 @@ class ResearcherAgent:
     """
 
     def __init__(self) -> None:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
+        if not os.getenv("ANTHROPIC_API_KEY"):
             raise ValueError("ANTHROPIC_API_KEY not set")
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self._cv_text = build_full_text().lower()
 
     async def research(
@@ -327,14 +325,15 @@ class ResearcherAgent:
         )
 
         try:
-            resp = await self._client.messages.create(
+            result = await call_llm(
+                system=_DOMAIN_SYSTEM,
+                messages=[{"role": "user", "content": user_msg}],
                 model=_MODEL,
                 max_tokens=_MAX_TOKENS,
                 temperature=0.0,
-                system=_DOMAIN_SYSTEM,
-                messages=[{"role": "user", "content": user_msg}],
+                purpose="researcher_synthesise_domain",
             )
-            raw = _strip_fences(resp.content[0].text)
+            raw = _strip_fences(result.text)
             return json.loads(raw)
         except Exception as exc:
             logger.warning("[researcher] Domain synthesis failed for %r: %s", entity_name, exc)
@@ -370,14 +369,15 @@ class ResearcherAgent:
         )
 
         try:
-            resp = await self._client.messages.create(
+            result = await call_llm(
+                system=_GAP_SYSTEM,
+                messages=[{"role": "user", "content": user_msg}],
                 model=_MODEL,
                 max_tokens=_MAX_TOKENS,
                 temperature=0.0,
-                system=_GAP_SYSTEM,
-                messages=[{"role": "user", "content": user_msg}],
+                purpose="researcher_synthesise_gap",
             )
-            raw = _strip_fences(resp.content[0].text)
+            raw = _strip_fences(result.text)
             payload = json.loads(raw)
             return [str(t) for t in payload.get("cv_vocabulary_gap", [])][:12]
         except Exception as exc:

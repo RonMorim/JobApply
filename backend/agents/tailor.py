@@ -22,9 +22,9 @@ import re
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 from dotenv import load_dotenv
 
+from backend.services.llm_client import call_llm
 from backend.services.user_profile import USER_PROFILE, build_full_text
 from models.job import JobMatch
 
@@ -1215,10 +1215,8 @@ def _core_profile_gaps() -> list[dict]:
 
 class TailorAgent:
     def __init__(self) -> None:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
+        if not os.getenv("ANTHROPIC_API_KEY"):
             raise ValueError("ANTHROPIC_API_KEY not set")
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
 
     async def tailor(
         self,
@@ -1341,15 +1339,16 @@ class TailorAgent:
             bool(supplemental_answers),
         )
 
-        response = await self._client.messages.create(
+        result = await call_llm(
+            system=system,
+            messages=[{"role": "user", "content": user_msg}],
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
             temperature=0.0,
-            system=system,
-            messages=[{"role": "user", "content": user_msg}],
+            purpose="tailor_cv",
         )
 
-        raw = response.content[0].text.strip()
+        raw = result.text.strip()
 
         # ── Robust JSON extraction ────────────────────────────────────────────
         # The model occasionally wraps its output in markdown fences or prepends
@@ -1462,15 +1461,16 @@ class TailorAgent:
             "Use plain, direct verbs: led, built, managed, ran, used, drove, coordinated."
         )
 
-        response = await self._client.messages.create(
+        result = await call_llm(
+            system      = refine_system,
+            messages    = [{"role": "user", "content": refine_prompt}],
             model       = _MODEL,
             max_tokens  = _MAX_TOKENS,
             temperature = 0.15,
-            system      = refine_system,
-            messages    = [{"role": "user", "content": refine_prompt}],
+            purpose     = "tailor_refine",
         )
 
-        raw = response.content[0].text.strip()
+        raw = result.text.strip()
 
         # Same JSON extraction as tailor()
         if raw.startswith("```json"):

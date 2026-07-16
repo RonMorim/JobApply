@@ -27,8 +27,9 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-import anthropic
 from dotenv import load_dotenv
+
+from backend.services.llm_client import call_llm
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
 
@@ -79,10 +80,8 @@ class TruthCheckAgent:
     """
 
     def __init__(self) -> None:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
+        if not os.environ.get("ANTHROPIC_API_KEY"):
             raise EnvironmentError("ANTHROPIC_API_KEY is not set")
-        self._client = anthropic.Anthropic(api_key=api_key)
 
     async def chat_turn(
         self,
@@ -156,18 +155,19 @@ Concluding failed:
             elif role == "user":
                 messages.append({"role": "user", "content": entry.get("content", "")})
 
-        response = self._client.messages.create(
-            model      = _MODEL,
-            max_tokens = _MAX_TOKENS,
+        result = await call_llm(
             system     = system,
             messages   = messages,
+            model      = _MODEL,
+            max_tokens = _MAX_TOKENS,
+            purpose    = "truth_check_chat_turn",
         )
 
-        raw_text = response.content[0].text
+        raw_text = result.text
         try:
             data = json.loads(_strip_fences(raw_text))
         except json.JSONDecodeError as exc:
-            logger.error("[TruthCheckAgent] JSON parse failed: %s — raw: %r", exc, raw_text[:200])
+            logger.error("[TruthCheckAgent] JSON parse failed: %s (raw_len=%d)", exc, len(raw_text))
             raise ValueError(f"Agent returned unparseable JSON: {exc}") from exc
 
         data["raw"] = raw_text   # attach so frontend can store it for next turn
