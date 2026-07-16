@@ -72,6 +72,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, ValidationError
 
 from backend.agents.jd_parser import JDParserAgent
+from backend.services.llm_client import call_llm, LLMCallError
 
 logger = logging.getLogger(__name__)
 
@@ -1272,6 +1273,8 @@ async def _llm_dual_score(
     jd_text: str,
     job_title: str = "",
     company_name: str = "",
+    user_id: Optional[str] = None,
+    job_id: Optional[str] = None,
 ) -> tuple[float, float, str, list[str]]:
     """
     Single claude-haiku-4-5 call returning
@@ -1285,8 +1288,6 @@ async def _llm_dual_score(
     Falls back to (60.0, 60.0, "", []) on any API, parse, or validation error
     so the composite still gets a reasonable score and the pipeline never crashes.
     """
-    import anthropic
-
     _FALLBACK: tuple[float, float, str, list[str]] = (60.0, 60.0, "", [])
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -1366,18 +1367,20 @@ async def _llm_dual_score(
         job_title, company_name, len(jd_text), len(prompt),
     )
     try:
-        client  = anthropic.AsyncAnthropic(api_key=api_key)
-        message = await client.messages.create(
+        result_llm = await call_llm(
             model       = "claude-haiku-4-5-20251001",
             max_tokens  = 450,   # headroom for why_ron + missing_critical_capabilities list
             temperature = 0.0,   # deterministic — same input → same output every time
             system      = _LLM_SYSTEM_SCORER,
             messages    = [{"role": "user", "content": prompt}],
+            purpose     = "match_score_dual_score",
+            user_id     = user_id,
+            job_id      = job_id,
         )
-        raw = message.content[0].text.strip()
+        raw = result_llm.text.strip()
         logger.debug(
-            "match_score LLM: raw response for title='%s': %r",
-            job_title, raw[:300],
+            "match_score LLM: raw response received for title='%s' (len=%d)",
+            job_title, len(raw),
         )
 
         # Strip optional markdown fences
@@ -1418,8 +1421,14 @@ async def _llm_dual_score(
 
     except json.JSONDecodeError as exc:
         logger.warning(
-            "match_score LLM: JSON parse failed for title='%s' (%s) — raw=%r — using fallback 60",
-            job_title, exc, raw[:300] if 'raw' in dir() else '<no raw>',
+            "match_score LLM: JSON parse failed for title='%s' (%s) — raw_len=%d — using fallback 60",
+            job_title, exc, len(raw) if 'raw' in dir() else -1,
+        )
+        return _FALLBACK
+    except LLMCallError as exc:
+        logger.warning(
+            "match_score LLM: LLM call failed for title='%s': %s",
+            job_title, exc,
         )
         return _FALLBACK
     except Exception as exc:
@@ -1922,7 +1931,8 @@ async def compute_match_score_async(
 
     # LLM dual scorer (single haiku call, temperature=0.0, Pydantic-validated)
     semantic, management, why_ron, missing_caps = await _llm_dual_score(
-        cv_data, jd_text, inferred_title, company_name
+        cv_data, jd_text, inferred_title, company_name,
+        user_id=user_id, job_id=job_id,
     )
 
     # ATS Match Engine — None ⇒ degrade gracefully to the pure LLM composite.
