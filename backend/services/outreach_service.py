@@ -30,9 +30,9 @@ from backend.utilities.ai_scrubber import clean_ai_text
 from pathlib import Path
 from typing import Literal
 
-import anthropic
 from dotenv import load_dotenv
 
+from backend.services.llm_client import call_llm
 from backend.services.user_profile import USER_PROFILE, build_full_text
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
 import backend.services.job_store as job_store
@@ -139,7 +139,7 @@ TASK — Write a LinkedIn HEADHUNTER message:
 
 # ── Core generation function ──────────────────────────────────────────────────
 
-def generate_outreach_message(
+async def generate_outreach_message(
     *,
     message_type:   MessageType,
     target_name:    str,
@@ -165,7 +165,6 @@ def generate_outreach_message(
     -------
     str — the ready-to-send message text.
     """
-    client  = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
     profile = build_full_text(user_id)
 
     # Build job context for escalation messages
@@ -215,14 +214,17 @@ def generate_outreach_message(
             target_company = target_company,
         )
 
-    response = client.messages.create(
-        model      = _MODEL,
-        max_tokens = _MAX_TOKENS,
+    result = await call_llm(
         system     = harden_system_prompt(_SYSTEM),
         messages   = [{"role": "user", "content": user_prompt}],
+        model      = _MODEL,
+        max_tokens = _MAX_TOKENS,
+        purpose    = "outreach_message",
+        user_id    = user_id,
+        job_id     = job_id,
     )
 
-    message = clean_ai_text(response.content[0].text).strip()
+    message = clean_ai_text(result.text).strip()
     logger.info(
         "[OutreachService] Generated %s message for %s @ %s (%d chars)",
         message_type, target_name, target_company, len(message),
@@ -290,7 +292,7 @@ def _candidate_material(job_id: str, user_id: str) -> str:
     return "MASTER PROFILE:\n" + build_full_text(user_id)
 
 
-def generate_outreach(job_id: str, user_id: str) -> str:
+async def generate_outreach(job_id: str, user_id: str) -> str:
     """
     Generate — and persist — a hiring-manager outreach message for one job.
 
@@ -316,18 +318,19 @@ def generate_outreach(job_id: str, user_id: str) -> str:
         candidate_material = sanitize_text(_candidate_material(job_id, user_id)),
     )
 
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key:
+    if not os.getenv("ANTHROPIC_API_KEY", ""):
         raise RuntimeError("ANTHROPIC_API_KEY is not set.")
 
-    client   = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model      = _MODEL,
-        max_tokens = _MAX_TOKENS,
+    result = await call_llm(
         system     = harden_system_prompt(_OUTREACH_SYSTEM),
         messages   = [{"role": "user", "content": user_prompt}],
+        model      = _MODEL,
+        max_tokens = _MAX_TOKENS,
+        purpose    = "outreach_generate",
+        user_id    = user_id,
+        job_id     = job_id,
     )
-    message = clean_ai_text(response.content[0].text).strip()
+    message = clean_ai_text(result.text).strip()
 
     # Persist before returning so it survives reloads (tenancy-scoped write).
     job_store.save_outreach_text(job_id, user_id, message)
@@ -361,7 +364,7 @@ CANDIDATE PROFILE:
 {candidate_material}"""
 
 
-def generate_pitch_from_raw(posting: RawJobPosting, user_profile: str) -> str:
+async def generate_pitch_from_raw(posting: RawJobPosting, user_profile: str) -> str:
     """
     Generate a direct pitch for recruiters based on unpersisted raw job data
     and a candidate's profile.
@@ -374,16 +377,15 @@ def generate_pitch_from_raw(posting: RawJobPosting, user_profile: str) -> str:
         candidate_material = sanitize_text(user_profile),
     )
 
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key:
+    if not os.getenv("ANTHROPIC_API_KEY", ""):
         raise RuntimeError("ANTHROPIC_API_KEY is not set.")
 
-    client   = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model      = _MODEL,
-        max_tokens = _MAX_TOKENS,
+    result = await call_llm(
         system     = harden_system_prompt(_PITCH_SYSTEM),
         messages   = [{"role": "user", "content": user_prompt}],
+        model      = _MODEL,
+        max_tokens = _MAX_TOKENS,
+        purpose    = "outreach_pitch_from_raw",
     )
-    
-    return clean_ai_text(response.content[0].text).strip()
+
+    return clean_ai_text(result.text).strip()
