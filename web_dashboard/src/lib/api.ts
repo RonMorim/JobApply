@@ -647,8 +647,22 @@ export interface GmailVerificationCodeResponse {
   captured_at: string | null
 }
 
+/** Thrown by fetchGmailVerificationCode() specifically on a 403 (admin-only
+ * endpoint, caller is not an admin) so pollers can stop retrying instead of
+ * treating it like a transient network error. */
+export class GmailCodeForbiddenError extends Error {}
+
 export async function fetchGmailVerificationCode(): Promise<GmailVerificationCodeResponse> {
-  return get<GmailVerificationCodeResponse>('/api/settings/gmail-verification-code')
+  await ensureFreshToken()
+  const res = await fetch(`${BASE}/api/settings/gmail-verification-code`, {
+    cache:   'no-store',
+    headers: getAuthHeaders(),
+  })
+  if (res.status === 403) {
+    throw new GmailCodeForbiddenError('Admin access required for gmail-verification-code.')
+  }
+  if (!res.ok) await _handleHttpError(res, '/api/settings/gmail-verification-code')
+  return res.json() as Promise<GmailVerificationCodeResponse>
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
