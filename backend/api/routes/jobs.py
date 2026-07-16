@@ -1306,7 +1306,7 @@ async def get_ats_keywords(job_id: str, user: CurrentUser = Depends(get_current_
     from backend.services.ats_keyword_service import extract_ats_keywords
 
     try:
-        result = extract_ats_keywords(job_id, user.user_id)
+        result = await extract_ats_keywords(job_id, user.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

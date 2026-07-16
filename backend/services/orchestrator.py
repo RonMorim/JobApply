@@ -64,10 +64,10 @@ async def draft_recruiter_reply(user_id: str, job_id: str, email_text: str) -> s
     import uuid
     from datetime import datetime, timezone
 
-    import anthropic
     from sqlalchemy.orm import Session
 
     from backend.services.db import ENGINE, JobRow, RecruiterReplyDraftRow
+    from backend.services.llm_client import call_llm
     from backend.services.llm_validation import harden_system_prompt, sanitize_text
 
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
@@ -109,15 +109,20 @@ async def draft_recruiter_reply(user_id: str, job_id: str, email_text: str) -> s
     )
 
     try:
-        client   = anthropic.AsyncAnthropic(api_key=api_key)
-        response = await client.messages.create(
-            model      = _REPLY_MODEL,
-            max_tokens = _REPLY_MAX_TOKENS,
+        result_llm = await call_llm(
             system     = harden_system_prompt(_REPLY_SYSTEM_PROMPT),
             messages   = [{"role": "user", "content": user_prompt}],
+            model      = _REPLY_MODEL,
+            max_tokens = _REPLY_MAX_TOKENS,
+            purpose    = "reply_draft",
+            user_id    = user_id,
+            job_id     = job_id,
         )
+        # .raw is the full anthropic.types.Message — preserved so the
+        # multi-block join below (not just the first block) still works
+        # exactly as it did with the direct SDK call.
         draft_text = "".join(
-            block.text for block in response.content if block.type == "text"
+            block.text for block in result_llm.raw.content if block.type == "text"
         ).strip()
     except Exception:
         logger.exception("[reply-draft] LLM call failed for user=%s job=%s", user_id, job_id)

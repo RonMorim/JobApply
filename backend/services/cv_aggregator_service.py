@@ -41,13 +41,13 @@ from __future__ import annotations
 import io
 import json
 import logging
-import os
 import re
 from datetime import date
 from pathlib import Path
 
-import anthropic
 from dotenv import load_dotenv
+
+from backend.services.llm_client import call_llm
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 logger = logging.getLogger(__name__)
@@ -388,7 +388,7 @@ Extract and aggregate the structured cv_claims JSON now.
 """
 
 
-def aggregate_cv_claims(texts: list[str], user_id: str = "default") -> dict:
+async def aggregate_cv_claims(texts: list[str], user_id: str = "default") -> dict:
     """
     Pass combined CV text through the LLM aggregator.
 
@@ -411,14 +411,15 @@ def aggregate_cv_claims(texts: list[str], user_id: str = "default") -> dict:
     )
 
     try:
-        client   = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-        response = client.messages.create(
-            model      = _MODEL,
-            max_tokens = _MAX_TOKENS,
+        result_llm = await call_llm(
             system     = _AGGREGATION_SYSTEM,
             messages   = [{"role": "user", "content": user_prompt}],
+            model      = _MODEL,
+            max_tokens = _MAX_TOKENS,
+            purpose    = "cv_aggregate_claims",
+            user_id    = user_id,
         )
-        raw    = response.content[0].text.strip()
+        raw    = result_llm.text.strip()
         claims = _parse_json(raw)
         # Apply the Date-Anchor Overrides Text rule as a deterministic
         # post-processing pass — catches any inflation the LLM missed.

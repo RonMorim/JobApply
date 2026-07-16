@@ -607,7 +607,7 @@ async def upload_cv_files(
     # ── Mode A: Full CV ingestion pipeline ────────────────────────────────────
 
     # Phase 2: Aggregate via LLM
-    cv_claims = aggregate_cv_claims(texts, user_id=user.user_id)
+    cv_claims = await aggregate_cv_claims(texts, user_id=user.user_id)
 
     # Phase 3: Persist cv_claims to profile JSON + master_profiles table
     profile = user_load(user.user_id)
@@ -1164,7 +1164,7 @@ async def upload_verification_document(
 
     # Verify
     try:
-        result = verify_document(
+        result = await verify_document(
             file_content  = content,
             filename      = fname,
             claim         = claim,

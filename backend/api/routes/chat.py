@@ -978,6 +978,7 @@ def _ingest_cv_from_chat(user_id: str, item: AttachmentItem) -> None:
 
     Errors are logged but never re-raised — this is fire-and-forget.
     """
+    import asyncio
     import base64
     from datetime import datetime, timezone
 
@@ -1006,7 +1007,20 @@ def _ingest_cv_from_chat(user_id: str, item: AttachmentItem) -> None:
             return
 
         # Step 3 — LLM entity extraction
-        cv_claims = aggregate_cv_claims([text], user_id=user_id)
+        #
+        # asyncio.run() is safe here ONLY because _ingest_cv_from_chat is a
+        # plain `def` (not `async def`) reached exclusively via
+        # background.add_task(_ingest_cv_from_chat, ...) in ariel_private()
+        # below — confirmed by grep, this is its one and only call site in
+        # the codebase. Starlette's BackgroundTasks dispatches a sync
+        # callable through run_in_threadpool(), which is anyio.to_thread.run_sync()
+        # under the hood — a genuine separate OS thread with no asyncio event
+        # loop running in it. asyncio.run() would raise "cannot be called
+        # from a running event loop" if this function were ever awaited
+        # directly from async code instead; if this function's call site or
+        # signature ever changes, re-verify that invariant before relying on
+        # asyncio.run() again.
+        cv_claims = asyncio.run(aggregate_cv_claims([text], user_id=user_id))
 
         # Step 4 — persist cv_claims to profile JSON + master_profiles table
         profile = user_load(user_id)

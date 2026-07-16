@@ -31,16 +31,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 from dotenv import load_dotenv
 
 import backend.services.job_store as job_store
 from backend.services.db import ENGINE, JobRow
+from backend.services.llm_client import call_llm
 from sqlalchemy.orm import Session
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
@@ -138,7 +137,7 @@ def _extract_json(raw: str) -> dict:
 
 # ── Main extraction function ──────────────────────────────────────────────────
 
-def extract_ats_keywords(job_id: str, user_id: str) -> dict:
+async def extract_ats_keywords(job_id: str, user_id: str) -> dict:
     """
     Extract ATS keywords for a job and return a {present, missing, jd_keywords} dict.
 
@@ -176,15 +175,17 @@ def extract_ats_keywords(job_id: str, user_id: str) -> dict:
     )
 
     # ── Call Haiku ────────────────────────────────────────────────────────────
-    client   = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-    response = client.messages.create(
-        model      = _MODEL,
-        max_tokens = _MAX_TOKENS,
+    result_llm = await call_llm(
         system     = _SYSTEM,
         messages   = [{"role": "user", "content": user_prompt}],
+        model      = _MODEL,
+        max_tokens = _MAX_TOKENS,
+        purpose    = "ats_keyword_extraction",
+        user_id    = user_id,
+        job_id     = job_id,
     )
 
-    raw    = response.content[0].text.strip()
+    raw    = result_llm.text.strip()
     result = _extract_json(raw)
 
     # Normalise keys and ensure lists
