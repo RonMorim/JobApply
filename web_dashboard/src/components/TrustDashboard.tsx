@@ -592,38 +592,60 @@ function EntityTrustRow({
         />
       )}
 
-      {/* ── Clickable header ─────────────────────────────────────────────── */}
+      {/* ── Clickable header ─────────────────────────────────────────────────
+          Mobile (<sm): stacked — [type chip + name + chevron] / [progress bar]
+          / [action buttons, wrapping]. The 160px/140px min-widths below were
+          forcing a ~300px+ floor on a single un-wrapped row, overflowing any
+          375–428px viewport. At sm: and up this reverts to the original
+          single-row layout byte-for-byte (same flex-[2]/flex-[3]/min-w values). */}
       <div
         role="button"
         aria-expanded={open}
         onClick={() => setOpen(v => !v)}
-        className={`group px-4 py-3.5 flex items-center gap-3 cursor-pointer select-none transition-colors ${
+        className={`group px-4 py-3.5 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-3 cursor-pointer select-none transition-colors ${
           open ? 'bg-slate-50/60' : 'hover:bg-slate-50/60'
         }`}
       >
-        <EntityTypeChip type={entity.entity_type} />
+        {/* Type chip + name + mobile-only chevron — one row on every breakpoint */}
+        <div className="flex items-center gap-2 min-w-0 sm:contents">
+          <EntityTypeChip type={entity.entity_type} />
 
-        {/* Name — fixed min-width so it never collapses; grows to fill available space */}
-        <span className="text-[13px] font-semibold text-slate-800 min-w-[160px] flex-[2] overflow-hidden text-ellipsis whitespace-nowrap">
-          {entity.name}
-        </span>
+          {/* Name — fixed min-width at sm: so it never collapses there; on
+              mobile it just fills the row and truncates naturally. */}
+          <span className="flex-1 min-w-0 sm:min-w-[160px] sm:flex-[2] text-[13px] font-semibold text-slate-800 overflow-hidden text-ellipsis whitespace-nowrap">
+            {entity.name}
+          </span>
 
-        {/* Progress bar — fixed width so it doesn't steal space from the name */}
-        <div className="flex-[3] min-w-[140px] max-w-[340px]">
+          {/* Chevron — inline here on mobile (end of the header row); the
+              sm:+ chevron is a separate element at the end of the flex row,
+              matching the original desktop position. */}
+          <span className="sm:hidden shrink-0 text-slate-300 transition-colors group-hover:text-slate-500">
+            <ChevronDown s={13} flipped={open} />
+          </span>
+        </div>
+
+        {/* Progress bar — fixed width at sm: so it doesn't steal space from
+            the name; full-width on its own row on mobile. */}
+        <div className="sm:flex-[3] sm:min-w-[140px] sm:max-w-[340px]">
           <ProgressBar
             score={entity.confidence_score}
             verificationLevel={entity.verification_level}
           />
         </div>
 
-        {/* Action buttons — stop propagation so they don't toggle the accordion */}
-        <div className="flex items-center gap-1.5 shrink-0 min-w-0" onClick={e => e.stopPropagation()}>
+        {/* Action buttons — stop propagation so they don't toggle the accordion.
+            44px tall on mobile (touch target minimum), wrapping if all three
+            show at once; 28px/nowrap at sm: and up, matching the original. */}
+        <div
+          className="flex items-center gap-2 flex-wrap sm:flex-nowrap sm:gap-1.5 sm:shrink-0 sm:min-w-0"
+          onClick={e => e.stopPropagation()}
+        >
           {/* Verify — shown for all unverified skills; amber styling signals urgency */}
           {entity.verification_level !== 'VERIFIED_MANUAL' && (
             <button
               onClick={() => onManualVerify(entity)}
               title="Manual verification required to unlock full score"
-              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg text-[11px] font-semibold transition active:scale-[0.97]"
+              className="inline-flex items-center gap-1 h-11 sm:h-7 px-2.5 rounded-lg text-[11px] font-semibold transition active:scale-[0.97]"
               style={{
                 background: 'oklch(0.93 0.12 50)',
                 color:      'oklch(0.40 0.20 30)',
@@ -641,7 +663,7 @@ function EntityTrustRow({
               onClick={() => onProbe(entity)}
               disabled={probing}
               title="Start a STAR behavioral probe to strengthen this skill's evidence"
-              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg text-[11px] font-semibold transition active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-1 h-11 sm:h-7 px-2.5 rounded-lg text-[11px] font-semibold transition active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed"
               style={{
                 background: TOKENS.color.primarySoft,
                 color:      TOKENS.color.primary,
@@ -656,7 +678,7 @@ function EntityTrustRow({
             <button
               onClick={() => onReview(entity)}
               title="View why this entity was flagged and re-submit evidence"
-              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg text-[11px] font-semibold transition active:scale-[0.97]"
+              className="inline-flex items-center gap-1 h-11 sm:h-7 px-2.5 rounded-lg text-[11px] font-semibold transition active:scale-[0.97]"
               style={{
                 background: 'oklch(0.96 0.06 60)',
                 color:      'oklch(0.40 0.12 50)',
@@ -669,7 +691,8 @@ function EntityTrustRow({
           )}
         </div>
 
-        <span className="shrink-0 text-slate-300 transition-colors group-hover:text-slate-500">
+        {/* Chevron — sm:+ only; positioned at the end of the row, same as before */}
+        <span className="hidden sm:inline-flex shrink-0 text-slate-300 transition-colors group-hover:text-slate-500">
           <ChevronDown s={13} flipped={open} />
         </span>
       </div>
