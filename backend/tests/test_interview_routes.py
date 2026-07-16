@@ -10,7 +10,7 @@ Strategy mirrors test_outreach_service.py's TestDirectPitchEndpoint:
   • Patch the interview_simulator functions (their own behavior is covered by
     test_interview_simulator.py) — no real LLM calls.
 """
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 from fastapi.testclient import TestClient
 
@@ -68,7 +68,7 @@ class TestInterviewEndpoints:
         try:
             with patch("backend.api.routes.jobs.job_store.get_by_id", return_value=_fake_job()), \
                  patch("backend.services.interview_simulator.generate_interview_question",
-                       return_value="How have you used SQL to drive a product decision?") as mock_gen:
+                       new=AsyncMock(return_value="How have you used SQL to drive a product decision?")) as mock_gen:
                 res = client.post("/api/jobs/job-123/interview/question")
 
             assert res.status_code == 200
@@ -109,7 +109,7 @@ class TestInterviewEndpoints:
         try:
             with patch("backend.api.routes.jobs.job_store.get_by_id", return_value=_fake_job()), \
                  patch("backend.services.interview_simulator.generate_interview_question",
-                       return_value="API Key missing. Unable to generate question."):
+                       new=AsyncMock(return_value="API Key missing. Unable to generate question.")):
                 res = client.post("/api/jobs/job-123/interview/question")
             assert res.status_code == 503
         finally:
@@ -120,7 +120,7 @@ class TestInterviewEndpoints:
         try:
             with patch("backend.api.routes.jobs.job_store.get_by_id", return_value=_fake_job()), \
                  patch("backend.services.interview_simulator.generate_interview_question",
-                       return_value="Failed to generate interview question."):
+                       new=AsyncMock(return_value="Failed to generate interview question.")):
                 res = client.post("/api/jobs/job-123/interview/question")
             assert res.status_code == 502
         finally:
@@ -133,7 +133,7 @@ class TestInterviewEndpoints:
         try:
             with patch("backend.api.routes.jobs.job_store.get_by_id", return_value=_fake_job()), \
                  patch("backend.services.interview_simulator.evaluate_interview_answer",
-                       return_value="Strong on process; quantify the outcome next time.") as mock_eval:
+                       new=AsyncMock(return_value="Strong on process; quantify the outcome next time.")) as mock_eval:
                 res = client.post("/api/jobs/job-123/interview/answer", json={
                     "question": "How have you used SQL?",
                     "answer":   "I built retention dashboards querying Postgres directly.",

@@ -77,6 +77,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
+from backend.services.llm_client import call_llm
+
 logger = logging.getLogger(__name__)
 
 _CULTURE_MODEL   = "claude-haiku-4-5-20251001"
@@ -439,16 +441,15 @@ class CompanyCultureAgent:
         )
 
         try:
-            import anthropic
-            client  = anthropic.AsyncAnthropic(api_key=api_key)
-            message = await client.messages.create(
+            result  = await call_llm(
+                system      = _CULTURE_SYSTEM,
+                messages    = [{"role": "user", "content": prompt}],
                 model       = self.model,
                 max_tokens  = _MAX_TOKENS,
                 temperature = 0.0,
-                system      = _CULTURE_SYSTEM,
-                messages    = [{"role": "user", "content": prompt}],
+                purpose     = "company_culture_analyze",
             )
-            raw     = message.content[0].text.strip()
+            raw     = result.text.strip()
             payload = _extract_json(raw)
             _LLMCulturePayload.model_validate(payload)   # strict schema gate
             profile = build_profile_from_payload(company_name, payload, source_hint)

@@ -1,12 +1,10 @@
 import json
 import logging
-import os
 from dataclasses import dataclass
 from typing import Optional
 
-import anthropic
-
 from backend.agents.profile_analyzer import _parse_json
+from backend.services.llm_client import call_llm
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +50,6 @@ class ParsedJD:
 class JDParserAgent:
     def __init__(self, model: str = "claude-sonnet-4-6"):
         self.model = model
-        self._client = anthropic.AsyncAnthropic(
-            api_key=os.getenv("ANTHROPIC_API_KEY")
-        )
 
     async def parse_and_format_jd(self, raw_jd_text: str) -> ParsedJD:
         """
@@ -67,13 +62,14 @@ class JDParserAgent:
         user_message = f"Raw Job Description:\n{raw_jd_text}\n\nReturn the JSON object now."
 
         try:
-            message = await self._client.messages.create(
-                model=self.model,
-                max_tokens=1024,
+            result = await call_llm(
                 system=_JD_PARSER_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
+                model=self.model,
+                max_tokens=1024,
+                purpose="jd_parser_parse_and_format",
             )
-            payload = _parse_json(message.content[0].text)
+            payload = _parse_json(result.text)
             
             # Format output without artificial padding
             formatted_lines = []

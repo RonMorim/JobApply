@@ -1345,7 +1345,7 @@ async def get_skills_gap(job_id: str, user: CurrentUser = Depends(get_current_us
         from backend.services.skills_gap_service import analyze_skills_gap
         from backend.services.user_profile import build_full_text
 
-        analysis = analyze_skills_gap(jd_text, build_full_text(user.user_id))
+        analysis = await analyze_skills_gap(jd_text, build_full_text(user.user_id))
     except Exception as exc:
         logger.exception("[skills-gap] Failed for job_id=%s: %s", job_id, exc)
         raise HTTPException(status_code=500, detail="Skills gap analysis failed")
@@ -1410,8 +1410,6 @@ async def generate_mock_interview_question(
     the JD, the candidate's profile, and their known gaps for the role
     (stored negative reason tags + critical gaps — no extra LLM call).
     """
-    from fastapi.concurrency import run_in_threadpool
-
     from backend.services.interview_simulator import generate_interview_question
     from backend.services.user_profile import build_full_text
 
@@ -1423,8 +1421,8 @@ async def generate_mock_interview_question(
     skills_gap = "; ".join(dict.fromkeys(p.strip() for p in gap_parts if p.strip())) or "(none identified)"
 
     try:
-        question = await run_in_threadpool(
-            generate_interview_question, jd_text, build_full_text(user.user_id), skills_gap,
+        question = await generate_interview_question(
+            jd_text, build_full_text(user.user_id), skills_gap,
         )
     except Exception as exc:
         logger.exception("[interview] question generation failed for job_id=%s: %s", job_id, exc)
@@ -1445,15 +1443,13 @@ async def evaluate_mock_interview_answer(
     user:   CurrentUser = Depends(get_current_user),
 ) -> InterviewFeedbackResponse:
     """Evaluate the candidate's answer to a mock-interview question for this job."""
-    from fastapi.concurrency import run_in_threadpool
-
     from backend.services.interview_simulator import evaluate_interview_answer
 
     _job, jd_text = _interview_job_context(job_id, user.user_id)
 
     try:
-        feedback = await run_in_threadpool(
-            evaluate_interview_answer, body.question, body.answer, jd_text,
+        feedback = await evaluate_interview_answer(
+            body.question, body.answer, jd_text,
         )
     except Exception as exc:
         logger.exception("[interview] answer evaluation failed for job_id=%s: %s", job_id, exc)

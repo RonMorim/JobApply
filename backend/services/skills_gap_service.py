@@ -2,10 +2,10 @@ import logging
 import os
 from typing import Optional
 
-import anthropic
 from dotenv import load_dotenv
 
 from backend.utilities.ai_scrubber import clean_ai_text
+from backend.services.llm_client import call_llm
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
 
 # Load environment variables if needed
@@ -36,7 +36,7 @@ CANDIDATE PROFILE:
 {candidate_material}"""
 
 
-def analyze_skills_gap(jd_text: str, user_profile: str) -> str:
+async def analyze_skills_gap(jd_text: str, user_profile: str) -> str:
     """
     Compare a user's profile against a parsed job description to identify
     explicitly missing skills or experience gaps.
@@ -55,16 +55,16 @@ def analyze_skills_gap(jd_text: str, user_profile: str) -> str:
         return "Error: Missing API Key"
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS,
+        result = await call_llm(
             system=harden_system_prompt(_GAP_SYSTEM),
             messages=[{"role": "user", "content": user_prompt}],
+            model=_MODEL,
+            max_tokens=_MAX_TOKENS,
             temperature=0.0,
+            purpose="skills_gap_analyze",
         )
-        
-        raw_text = response.content[0].text
+
+        raw_text = result.text
         # Scrubber handles generic AI tells
         return clean_ai_text(raw_text).strip()
     except Exception as e:
