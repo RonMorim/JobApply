@@ -442,7 +442,7 @@ async def fetch_single_jd(
     structured_json: Optional[str] = None
     try:
         from backend.services.jd_structure_service import structure_jd, extract_company_from_structured
-        structured_json = await asyncio.to_thread(structure_jd, jd_text)
+        structured_json = await structure_jd(jd_text, user_id=user.user_id, job_id=job_id)
         if structured_json:
             job_store.update_jd_structured(job_id, structured_json)
             extracted_company = extract_company_from_structured(structured_json)
@@ -882,7 +882,7 @@ async def analyze_job(
     # ── 4. JD structuring ─────────────────────────────────────────────────────
     try:
         from backend.services.jd_structure_service import structure_jd, extract_company_from_structured
-        structured_json = await asyncio.to_thread(structure_jd, jd_text)
+        structured_json = await structure_jd(jd_text, user_id=user.user_id, job_id=match.job_id)
     except Exception as exc:
         logger.error("[analyze] PIPELINE_FAILURE step=structure url=%s error=%r", url, exc, exc_info=True)
         raise HTTPException(status_code=422, detail="Structure Failed. Please try again shortly.")

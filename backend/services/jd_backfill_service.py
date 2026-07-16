@@ -96,7 +96,7 @@ async def backfill_jd_text(
                 # Structure the JD via LLM so the job can satisfy the readiness gate.
                 structured_ok = False
                 try:
-                    structured = await asyncio.to_thread(jd_structure_service.structure_jd, text)
+                    structured = await jd_structure_service.structure_jd(text, user_id=user_id, job_id=job.job_id)
                     if structured:
                         job_store.update_jd_structured(job.job_id, structured)
                         structured_ok = True
