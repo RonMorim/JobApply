@@ -602,8 +602,9 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
     Uses claude-haiku for fast, cheap text edits.
     Returns updated sections + a one-sentence confirmation message.
     """
-    import os, json as _json, re as _re, anthropic
+    import os, json as _json, re as _re
 
+    from backend.services.llm_client import call_llm, LLMCallError
     from backend.services.llm_validation import harden_system_prompt, sanitize_text
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -619,19 +620,21 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
         f"INSTRUCTION: {sanitize_text(body.instruction)}"
     )
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
     try:
-        response = await client.messages.create(
-            model      = "claude-haiku-4-5",
-            max_tokens = 2000,
+        result_llm = await call_llm(
             system     = harden_system_prompt(_COPILOT_SYSTEM),
             messages   = [{"role": "user", "content": user_msg}],
+            model      = "claude-haiku-4-5",
+            max_tokens = 2000,
+            purpose    = "jobs_tailor_cv_edit",
+            user_id    = user.user_id,
+            job_id     = job_id,
         )
-    except anthropic.APIError as exc:
-        logger.error("[jobs] Anthropic API error: %s", exc)
+    except LLMCallError:
+        logger.exception("[jobs] tailor_cv_edit LLM call failed")
         raise HTTPException(status_code=422, detail="AI service error. Please try again shortly.")
 
-    raw = response.content[0].text if response.content else ""
+    raw = result_llm.text
 
     # Extract JSON — strip fences if model misbehaves
     text = _re.sub(r"```(?:json)?", "", raw).strip()
@@ -642,7 +645,7 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
         if start != -1 and end > start:
             data = _json.loads(text[start : end + 1])
         else:
-            logger.error("[tailor-cv/edit] Unparseable response: %s", raw[:300])
+            logger.error("[tailor-cv/edit] Unparseable response (len=%d)", len(raw))
             raise HTTPException(status_code=422, detail="Model returned unparseable output.")
 
     updated_sections = [TailoredSection(**s) for s in data.get("sections", [])]

@@ -408,7 +408,7 @@ async def update_profile_from_interaction(
 
     try:
         import os
-        import anthropic as _anthropic
+        from backend.services.llm_client import call_llm
 
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
@@ -439,14 +439,15 @@ async def update_profile_from_interaction(
             "Return ONLY the JSON object. If no concrete facts were stated, return {}."
         )
 
-        client = _anthropic.AsyncAnthropic(api_key=api_key)
-        message = await client.messages.create(
+        result = await call_llm(
+            messages    = [{"role": "user", "content": prompt}],
             model       = "claude-haiku-4-5-20251001",
             max_tokens  = 400,
             temperature = 0.0,
-            messages    = [{"role": "user", "content": prompt}],
+            purpose     = "master_profile_update_from_interaction",
+            user_id     = user_id,
         )
-        raw = message.content[0].text.strip()
+        raw = result.text.strip()
         if raw.startswith("```"):
             raw_lines = raw.splitlines()
             raw = "\n".join(raw_lines[1:-1] if raw_lines[-1].strip() == "```" else raw_lines[1:])
@@ -718,17 +719,21 @@ async def extract_user_persona(user_id: str, force_refresh: bool = False) -> dic
         return None
 
     import re as _re
-    import anthropic as _anthropic
+    from backend.services.llm_client import call_llm
 
     try:
-        client = _anthropic.AsyncAnthropic(api_key=api_key)
-        response = await client.messages.create(
-            model      = _PERSONA_MODEL,
-            max_tokens = 800,
+        result_llm = await call_llm(
             system     = _PERSONA_SYSTEM,
             messages   = [{"role": "user", "content": f"USER'S MESSAGES (newest sessions first):\n\n{corpus}"}],
+            model      = _PERSONA_MODEL,
+            max_tokens = 800,
+            purpose    = "master_profile_extract_persona",
+            user_id    = user_id,
         )
-        raw  = "".join(b.text for b in response.content if b.type == "text")
+        # .raw is the full anthropic.types.Message — preserved so the
+        # multi-block join below (not just the first block) still works
+        # exactly as it did with the direct SDK call.
+        raw  = "".join(b.text for b in result_llm.raw.content if b.type == "text")
         text = _re.sub(r"```(?:json)?", "", raw).strip()
         start, end = text.find("{"), text.rfind("}")
         data = json.loads(text[start:end + 1]) if (start != -1 and end > start) else json.loads(text)

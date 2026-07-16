@@ -33,18 +33,17 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
 from backend.services.db import ENGINE, ProfileInterviewRow
+from backend.services.llm_client import call_llm
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 logger = logging.getLogger(__name__)
@@ -453,7 +452,7 @@ Do not add any preamble or explanation — output only the message itself.
 """
 
 
-def _build_optimize_gaps_opening(
+async def _build_optimize_gaps_opening(
     first_name:       str,
     profile_snapshot: str,
 ) -> str:
@@ -463,19 +462,19 @@ def _build_optimize_gaps_opening(
     Uses haiku (fast, cheap) because this is a short, structured generation task.
     Falls back to a hard-coded message if the LLM call fails.
     """
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
     user_prompt = _OPTIMIZE_GAPS_OPENING_USER_TMPL.format(
         profile_snapshot = profile_snapshot,
         first_name       = first_name,
     )
     try:
-        response = client.messages.create(
-            model      = _EXTRACTOR_MODEL,    # haiku — sufficient for structured generation
-            max_tokens = _MAX_TOKENS_OPEN,
+        result = await call_llm(
             system     = _ARIEL_OPTIMIZE_GAPS_OPENING_SYSTEM,
             messages   = [{"role": "user", "content": user_prompt}],
+            model      = _EXTRACTOR_MODEL,    # haiku — sufficient for structured generation
+            max_tokens = _MAX_TOKENS_OPEN,
+            purpose    = "profile_interview_optimize_gaps_opening",
         )
-        return response.content[0].text.strip()
+        return result.text.strip()
     except Exception as exc:
         logger.error("[ProfileInterviewer] optimize_gaps opening LLM call failed: %s", exc)
         # Deterministic fallback that still follows the three-part structure
@@ -900,7 +899,7 @@ def _merge_confidence(existing: dict | None, delta: dict, draft: dict) -> dict:
 
 # ── Main interview functions ──────────────────────────────────────────────────
 
-def start_session(
+async def start_session(
     user_id:               str,
     user_name_override:    str | None = None,
     current_role_override: str | None = None,
@@ -932,7 +931,7 @@ def start_session(
     )
 
     if intent == "optimize_gaps":
-        opening = _build_optimize_gaps_opening(
+        opening = await _build_optimize_gaps_opening(
             first_name       = ctx["first_name"],
             profile_snapshot = ctx["profile_snapshot"],
         )
@@ -971,7 +970,7 @@ def start_session(
     }
 
 
-def process_message(session_id: str, user_text: str, user_id: str) -> dict:
+async def process_message(session_id: str, user_text: str, user_id: str) -> dict:
     """
     Process one user turn:
       1. Append the user message to history.
@@ -1004,8 +1003,6 @@ def process_message(session_id: str, user_text: str, user_id: str) -> dict:
     now = _now()
     messages.append({"role": "user", "content": user_text, "ts": now})
 
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-
     # ── Phase 1: Extractor ────────────────────────────────────────────────────
     history_snippet = "\n".join(
         f"{m['role'].upper()}: {m['content'][:200]}"
@@ -1018,13 +1015,15 @@ def process_message(session_id: str, user_text: str, user_id: str) -> dict:
     )
 
     try:
-        ext_response = client.messages.create(
-            model      = _EXTRACTOR_MODEL,
-            max_tokens = _MAX_TOKENS_EXT,
+        ext_result = await call_llm(
             system     = _EXTRACTOR_SYSTEM,
             messages   = [{"role": "user", "content": ext_prompt}],
+            model      = _EXTRACTOR_MODEL,
+            max_tokens = _MAX_TOKENS_EXT,
+            purpose    = "profile_interview_extractor",
+            user_id    = user_id,
         )
-        delta = _extract_json(ext_response.content[0].text)
+        delta = _extract_json(ext_result.text)
     except Exception as exc:
         logger.warning("[ProfileInterviewer] Extractor failed: %s — continuing with empty delta", exc)
         delta = {}
@@ -1069,13 +1068,15 @@ def process_message(session_id: str, user_text: str, user_id: str) -> dict:
         interview_messages.append({"role": m["role"], "content": m["content"]})
 
     try:
-        int_response = client.messages.create(
-            model      = _INTERVIEWER_MODEL,
-            max_tokens = _MAX_TOKENS_INT,
+        int_result = await call_llm(
             system     = int_prompt,
             messages   = interview_messages,
+            model      = _INTERVIEWER_MODEL,
+            max_tokens = _MAX_TOKENS_INT,
+            purpose    = "profile_interview_interviewer",
+            user_id    = user_id,
         )
-        agent_reply = int_response.content[0].text.strip()
+        agent_reply = int_result.text.strip()
     except Exception as exc:
         logger.error("[ProfileInterviewer] Interviewer failed: %s", exc)
         agent_reply = (
@@ -1155,7 +1156,7 @@ def get_session(session_id: str, user_id: str) -> dict:
         }
 
 
-def resume_session(session_id: str, user_id: str) -> dict:
+async def resume_session(session_id: str, user_id: str) -> dict:
     """
     Generate a context-aware "Resume & Status" message for a returning user,
     append it to the session history, persist it, and return the updated state.
@@ -1239,16 +1240,16 @@ def resume_session(session_id: str, user_id: str) -> dict:
     )
 
     # ── Call the interviewer model ────────────────────────────────────────────
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-
     try:
-        response = client.messages.create(
-            model      = _INTERVIEWER_MODEL,
-            max_tokens = _MAX_TOKENS_INT,
+        result = await call_llm(
             system     = _RESUME_SYSTEM,
             messages   = [{"role": "user", "content": context_block}],
+            model      = _INTERVIEWER_MODEL,
+            max_tokens = _MAX_TOKENS_INT,
+            purpose    = "profile_interview_resume",
+            user_id    = user_id,
         )
-        resume_msg = response.content[0].text.strip()
+        resume_msg = result.text.strip()
     except Exception as exc:
         logger.error("[ProfileInterviewer] resume_session LLM call failed: %s", exc)
         resume_msg = (
