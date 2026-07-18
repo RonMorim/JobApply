@@ -1823,11 +1823,8 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
 
   return (
     <div
-      className="grid items-center gap-x-4 px-5 py-3.5 rounded-xl bg-white border border-slate-100 hover:border-slate-200 hover:-translate-y-0.5 transition-all duration-200 ease-out group"
-      style={{
-        gridTemplateColumns: 'minmax(180px, 2fr) minmax(100px, 1fr) 90px 16px minmax(120px, 1fr) minmax(100px, 1fr)',
-        boxShadow: '0 1px 3px rgba(15,23,42,0.05)',
-      }}
+      className="flex flex-col gap-2.5 sm:grid sm:items-center sm:gap-x-4 sm:grid-cols-[minmax(180px,2fr)_minmax(100px,1fr)_90px_16px_minmax(120px,1fr)_minmax(100px,1fr)] px-5 py-3.5 rounded-xl bg-white border border-slate-100 hover:border-slate-200 hover:-translate-y-0.5 transition-all duration-200 ease-out group"
+      style={{ boxShadow: '0 1px 3px rgba(15,23,42,0.05)' }}
     >
       {/* ① Name + type (+ optional rank number) ───────────────────── */}
       <div className="flex items-center gap-2.5 overflow-hidden">
@@ -1836,7 +1833,7 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
             {rank}
           </span>
         )}
-        <div className="overflow-hidden">
+        <div className="overflow-hidden min-w-0">
           <p className="text-[14px] font-semibold text-slate-900 leading-tight overflow-hidden text-ellipsis whitespace-nowrap" title={entity.name}>
             {entity.name}
           </p>
@@ -1846,7 +1843,8 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
         </div>
       </div>
 
-      {/* ② Progress bar — premium rounded rail with gradient fill + glow ─ */}
+      {/* ② Progress bar — premium rounded rail with gradient fill + glow.
+          Already sm:+ only; simply doesn't render in the mobile stack. */}
       <div className="hidden sm:flex items-center w-full">
         <div
           className="w-full h-[7px] rounded-full bg-slate-100 overflow-hidden"
@@ -1865,7 +1863,7 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
       </div>
 
       {/* ③ Numeric score + confidence weight tooltip ───────────────── */}
-      <div className="flex items-center justify-end gap-1.5">
+      <div className="flex items-center gap-1.5 sm:justify-end">
         <span className="text-[13px] font-bold tabular-nums text-slate-700">{score}</span>
         <span className="text-[10.5px] text-slate-400">/100</span>
         <span
@@ -1885,8 +1883,8 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
         </span>
       </div>
 
-      {/* ④ Gap spacer — keeps columns aligned ───────────────────────── */}
-      <div />
+      {/* ④ Gap spacer — sm:+ grid alignment only; not needed in the mobile stack */}
+      <div className="hidden sm:block" />
 
       {/* ⑤ Status ───────────────────────────────────────────────────── */}
       <div className="overflow-hidden">
@@ -1909,13 +1907,14 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
         ) : null}
       </div>
 
-      {/* ⑥ Actions — fade in on hover AND keyboard focus ─────────────── */}
-      <div className="flex items-center gap-2 justify-end opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+      {/* ⑥ Actions — always visible + 44px tall on mobile (no hover on touch);
+          fades in on hover/focus only at sm: and up, matching the original. */}
+      <div className="flex items-center gap-2 flex-wrap justify-start sm:justify-end opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
         {showVerify && (
           <button
             onClick={() => onProbe(entity)}
             disabled={probing}
-            className="h-8 px-3.5 rounded-lg text-[12px] font-semibold text-white bg-ja-primary hover:bg-ja-primaryHover transition active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+            className="h-11 sm:h-8 px-3.5 rounded-lg text-[12px] font-semibold text-white bg-ja-primary hover:bg-ja-primaryHover transition active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
             {probing ? <SpinnerIcon s={12} /> : 'Verify Mastery'}
           </button>
@@ -1924,7 +1923,7 @@ function CapabilityRow({ entity, onVerify, onProbe, probing, rank }: CapabilityR
           <button
             onClick={() => onProbe(entity)}
             disabled={probing}
-            className="h-8 px-3.5 rounded-lg text-[12px] font-semibold text-slate-600 border border-slate-200 bg-white hover:bg-slate-50 transition active:scale-[0.97] disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+            className="h-11 sm:h-8 px-3.5 rounded-lg text-[12px] font-semibold text-slate-600 border border-slate-200 bg-white hover:bg-slate-50 transition active:scale-[0.97] disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
           >
             {probing ? <SpinnerIcon s={12} /> : 'Strengthen'}
           </button>
