@@ -168,6 +168,7 @@ export interface ApiFeedJob {
   status:                JobStatus
   user_id:               string
   is_direct_application: boolean | null
+  is_bulk_import:        boolean | null  // true if job_id is prefixed "li-bulk-" (LinkedIn Bulk Import CLI)
   apply_url:             string | null
   is_new:                boolean
   posted_at:             string

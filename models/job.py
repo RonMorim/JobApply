@@ -98,6 +98,12 @@ class JobMatch(BaseModel):
     score_is_proxy:       bool            = True
     # Derived at read-time by the feed endpoint; not stored in DB.
     is_direct_application: Optional[bool] = None
+    # True when this job came from the LinkedIn Bulk Import CLI pipeline
+    # (job_id prefixed "li-bulk-") rather than a live scraper run. Purely
+    # presentational — deliberately NOT source_type, so it never affects
+    # _source_rank()/cross-board dedup priority in job_store.py (JOB-92).
+    # Derived at read-time by the feed endpoint; not stored in DB.
+    is_bulk_import: Optional[bool] = None
     # True when a tailored CV has been generated and cached for this job.
     # Derived at read-time; not stored in DB.
     has_tailored_cv: bool = False
