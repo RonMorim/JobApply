@@ -44,6 +44,13 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
 #                                      verification; webhook still works
 #                                      unauthenticated (with a loud warning)
 #                                      when unset
+#   GEMINI_API_KEY                  — enables llm_client.py's automatic Gemini
+#                                      fallback for plain text/tool-free calls
+#                                      when every Anthropic attempt fails
+#                                      (missing/invalid key, outage, etc).
+#                                      Without it: those calls just fail with
+#                                      the same LLMCallError as before this
+#                                      fallback existed — nothing regresses.
 #
 # NOTE: All live LLM call sites now go through backend/services/llm_client.py
 # (call_llm() / stream_llm()), which builds its own client from this value.
@@ -57,6 +64,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
 
 ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
 TAVILY_API_KEY:    Optional[str] = os.getenv("TAVILY_API_KEY")
+GEMINI_API_KEY:    Optional[str] = os.getenv("GEMINI_API_KEY")
 
 SUPABASE_URL:        Optional[str] = os.getenv("SUPABASE_URL")
 SUPABASE_JWT_SECRET: Optional[str] = os.getenv("SUPABASE_JWT_SECRET")

@@ -42,6 +42,7 @@ from backend.agents.ariel_tools import ARIEL_TOOLS, execute_tool
 from backend.services.user_profile import USER_PROFILE, get_profile, format_profile_compact
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
 from backend.services.llm_client import call_llm, stream_llm, LLMCallError
+from backend.config import GEMINI_API_KEY
 from backend.utilities.ai_scrubber import AIScrubberBuffer, clean_ai_text
 
 logger = logging.getLogger(__name__)
@@ -63,15 +64,28 @@ if not _ANTHROPIC_KEY or not _ANTHROPIC_KEY.startswith("sk-ant-"):
     )
 
 def _check_anthropic_key() -> None:
-    """Raise HTTPException 503 when the key is absent. call_llm/stream_llm use
-    the shared llm_client module client, so no per-request client is built here."""
-    if not _ANTHROPIC_KEY or not _ANTHROPIC_KEY.startswith("sk-ant-"):
+    """
+    Raise HTTPException 503 only when NEITHER provider is configured.
+
+    backend/services/llm_client.py's call_llm()/stream_llm() fall back to
+    Gemini when Anthropic fails (see that module's docstring for exactly
+    which calls are eligible) — so a missing/invalid ANTHROPIC_API_KEY alone
+    no longer means every chat request is doomed; it just means requests
+    that qualify for the fallback go through Gemini instead. Only block the
+    request outright when there's no working path at all.
+
+    The setup-instructions detail (env var name, file path) is for whoever's
+    running this locally/in CI to see in the server log — never in the
+    client-facing response, which an end user's browser renders verbatim."""
+    anthropic_configured = bool(_ANTHROPIC_KEY) and _ANTHROPIC_KEY.startswith("sk-ant-")
+    if not anthropic_configured and not GEMINI_API_KEY:
+        logger.error(
+            "[chat] Neither ANTHROPIC_API_KEY nor GEMINI_API_KEY is configured — "
+            "add at least one to backend/.env and restart."
+        )
         raise HTTPException(
             status_code=503,
-            detail=(
-                "AI service unavailable: ANTHROPIC_API_KEY is not configured. "
-                "Add the key to backend/.env and restart the server."
-            ),
+            detail="Chat is temporarily unavailable. Please try again shortly.",
         )
 
 # ── Tool definitions ───────────────────────────────────────────────────────────
