@@ -163,6 +163,7 @@ _DEV_CORS_ORIGINS: list[str] = [
     "http://127.0.0.1:3001",
     "http://127.0.0.1:5500",
     "http://localhost:5500",
+    "https://job-apply-chi.vercel.app",
 ]
 
 CORS_ALLOWED_ORIGINS_RAW: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
