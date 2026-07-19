@@ -243,17 +243,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      // Persist full_name and name into user_metadata immediately so the
-      // dashboard greeting and avatar initials are correct from the very
-      // first session — no profile-builder step required.
-      ...(fullName?.trim() ? {
-        options: {
+      options: {
+        // Without this, Supabase's confirmation-email link falls back to
+        // whatever "Site URL" is configured in the dashboard (a fixed value,
+        // e.g. localhost:3000 left over from before this app was deployed) —
+        // so confirmation emails would redirect there regardless of whether
+        // the user actually signed up from local dev or the deployed site.
+        // Matches the same window.location.origin pattern signInWithGoogle
+        // already uses. NOTE: the target origin must also be added to
+        // Supabase's Auth > URL Configuration > Redirect URLs allow-list in
+        // the dashboard — Supabase ignores emailRedirectTo for any origin
+        // not on that list and falls back to the Site URL regardless.
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        // Persist full_name and name into user_metadata immediately so the
+        // dashboard greeting and avatar initials are correct from the very
+        // first session — no profile-builder step required.
+        ...(fullName?.trim() ? {
           data: {
             full_name: fullName.trim(),
             name:      fullName.trim(),
           },
-        },
-      } : {}),
+        } : {}),
+      },
     })
     if (error) throw error
     // When email confirmation is disabled, signUp returns a session immediately.

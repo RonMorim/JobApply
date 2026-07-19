@@ -581,10 +581,8 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
             <button
               onClick={() => setMessages([])}
               title="Clear conversation"
-              className="w-7 h-7 flex items-center justify-center rounded-lg transition"
+              className="w-11 h-11 sm:w-7 sm:h-7 flex items-center justify-center rounded-lg transition-colors active:bg-indigo-500/25 sm:hover:bg-indigo-500/15"
               style={{ color: '#6366f1' }}
-              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(99,102,241,0.15)' }}
-              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
             >
               <TrashIcon />
             </button>
@@ -592,10 +590,8 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
           <button
             onClick={onClose}
             title="Close"
-            className="w-7 h-7 flex items-center justify-center rounded-lg transition"
+            className="w-11 h-11 sm:w-7 sm:h-7 flex items-center justify-center rounded-lg transition-colors active:bg-indigo-500/25 sm:hover:bg-indigo-500/15"
             style={{ color: '#6366f1' }}
-            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(99,102,241,0.15)' }}
-            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
           >
             <CloseIcon />
           </button>
@@ -612,16 +608,17 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
             >
               E
             </div>
-            <p className="text-[13px] font-semibold text-slate-700">Hi, I&apos;m Eliya</p>
-            <p className="text-[12px] text-slate-400 leading-relaxed max-w-[240px]">
+            <p dir="ltr" className="text-[13px] font-semibold text-slate-700">Hi, I&apos;m Eliya</p>
+            <p dir="ltr" className="text-[12px] text-slate-400 leading-relaxed max-w-[240px]">
               Ask me anything about JobApply and I&apos;ll help you get started.
             </p>
             <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-[280px] pt-1">
               {WELCOME_SUGGESTIONS.map(s => (
                 <button
                   key={s.label}
+                  dir="ltr"
                   onClick={() => handleSend(s.prompt)}
-                  className="inline-flex items-center gap-1.5 pl-2 pr-2.5 py-1.5 rounded-full border text-[12px] font-medium transition"
+                  className="inline-flex items-center gap-1.5 pl-2 pr-2.5 min-h-[44px] sm:py-1.5 sm:min-h-0 rounded-full border text-[12px] font-medium transition-colors"
                   style={{ borderColor: ELIYA.border, background: ELIYA.primarySoft, color: ELIYA.primaryHover }}
                 >
                   <span aria-hidden="true">{s.icon}</span>
@@ -704,7 +701,7 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
             title={`Attach images or PDFs (screenshots help!) — max ${MAX_ATTACHMENTS} files, up to ${MAX_FILE_SIZE_MB}MB each, ${MAX_TOTAL_SIZE_MB}MB total`}
             aria-label="Attach files"
             disabled={thinking || attachments.length >= MAX_ATTACHMENTS}
-            className="shrink-0 w-9 h-9 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 focus-visible:text-slate-700 focus-visible:bg-slate-100 transition disabled:opacity-40"
+            className="shrink-0 w-11 h-11 sm:w-9 sm:h-9 flex items-center justify-center rounded-xl text-slate-400 active:bg-slate-200 sm:hover:text-slate-700 sm:hover:bg-slate-100 focus-visible:text-slate-700 focus-visible:bg-slate-100 transition disabled:opacity-40"
           >
             <PaperclipIcon />
           </button>
@@ -729,7 +726,7 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
             disabled={(!draft.trim() && !attachments.length) || thinking}
             title="Send (Enter)"
             aria-label="Send message"
-            className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center text-white transition active:scale-95 disabled:opacity-35 disabled:pointer-events-none"
+            className="shrink-0 w-11 h-11 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center text-white transition active:scale-95 disabled:opacity-35 disabled:pointer-events-none"
             style={{ background: ELIYA.primary }}
           >
             {thinking ? <SpinnerIcon /> : <SendIcon />}

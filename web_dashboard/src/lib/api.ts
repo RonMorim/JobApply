@@ -115,12 +115,35 @@ async function _handleHttpError(res: Response, path: string): Promise<never> {
   throw new Error(detail || `${res.status} ${res.statusText} — ${path}`)
 }
 
+/**
+ * Translate a raw fetch()-level failure into a message worth showing a user.
+ *
+ * fetch() throws a bare TypeError ("Failed to fetch" / "NetworkError...")
+ * for anything that never reached a server — offline, DNS failure, CORS,
+ * backend down. Left unhandled, that raw TypeError propagates all the way
+ * up to whatever component's catch block called this wrapper, and gets
+ * rendered verbatim (e.g. "Failed to load applications. TypeError: Failed
+ * to fetch"). Every wrapper below routes fetch() failures through this so
+ * callers only ever see a message meant for a human.
+ */
+function _networkErrorOr(err: unknown): Error {
+  if (err instanceof TypeError) {
+    return new Error('Could not reach the server — check your connection and try again.')
+  }
+  return err instanceof Error ? err : new Error(String(err))
+}
+
 async function get<T>(path: string): Promise<T> {
   await _ensureFreshToken()
-  const res = await fetch(`${BASE}${path}`, {
-    cache:   'no-store',
-    headers: _authHeaders(),
-  })
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      cache:   'no-store',
+      headers: _authHeaders(),
+    })
+  } catch (err) {
+    throw _networkErrorOr(err)
+  }
   if (!res.ok) await _handleHttpError(res, path)
   return res.json() as Promise<T>
 }
@@ -128,10 +151,15 @@ async function get<T>(path: string): Promise<T> {
 /** POST with no request body — for endpoints that take only query params. */
 async function postEmpty<TRes>(path: string): Promise<TRes> {
   await _ensureFreshToken()
-  const res = await fetch(`${BASE}${path}`, {
-    method:  'POST',
-    headers: _authHeaders(),
-  })
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method:  'POST',
+      headers: _authHeaders(),
+    })
+  } catch (err) {
+    throw _networkErrorOr(err)
+  }
   if (!res.ok) await _handleHttpError(res, path)
   return res.json() as Promise<TRes>
 }
@@ -156,7 +184,7 @@ async function post<TBody, TRes>(path: string, body: TBody, timeoutMs?: number):
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw new Error('Request timed out — the server is taking longer than expected. Please try again.')
     }
-    throw err
+    throw _networkErrorOr(err)
   } finally {
     if (timer !== undefined) clearTimeout(timer)
   }
@@ -164,11 +192,16 @@ async function post<TBody, TRes>(path: string, body: TBody, timeoutMs?: number):
 
 async function patch<TBody, TRes>(path: string, body: TBody): Promise<TRes> {
   await _ensureFreshToken()
-  const res = await fetch(`${BASE}${path}`, {
-    method:  'PATCH',
-    headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-    body:    JSON.stringify(body),
-  })
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body:    JSON.stringify(body),
+    })
+  } catch (err) {
+    throw _networkErrorOr(err)
+  }
   if (!res.ok) await _handleHttpError(res, path)
   return res.json() as Promise<TRes>
 }

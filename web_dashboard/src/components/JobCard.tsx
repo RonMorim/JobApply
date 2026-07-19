@@ -300,6 +300,17 @@ function DirectApplyBadge() {
   )
 }
 
+function BulkImportBadge() {
+  return (
+    <span
+      className="inline-flex items-center h-[17px] px-1.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-600"
+      title="Imported via the LinkedIn Bulk Import pipeline, not a live scraper run"
+    >
+      Bulk Import
+    </span>
+  )
+}
+
 // ── Gap / reason tags ─────────────────────────────────────────────────────────
 
 const GAP_TONES: Record<ReasonKind, { cls: string; Icon: (p: { s?: number }) => JSX.Element }> = {
@@ -917,6 +928,7 @@ export function JobCard({
               </span>
             )}
             {isDirect && <DirectApplyBadge />}
+            {job.is_bulk_import && <BulkImportBadge />}
             {belowThreshold && (
               <span
                 className="inline-flex items-center px-1.5 py-0.5 rounded-lg text-[10px] font-semibold shrink-0 bg-ja-warnSubtle text-amber-700"

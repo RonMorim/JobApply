@@ -1269,7 +1269,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
           }`}
           aria-label="Attach files"
           disabled={streaming || attachments.length >= MAX_ATTACHMENTS}
-          className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition disabled:opacity-40"
+          className="shrink-0 w-11 h-11 sm:w-8 sm:h-8 flex items-center justify-center rounded-lg text-slate-400 active:bg-slate-200 sm:hover:text-slate-700 sm:hover:bg-slate-100 transition disabled:opacity-40"
         >
           <PaperclipIcon />
         </button>
@@ -1294,7 +1294,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
             onClick={() => abortRef.current?.abort()}
             title="Stop generation"
             aria-label="Stop generation"
-            className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center text-white transition active:scale-95 bg-rose-500 hover:bg-rose-600"
+            className="shrink-0 w-11 h-11 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center text-white transition active:scale-95 bg-rose-500 sm:hover:bg-rose-600"
           >
             <StopIcon s={15} />
           </button>
@@ -1305,7 +1305,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
             disabled={(!input.trim() && !attachments.length) || loadingSession}
             title="Send (Enter)"
             aria-label="Send message"
-            className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center text-white transition active:scale-95 disabled:opacity-35 disabled:pointer-events-none"
+            className="shrink-0 w-11 h-11 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center text-white transition active:scale-95 disabled:opacity-35 disabled:pointer-events-none"
             style={{ background: TOKENS.color.primary }}
           >
             <SendIcon s={15} />
@@ -1421,20 +1421,21 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
             style={{ background: TOKENS.color.primary }}>A</div>
           <p className="text-[13px] font-semibold text-slate-700 truncate">Ariel</p>
         </div>
-        {/* Right: icon buttons — all the same 28px square size for alignment */}
+        {/* Right: icon buttons — 44px square on mobile (touch target minimum),
+            28px on desktop for alignment with the compact header */}
         <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={openHistory}
             title="Conversation history"
-            className={`h-7 w-7 flex items-center justify-center rounded-lg transition
-              ${showHistory ? 'text-teal-600 bg-teal-50' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'}`}
+            className={`h-11 w-11 sm:h-7 sm:w-7 flex items-center justify-center rounded-lg transition-colors
+              ${showHistory ? 'text-teal-600 bg-teal-50' : 'text-slate-400 active:bg-slate-200 sm:hover:text-slate-700 sm:hover:bg-slate-100'}`}
           >
             <HistoryIcon s={14} />
           </button>
           <button
             onClick={startNewSession}
             title="New conversation"
-            className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition text-[15px] leading-none"
+            className="h-11 w-11 sm:h-7 sm:w-7 flex items-center justify-center rounded-lg text-slate-400 active:bg-slate-200 sm:hover:text-slate-700 sm:hover:bg-slate-100 transition-colors text-[15px] leading-none"
           >↺</button>
           {onClose && (
             <>
@@ -1447,7 +1448,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
                 onClick={() => { triggerProfileRefresh(); onClose() }}
                 title="Minimize"
                 aria-label="Minimize Ariel"
-                className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+                className="h-11 w-11 sm:h-7 sm:w-7 flex items-center justify-center rounded-lg text-slate-400 active:bg-slate-200 sm:hover:text-slate-700 sm:hover:bg-slate-100 transition-colors"
               >
                 <svg width={13} height={13} viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
@@ -1460,7 +1461,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
                 onClick={() => { triggerProfileRefresh(); onClose() }}
                 title="Close"
                 aria-label="Close Ariel"
-                className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+                className="h-11 w-11 sm:h-7 sm:w-7 flex items-center justify-center rounded-lg text-slate-400 active:bg-slate-200 sm:hover:text-slate-700 sm:hover:bg-slate-100 transition-colors"
               >
                 <svg width={13} height={13} viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">

@@ -538,6 +538,7 @@ def get_feed(user_id: str, status_filter: Optional[str] = None) -> List[JobMatch
         jobs = [_from_row(r) for r in rows]
         for job in jobs:
             job.is_direct_application = job.source_type == "company_site"
+            job.is_bulk_import = job.job_id.startswith("li-bulk-")
         return jobs
 
 
