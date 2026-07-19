@@ -82,9 +82,14 @@ function SubBar({
   const pct = Math.round((value / max) * 100)
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-        <span style={{ fontSize: 10, color: TOKENS.color.muted }}>{label}</span>
-        <span style={{ fontSize: 10, fontWeight: 600, color: TOKENS.color.ink2 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 3 }}>
+        <span style={{
+          fontSize: 10, color: TOKENS.color.muted,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
+        }}>
+          {label}
+        </span>
+        <span style={{ fontSize: 10, fontWeight: 600, color: TOKENS.color.ink2, flexShrink: 0 }}>
           {Math.round(value)}/{max}
         </span>
       </div>
@@ -147,11 +152,10 @@ export function MatchScorePanel({ score, isLoading, baselineScore }: MatchScoreP
   const ring = band.hexFg
 
   return (
-    <div style={{
+    <div className="ja-match-score-panel" style={{
       borderRadius: 12,
       border: `1px solid ${TOKENS.color.line}`,
       background: bg,
-      padding: '14px 16px',
       marginBottom: 14,
       opacity: isLoading ? 0.55 : 1,
       transition: 'opacity 0.2s',

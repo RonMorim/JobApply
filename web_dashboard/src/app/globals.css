@@ -140,3 +140,18 @@ input[type='range'] {
   background: var(--ja-muted);
   background-clip: content-box;
 }
+
+/* ── Component overrides ──────────────────────────────────────────────────────
+   MatchScorePanel.tsx is inline-style based (matches this file's existing
+   TOKENS.color.* pattern), so its one responsive concern — mobile padding —
+   is expressed here as a scoped class rather than fighting inline styles. */
+
+.ja-match-score-panel {
+  padding: 14px 16px;
+}
+
+@media (max-width: 768px) {
+  .ja-match-score-panel {
+    padding: 12px 14px;
+  }
+}
