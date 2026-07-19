@@ -316,10 +316,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithGoogle = useCallback(async (redirectTo?: string) => {
     if (!supabase) {
-      throw new Error(
+      // Technical detail (exact env var names) is for whoever's running this
+      // locally/in CI to see in the console — never in a message an actual
+      // end user could see rendered in the sign-in form's error banner.
+      console.error(
         'Authentication is not configured. ' +
         'Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local.'
       )
+      throw new Error('Sign-in is temporarily unavailable. Please try again shortly.')
     }
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',

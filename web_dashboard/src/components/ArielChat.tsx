@@ -675,7 +675,15 @@ async function consumeStream(
     body:    JSON.stringify(body),
     signal,
   })
-  if (!res.ok || !res.body) throw new Error(await res.text().catch(() => res.statusText))
+  if (!res.ok || !res.body) {
+    // FastAPI error bodies are JSON ({"detail": "..."}) — extract the message
+    // instead of throwing the raw response text, which would render the
+    // literal JSON blob (braces, quotes, key names) as the chat bubble.
+    const text = await res.text().catch(() => '')
+    let detail: string | undefined
+    try { detail = (JSON.parse(text) as { detail?: string }).detail } catch { /* not JSON */ }
+    throw new Error(detail || res.statusText || `HTTP ${res.status}`)
+  }
 
   const reader  = res.body.getReader()
   const decoder = new TextDecoder()
