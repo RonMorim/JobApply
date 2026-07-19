@@ -40,13 +40,27 @@ async def run(csv_path: str, user_id: str, skip_validation: bool, concurrency: i
 
     # Reuses the exact same tenant-salting, relevancy gate, and
     # save_with_source_priority dedup every other scraper goes through —
-    # not a parallel persistence path.
+    # not a parallel persistence path. _save_new already isolates each
+    # job's save in its own try/except (scraper_manager.py), so one bad
+    # record here can't abort the rest of the batch.
     saved = ScraperManager._save_new(jobs, user_id=user_id)
     logger.info("Ingestion complete: %d fetched, %d new — user_id=%s", len(jobs), saved, user_id)
 
     if not skip_validation:
-        validation_summary = await validate_open_linkedin_bulk_jobs(user_id, concurrency=concurrency)
-        logger.info("Validation summary: %s", validation_summary)
+        # Closure re-validation live-scrapes each job's LinkedIn page —
+        # expired/removed postings are the expected, common failure case
+        # here. validate_open_linkedin_bulk_jobs() isolates per-job
+        # failures internally and reports them in "failed"; this try/except
+        # is a last-resort guard so ingestion is still reported as
+        # complete even if the validation pass hits something unforeseen.
+        try:
+            validation_summary = await validate_open_linkedin_bulk_jobs(user_id, concurrency=concurrency)
+            logger.info("Validation summary: %s", validation_summary)
+        except Exception as exc:
+            logger.warning(
+                "Closure re-validation failed unexpectedly and was skipped "
+                "(ingestion above already completed successfully): %s", exc,
+            )
 
 
 def main() -> None:

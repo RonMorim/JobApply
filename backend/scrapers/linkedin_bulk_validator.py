@@ -99,7 +99,11 @@ async def _fetch_job_page(
                 logger.warning("[linkedin_bulk_validator] Job %s fetch returned HTTP %s", job_id, response.status)
                 return job_id, None
             return job_id, await response.text()
-    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+    except Exception as exc:
+        # Broad on purpose: expired/removed LinkedIn postings can return
+        # malformed or non-UTF8 bodies, unexpected content types, or other
+        # provider-side oddities beyond plain network errors. Any single
+        # job's fetch failing must never abort the rest of the batch.
         logger.warning("[linkedin_bulk_validator] Job %s fetch failed: %s", job_id, exc)
         return job_id, None
 
@@ -110,19 +114,28 @@ async def _validate_one_job(
     http_session: aiohttp.ClientSession,
     semaphore: asyncio.Semaphore,
 ) -> Optional[dict]:
-    """Fetch + parse one job page. Returns an update payload, or None on fetch failure."""
-    async with semaphore:
-        await asyncio.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
-        job_id, html = await _fetch_job_page(http_session, job_id, linkedin_id)
+    """Fetch + parse one job page. Returns an update payload, or None on fetch/expired failure."""
+    try:
+        async with semaphore:
+            await asyncio.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
+            job_id, html = await _fetch_job_page(http_session, job_id, linkedin_id)
 
-    if html is None:
+        if html is None:
+            return None
+
+        if CLOSED_MARKER in html:
+            return {"job_id": job_id, "status": "closed"}
+
+        details = _extract_job_details(html)
+        return {"job_id": job_id, "status": "open", "description": details["description"]}
+    except Exception as exc:
+        # A single expired/malformed posting (bad markup, unexpected
+        # redirect, etc.) must never take down the whole validation pass —
+        # log it as a skipped record and let the batch continue.
+        logger.warning(
+            "[linkedin_bulk_validator] Job %s failed to validate, skipping: %s", job_id, exc,
+        )
         return None
-
-    if CLOSED_MARKER in html:
-        return {"job_id": job_id, "status": "closed"}
-
-    details = _extract_job_details(html)
-    return {"job_id": job_id, "status": "open", "description": details["description"]}
 
 
 def _extract_linkedin_id(apply_url: Optional[str]) -> Optional[str]:
@@ -155,18 +168,38 @@ async def validate_open_linkedin_bulk_jobs(user_id: str, concurrency: int = DEFA
     semaphore = asyncio.Semaphore(concurrency)
     async with aiohttp.ClientSession() as http_session:
         tasks = [_validate_one_job(jid, lid, http_session, semaphore) for jid, lid in targets]
-        results = await asyncio.gather(*tasks)
+        # return_exceptions=True is defense-in-depth: _validate_one_job already
+        # catches everything internally, but this guarantees one job's
+        # unhandled exception can never cancel the rest of the in-flight batch.
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    updates = [r for r in results if r is not None]
-    failed  = len(results) - len(updates)
-    closed  = 0
+    updates = []
+    failed  = 0
+    for jid_lid, result in zip(targets, results):
+        if isinstance(result, Exception):
+            logger.warning(
+                "[linkedin_bulk_validator] Job %s raised during validation, skipping: %s",
+                jid_lid[0], result,
+            )
+            failed += 1
+        elif result is None:
+            failed += 1
+        else:
+            updates.append(result)
+    closed = 0
 
     for update in updates:
-        if update["status"] == "closed":
-            job_store.mark_closed(update["job_id"], user_id)
-            closed += 1
-        elif update.get("description"):
-            job_store.update_jd_text(update["job_id"], update["description"])
+        try:
+            if update["status"] == "closed":
+                job_store.mark_closed(update["job_id"], user_id)
+                closed += 1
+            elif update.get("description"):
+                job_store.update_jd_text(update["job_id"], update["description"])
+        except Exception as exc:
+            logger.warning(
+                "[linkedin_bulk_validator] Failed to persist update for job %s, skipping: %s",
+                update["job_id"], exc,
+            )
 
     summary = {
         "checked":    len(targets),
