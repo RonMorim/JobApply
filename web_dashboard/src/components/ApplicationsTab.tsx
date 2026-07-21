@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { fetchApplicationsList } from '@/lib/api'
+import { fetchApplicationsList, deleteApplication } from '@/lib/api'
 import type { AppListItem } from '@/lib/api'
 import { ApplicationsKanban } from './ApplicationsKanban'
 import { TOKENS } from '@/lib/tokens'
@@ -78,10 +78,42 @@ function StageBadge({ stage }: { stage: string }) {
 
 // ── List view ─────────────────────────────────────────────────────────────────
 
-function ApplicationListView({ items, loading, error }: {
-  items:   AppListItem[]
-  loading: boolean
-  error:   string | null
+// Two-step confirm: first click arms it, second click (within 4s) deletes.
+function RowDeleteButton({ onConfirm, deleting }: { onConfirm: () => void; deleting: boolean }) {
+  const [confirming, setConfirming] = useState(false)
+
+  useEffect(() => {
+    if (!confirming) return
+    const t = setTimeout(() => setConfirming(false), 4000)
+    return () => clearTimeout(t)
+  }, [confirming])
+
+  return (
+    <button
+      onClick={e => {
+        e.stopPropagation()
+        if (confirming) { setConfirming(false); onConfirm() }
+        else setConfirming(true)
+      }}
+      disabled={deleting}
+      title={confirming ? 'Confirm delete' : 'Delete application'}
+      className={`shrink-0 h-7 px-2.5 rounded-lg text-[11px] font-medium border transition disabled:opacity-50 ${
+        confirming
+          ? 'bg-rose-600 text-white border-transparent hover:bg-rose-700'
+          : 'text-rose-500 border-transparent hover:bg-rose-50 hover:border-rose-100'
+      }`}
+    >
+      {deleting ? '…' : confirming ? 'Confirm?' : 'Delete'}
+    </button>
+  )
+}
+
+function ApplicationListView({ items, loading, error, onDelete, deletingId }: {
+  items:      AppListItem[]
+  loading:    boolean
+  error:      string | null
+  onDelete:   (id: string) => void
+  deletingId: string | null
 }) {
   if (loading) {
     return (
@@ -148,6 +180,11 @@ function ApplicationListView({ items, loading, error }: {
           <span className="text-[11px] text-slate-400 shrink-0 hidden sm:block">
             {item.last_update}
           </span>
+
+          <RowDeleteButton
+            onConfirm={() => onDelete(item.application_id)}
+            deleting={deletingId === item.application_id}
+          />
         </div>
       ))}
     </div>
@@ -157,10 +194,12 @@ function ApplicationListView({ items, loading, error }: {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ApplicationsTab() {
-  const [view,    setView]    = useState<View>('board')
-  const [items,   setItems]   = useState<AppListItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error,   setError]   = useState<string | null>(null)
+  const [view,       setView]       = useState<View>('board')
+  const [items,      setItems]      = useState<AppListItem[]>([])
+  const [loading,    setLoading]    = useState(true)
+  const [error,      setError]      = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const loadList = useCallback(async () => {
     setLoading(true)
@@ -176,7 +215,41 @@ export function ApplicationsTab() {
     }
   }, [])
 
+  // Runs once on mount (needed even in Board view, since the header's
+  // total/active counts read from `items` regardless of which view is shown).
   useEffect(() => { loadList() }, [loadList])
+
+  // Re-fetch every time the user switches to List view. Without this, a
+  // transient failure in the mount-time fetch above (e.g. the backend still
+  // warming up right when the tab first loads) leaves `error` permanently
+  // set — and since only ApplicationListView renders that error, the user
+  // only ever sees the stale failure the moment they click "List", by which
+  // point the backend may be perfectly healthy again. This gives List view
+  // its own fresh attempt instead of surfacing a possibly-outdated error.
+  useEffect(() => {
+    if (view === 'list') loadList()
+  }, [view, loadList])
+
+  useEffect(() => {
+    if (!deleteError) return
+    const t = setTimeout(() => setDeleteError(null), 4000)
+    return () => clearTimeout(t)
+  }, [deleteError])
+
+  const handleDeleteItem = useCallback(async (id: string) => {
+    setDeletingId(id)
+    setDeleteError(null)
+    const previous = items
+    setItems(prev => prev.filter(i => i.application_id !== id))   // optimistic
+    try {
+      await deleteApplication(id)
+    } catch (e) {
+      setItems(previous)   // rollback
+      setDeleteError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDeletingId(null)
+    }
+  }, [items])
 
   const totalApps  = items.length
   const activeApps = items.filter(i =>
@@ -196,11 +269,23 @@ export function ApplicationsTab() {
         <ViewToggle view={view} onChange={setView} />
       </div>
 
+      {deleteError && (
+        <div className="text-[12px] px-3 py-2 rounded-lg" style={{ color: TOKENS.color.danger, background: '#FEF2F2' }}>
+          Delete failed: {deleteError}
+        </div>
+      )}
+
       {/* Content */}
       {view === 'board' ? (
         <ApplicationsKanban onRefresh={loadList} />
       ) : (
-        <ApplicationListView items={items} loading={loading} error={error} />
+        <ApplicationListView
+          items={items}
+          loading={loading}
+          error={error}
+          onDelete={handleDeleteItem}
+          deletingId={deletingId}
+        />
       )}
     </section>
   )

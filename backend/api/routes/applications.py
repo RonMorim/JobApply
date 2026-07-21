@@ -30,6 +30,19 @@ async def list_applications(user: CurrentUser = Depends(get_current_user)):
     return app_store.get_all(user_id=user.user_id)
 
 
+class DeleteApplicationResponse(BaseModel):
+    deleted: bool
+
+
+@router.delete("/{application_id}", response_model=DeleteApplicationResponse)
+async def delete_application(application_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Delete a single application, scoped to the authenticated user."""
+    deleted = app_store.delete(application_id, user_id=user.user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Application '{application_id}' not found.")
+    return DeleteApplicationResponse(deleted=True)
+
+
 @router.post("/run", response_model=RunCycleResponse)
 async def run_applier_cycle(
     background_tasks: BackgroundTasks,

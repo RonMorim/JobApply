@@ -190,6 +190,21 @@ async function post<TBody, TRes>(path: string, body: TBody, timeoutMs?: number):
   }
 }
 
+async function del<TRes>(path: string): Promise<TRes> {
+  await _ensureFreshToken()
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method:  'DELETE',
+      headers: _authHeaders(),
+    })
+  } catch (err) {
+    throw _networkErrorOr(err)
+  }
+  if (!res.ok) await _handleHttpError(res, path)
+  return res.json() as Promise<TRes>
+}
+
 async function patch<TBody, TRes>(path: string, body: TBody): Promise<TRes> {
   await _ensureFreshToken()
   let res: Response
@@ -667,6 +682,10 @@ export async function moveCrmCard(applicationId: string, toStage: string): Promi
     application_id: applicationId,
     to_stage:       toStage,
   })
+}
+
+export async function deleteApplication(applicationId: string): Promise<void> {
+  await del<{ deleted: boolean }>(`/api/applications/${applicationId}`)
 }
 
 export async function markJobApplied(jobId: string): Promise<MarkAppliedResponse> {
