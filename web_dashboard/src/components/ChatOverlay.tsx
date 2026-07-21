@@ -566,7 +566,7 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
       <div className="flex-shrink-0 flex items-center justify-between px-4 py-3" style={{ background: '#1e1b4b' }}>
         <div className="flex items-center gap-2.5">
           <div
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold text-white"
+            className="w-7 h-7 rounded-2xl flex items-center justify-center text-[11px] font-bold text-white"
             style={{ background: ELIYA.primary }}
           >
             E

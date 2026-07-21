@@ -408,7 +408,7 @@ const MessageBubble = memo(function MessageBubble({
       <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} w-full`}>
         {!isUser && (
           <div className="w-7 h-7 rounded-full text-white text-[11px] font-bold flex items-center justify-center mr-2 mt-0.5 flex-shrink-0"
-            style={{ background: TOKENS.color.primary }}>A</div>
+            style={{ background: TOKENS.color.gradientIntelligence }}>A</div>
         )}
         <div
           dir="auto"
@@ -470,7 +470,7 @@ function TypingIndicator() {
   return (
     <div className="flex justify-start">
       <div className="w-7 h-7 rounded-full text-white text-[11px] font-bold flex items-center justify-center mr-2 mt-0.5 flex-shrink-0"
-        style={{ background: TOKENS.color.primary }}>A</div>
+        style={{ background: TOKENS.color.gradientIntelligence }}>A</div>
       <div className="bg-white border border-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-1">
         {[0, 1, 2].map(i => (
           <span key={i} className="w-1.5 h-1.5 rounded-full bg-slate-300"
@@ -1359,7 +1359,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
           {/* Identity block */}
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white text-base font-bold shrink-0"
-              style={{ background: TOKENS.color.primary }}>A</div>
+              style={{ background: TOKENS.color.gradientIntelligence, boxShadow: TOKENS.shadow.glowAi }}>A</div>
             <div>
               <p className="text-[14px] font-bold text-slate-900 leading-tight">Ariel</p>
               <p className="text-[11.5px] text-slate-400 leading-tight">Career Intelligence Agent</p>
@@ -1426,7 +1426,7 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
         {/* Left: avatar + name */}
         <div className="flex items-center gap-2 min-w-0">
           <div className="w-7 h-7 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0"
-            style={{ background: TOKENS.color.primary }}>A</div>
+            style={{ background: TOKENS.color.gradientIntelligence, boxShadow: TOKENS.shadow.glowAi }}>A</div>
           <p className="text-[13px] font-semibold text-slate-700 truncate">Ariel</p>
         </div>
         {/* Right: icon buttons — 44px square on mobile (touch target minimum),
