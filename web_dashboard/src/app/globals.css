@@ -64,6 +64,11 @@
 html,
 body {
   background: var(--ja-bg);
+  /* Reserve the scrollbar gutter permanently — otherwise switching between
+     tabs whose content heights differ (e.g. Overview -> Matches) toggles the
+     native scrollbar on/off, shifting the whole centered, sticky-header
+     layout horizontally by the scrollbar's width on every transition. */
+  scrollbar-gutter: stable;
 }
 
 body {

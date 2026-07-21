@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useI18n } from '@/contexts/I18nContext'
 import { LanguageSwitcher } from '@/components/LanguageSwitcher'
@@ -228,12 +228,17 @@ function HomePageContent() {
   const { agents, loading: agentsLoading, error: agentsError, refetch: retryAgents } = useAgentStatus()
   const { jobs: rawJobs, feedJobs, loading: jobsLoading } = useJobMatches()
 
-  // Merge manually-analyzed jobs with hook-fetched data so stats stay live
-  const allFeedJobs = (() => {
+  // Merge manually-analyzed jobs with hook-fetched data so stats stay live.
+  // Memoized: these were previously recomputed via IIFE on every render of
+  // this top-level component (e.g. every tab click via setTab), even though
+  // switching tabs never changes the underlying job data — a real source of
+  // input lag on nav clicks once the job list is non-trivial in size.
+  const allFeedJobs = useMemo(() => {
     const ids = new Set(feedJobs.map(f => f.job_id))
     return [...manualFeedJobs.filter(j => !ids.has(j.job_id)), ...feedJobs]
-  })()
-  const allRawJobs = (() => {
+  }, [feedJobs, manualFeedJobs])
+
+  const allRawJobs = useMemo(() => {
     const ids = new Set(rawJobs.map(j => j.id))
     return [
       ...manualFeedJobs.filter(j => !ids.has(j.job_id)).map((f, i) => ({
@@ -250,10 +255,13 @@ function HomePageContent() {
       })),
       ...rawJobs,
     ]
-  })()
+  }, [rawJobs, manualFeedJobs])
 
   // Local mutations applied on top of the live job list
-  const jobs = allRawJobs.filter(j => !dismissedIds.includes(j.id))
+  const jobs = useMemo(
+    () => allRawJobs.filter(j => !dismissedIds.includes(j.id)),
+    [allRawJobs, dismissedIds],
+  )
 
   // ── Interaction handlers ────────────────────────────────────────────────────
   const onApply   = (id: string) => {
