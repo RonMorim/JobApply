@@ -563,7 +563,10 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
   return (
     <>
       {/* Header — indigo Support theme */}
-      <div className="flex-shrink-0 flex items-center justify-between px-4 py-3" style={{ background: '#1e1b4b' }}>
+      <div
+        className="flex-shrink-0 flex items-center justify-between px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))]"
+        style={{ background: '#1e1b4b' }}
+      >
         <div className="flex items-center gap-2.5">
           <div
             className="w-7 h-7 rounded-2xl flex items-center justify-center text-[11px] font-bold text-white"
@@ -644,7 +647,7 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
 
       {/* Input bar — indigo theme */}
       <div
-        className="flex-shrink-0 border-t bg-white px-3 pt-2 pb-2.5 space-y-1.5"
+        className="flex-shrink-0 border-t bg-white px-3 pt-2 pb-[max(0.625rem,env(safe-area-inset-bottom))] space-y-1.5"
         style={{ borderColor: ELIYA.border }}
         onDragOver={e => e.preventDefault()}
         onDrop={e => { e.preventDefault(); attachFiles(Array.from(e.dataTransfer.files)) }}
@@ -888,9 +891,16 @@ function OverlayShell({
         role="dialog"
         aria-label={ariaLabel}
         aria-modal="true"
-        className="fixed bottom-0 right-0 z-50 flex flex-col w-full sm:bottom-6 sm:rounded-2xl overflow-hidden transition-all duration-[250ms] ease-out bg-white/85 backdrop-blur-xl border border-white/60"
+        className="fixed bottom-0 right-0 z-50 flex flex-col w-full h-[100vh] h-[100dvh] sm:h-auto sm:bottom-6 sm:rounded-2xl overflow-hidden transition-all duration-[250ms] ease-out bg-white/85 backdrop-blur-xl border border-white/60"
         style={{
-          height:        isOpen ? `${size.height}px` : '0px',
+          // Mobile: `h-[100dvh]` above (with `100vh` as the pre-dvh-support
+          // fallback, via cascade — not settable in a single inline value)
+          // tracks the real visible viewport as mobile browser chrome and
+          // the on-screen keyboard show/hide, so the sheet is always a true
+          // full-screen sheet and never leaves a gap. `sm:h-auto` hands
+          // height back to this inline style on desktop, where it's the
+          // user-resizable floating panel driven by `size` state.
+          height:        isOpen ? (isDesktop ? `${size.height}px` : undefined) : '0px',
           width:         isDesktop ? `${size.width}px` : undefined,
           minWidth:      isDesktop ? `${_MIN_WIDTH}px` : undefined,
           minHeight:     isDesktop ? `${_MIN_HEIGHT}px` : undefined,
@@ -900,7 +910,11 @@ function OverlayShell({
           pointerEvents: isOpen ? 'auto' : 'none',
           transform:     isOpen ? 'translateY(0) scale(1)' : 'translateY(16px) scale(0.97)',
           boxShadow:     `0 24px 64px ${shadowColor}, 0 4px 16px rgba(15,23,42,0.10)`,
-          right:         offsetRight,
+          // Desktop only: floating offset from the right edge. Previously
+          // applied unconditionally, which fought the mobile `w-full` width
+          // (inline style always wins over the `right-0` Tailwind class) and
+          // pushed the sheet's left edge off-screen on mobile.
+          right:         isDesktop ? offsetRight : '0',
         }}
       >
         {isDesktop && <TopLeftResizeHandle size={size} setSize={setSize} variant={handleVariant} />}
