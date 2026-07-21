@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 
 from models.job import DetailedAnalysis, JobMatch
@@ -52,7 +52,7 @@ class TestSkillsGapEndpoint:
         try:
             with patch("backend.api.routes.jobs.job_store.get_by_id", return_value=_fake_job()), \
                  patch("backend.services.skills_gap_service.analyze_skills_gap",
-                       return_value="- Missing Django\n- Missing Kubernetes") as mock_gap:
+                       new=AsyncMock(return_value="- Missing Django\n- Missing Kubernetes")) as mock_gap:
                 res = client.post("/api/jobs/job-123/skills-gap")
 
             assert res.status_code == 200
@@ -87,7 +87,7 @@ class TestSkillsGapEndpoint:
         try:
             with patch("backend.api.routes.jobs.job_store.get_by_id", return_value=_fake_job()), \
                  patch("backend.services.skills_gap_service.analyze_skills_gap",
-                       side_effect=Exception("LLM exploded")):
+                       new=AsyncMock(side_effect=Exception("LLM exploded"))):
                 res = client.post("/api/jobs/job-123/skills-gap")
             assert res.status_code == 500
         finally:

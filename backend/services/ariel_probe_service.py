@@ -67,6 +67,8 @@ from typing import Optional
 
 from sqlalchemy import text
 
+from backend.services.llm_client import call_llm
+
 logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -575,8 +577,6 @@ class ArielProbeService:
             flag_type             : str
             flag_reason           : str
         """
-        import anthropic
-
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             logger.warning(
@@ -596,18 +596,18 @@ class ArielProbeService:
         )
 
         try:
-            client = anthropic.AsyncAnthropic(api_key=api_key)
-            message = await asyncio.wait_for(
-                client.messages.create(
+            result_llm = await asyncio.wait_for(
+                call_llm(
+                    system      = system_prompt,
+                    messages    = [{"role": "user", "content": user_prompt}],
                     model       = "claude-haiku-4-5-20251001",
                     max_tokens  = 600,
                     temperature = 0.0,
-                    system      = system_prompt,
-                    messages    = [{"role": "user", "content": user_prompt}],
+                    purpose     = "ariel_probe_evaluate",
                 ),
                 timeout=LLM_EVAL_TIMEOUT_S,
             )
-            raw = message.content[0].text.strip()
+            raw = result_llm.text.strip()
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
             raw = re.sub(r"\s*```$",           "", raw)
             parsed = json.loads(raw)

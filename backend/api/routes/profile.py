@@ -607,7 +607,7 @@ async def upload_cv_files(
     # ── Mode A: Full CV ingestion pipeline ────────────────────────────────────
 
     # Phase 2: Aggregate via LLM
-    cv_claims = aggregate_cv_claims(texts, user_id=user.user_id)
+    cv_claims = await aggregate_cv_claims(texts, user_id=user.user_id)
 
     # Phase 3: Persist cv_claims to profile JSON + master_profiles table
     profile = user_load(user.user_id)
@@ -1044,7 +1044,7 @@ async def start_interview(
     """
     from backend.agents.profile_interviewer import start_session
     try:
-        state = start_session(
+        state = await start_session(
             user_id               = user.user_id,
             user_name_override    = req.user_name,
             current_role_override = req.current_role,
@@ -1069,7 +1069,7 @@ async def send_interview_message(
     """
     from backend.agents.profile_interviewer import process_message
     try:
-        state = process_message(req.session_id, req.message, user_id=user.user_id)
+        state = await process_message(req.session_id, req.message, user_id=user.user_id)
         return state
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -1108,7 +1108,7 @@ async def resume_interview_session(
     """
     from backend.agents.profile_interviewer import resume_session
     try:
-        state = resume_session(session_id, user_id=user.user_id)
+        state = await resume_session(session_id, user_id=user.user_id)
         return state
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -1164,7 +1164,7 @@ async def upload_verification_document(
 
     # Verify
     try:
-        result = verify_document(
+        result = await verify_document(
             file_content  = content,
             filename      = fname,
             claim         = claim,

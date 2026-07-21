@@ -99,38 +99,21 @@ ANTHROPIC_API_KEY=test-key pytest backend/tests -q   # matches the CI env exactl
 
 ## 3. Known Issues
 
-### 3.1 `evidence_records` raw-DDL vs. ORM drift in `init_db()` (found during the JOB-6-adjacent multi-tenant migration)
+### 3.1 `evidence_records` raw-DDL vs. ORM drift in `init_db()` — RESOLVED
 
-`init_db()` (`backend/services/db.py`) crashes when run against a **genuinely empty** SQLite file:
+This section previously warned that `init_db()` (`backend/services/db.py`) crashed against a genuinely
+empty SQLite file with `sqlite3.OperationalError: table evidence_records has 11 columns but 12 values were
+supplied`, because `_EVIDENCE_RECORDS_DDL` (the raw-SQL migration path) had drifted out of sync with
+`EvidenceRecordRow`'s ORM column list (missing `is_ai_assisted`).
 
-```
-sqlite3.OperationalError: table evidence_records has 11 columns but 12 values were supplied
-```
+**No longer reproduces.** `_EVIDENCE_RECORDS_DDL` now includes `is_ai_assisted INTEGER NOT NULL DEFAULT 0`,
+matching the ORM definition column-for-column. Re-verified directly (2026-07-16, during the
+`refactor/llm-wrapper-v2` Docker setup work) by pointing `db_module.ENGINE` at a brand-new, previously
+nonexistent SQLite file and calling `init_db()` twice in a row (idempotency check) — both calls succeeded
+with no error, and the full `test_profile_trust.py` / `test_tenant_isolation.py` suites still pass.
 
-**Root cause:** `EvidenceRecordRow`'s ORM column list (12 columns, including `is_ai_assisted`) has drifted
-out of sync with the raw `_EVIDENCE_RECORDS_DDL` string used by `_migrate_confidence_matrix()`'s
-rename/recreate migration path (11 columns). On a fresh DB, `Base.metadata.create_all()` creates
-`evidence_records` via the 12-column ORM definition; the subsequent migration then tries to copy that table
-into an 11-column recreation and fails on the column-count mismatch.
-
-**Verified pre-existing**, not introduced by any recent change — reproduced identically via `git stash`
-against the unmodified codebase. Full detail and reproduction steps: `docs/multi-tenant-erd.md` §4.
-
-**Why it's gone unnoticed:** the real dev `backend/jobs.db` was created years ago and has only ever been
-`ALTER`'d forward incrementally — nobody has run `init_db()` against a from-scratch empty file in this
-project's actual lifecycle. Every test file that touches confidence-matrix tables (`test_profile_trust.py`,
-`test_tenant_isolation.py`) deliberately creates schema directly via `Base.metadata.create_all()` and avoids
-calling `_migrate_confidence_matrix()` at all, sidestepping the bug rather than exercising it.
-
-**Recommendation — treat fresh SQLite installs with caution until this is fixed:**
-- Do **not** delete `backend/jobs.db` and expect `init_db()` to rebuild it cleanly on next startup — it won't.
-- A genuinely fresh clone/environment that has never had `backend/jobs.db` before will hit this crash the
-  first time the backend starts. Until fixed, the workaround is to seed the DB from a known-good copy of
-  `backend/jobs.db` rather than letting `init_db()` create one from nothing.
-- Fixing this properly means reconciling `_EVIDENCE_RECORDS_DDL` with `EvidenceRecordRow`'s actual column
-  list (and auditing whether any other raw-DDL/ORM pairs in `_migrate_confidence_matrix()` have drifted the
-  same way) — tracked as a follow-up, not fixed inline with either the tenant-scoping migration or this
-  environment-setup pass, since it's an unrelated pre-existing defect in a different code path.
+A genuinely fresh clone (or a fresh Docker container — see `docs/docker-setup.md`) can safely let
+`init_db()` create `backend/jobs.db` from nothing; no seed file or workaround is needed.
 
 ### 3.2 `backend/pytest.ini` sets an option the pinned `pytest-asyncio` doesn't recognize
 

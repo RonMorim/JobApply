@@ -442,7 +442,7 @@ async def fetch_single_jd(
     structured_json: Optional[str] = None
     try:
         from backend.services.jd_structure_service import structure_jd, extract_company_from_structured
-        structured_json = await asyncio.to_thread(structure_jd, jd_text)
+        structured_json = await structure_jd(jd_text, user_id=user.user_id, job_id=job_id)
         if structured_json:
             job_store.update_jd_structured(job_id, structured_json)
             extracted_company = extract_company_from_structured(structured_json)
@@ -602,8 +602,9 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
     Uses claude-haiku for fast, cheap text edits.
     Returns updated sections + a one-sentence confirmation message.
     """
-    import os, json as _json, re as _re, anthropic
+    import os, json as _json, re as _re
 
+    from backend.services.llm_client import call_llm, LLMCallError
     from backend.services.llm_validation import harden_system_prompt, sanitize_text
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -619,19 +620,21 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
         f"INSTRUCTION: {sanitize_text(body.instruction)}"
     )
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
     try:
-        response = await client.messages.create(
-            model      = "claude-haiku-4-5",
-            max_tokens = 2000,
+        result_llm = await call_llm(
             system     = harden_system_prompt(_COPILOT_SYSTEM),
             messages   = [{"role": "user", "content": user_msg}],
+            model      = "claude-haiku-4-5",
+            max_tokens = 2000,
+            purpose    = "jobs_tailor_cv_edit",
+            user_id    = user.user_id,
+            job_id     = job_id,
         )
-    except anthropic.APIError as exc:
-        logger.error("[jobs] Anthropic API error: %s", exc)
+    except LLMCallError:
+        logger.exception("[jobs] tailor_cv_edit LLM call failed")
         raise HTTPException(status_code=422, detail="AI service error. Please try again shortly.")
 
-    raw = response.content[0].text if response.content else ""
+    raw = result_llm.text
 
     # Extract JSON — strip fences if model misbehaves
     text = _re.sub(r"```(?:json)?", "", raw).strip()
@@ -642,7 +645,7 @@ async def tailor_cv_edit(job_id: str, body: TailorEditRequest, user: CurrentUser
         if start != -1 and end > start:
             data = _json.loads(text[start : end + 1])
         else:
-            logger.error("[tailor-cv/edit] Unparseable response: %s", raw[:300])
+            logger.error("[tailor-cv/edit] Unparseable response (len=%d)", len(raw))
             raise HTTPException(status_code=422, detail="Model returned unparseable output.")
 
     updated_sections = [TailoredSection(**s) for s in data.get("sections", [])]
@@ -879,7 +882,7 @@ async def analyze_job(
     # ── 4. JD structuring ─────────────────────────────────────────────────────
     try:
         from backend.services.jd_structure_service import structure_jd, extract_company_from_structured
-        structured_json = await asyncio.to_thread(structure_jd, jd_text)
+        structured_json = await structure_jd(jd_text, user_id=user.user_id, job_id=match.job_id)
     except Exception as exc:
         logger.error("[analyze] PIPELINE_FAILURE step=structure url=%s error=%r", url, exc, exc_info=True)
         raise HTTPException(status_code=422, detail="Structure Failed. Please try again shortly.")
@@ -1306,7 +1309,7 @@ async def get_ats_keywords(job_id: str, user: CurrentUser = Depends(get_current_
     from backend.services.ats_keyword_service import extract_ats_keywords
 
     try:
-        result = extract_ats_keywords(job_id, user.user_id)
+        result = await extract_ats_keywords(job_id, user.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -1345,7 +1348,7 @@ async def get_skills_gap(job_id: str, user: CurrentUser = Depends(get_current_us
         from backend.services.skills_gap_service import analyze_skills_gap
         from backend.services.user_profile import build_full_text
 
-        analysis = analyze_skills_gap(jd_text, build_full_text(user.user_id))
+        analysis = await analyze_skills_gap(jd_text, build_full_text(user.user_id))
     except Exception as exc:
         logger.exception("[skills-gap] Failed for job_id=%s: %s", job_id, exc)
         raise HTTPException(status_code=500, detail="Skills gap analysis failed")
@@ -1410,8 +1413,6 @@ async def generate_mock_interview_question(
     the JD, the candidate's profile, and their known gaps for the role
     (stored negative reason tags + critical gaps — no extra LLM call).
     """
-    from fastapi.concurrency import run_in_threadpool
-
     from backend.services.interview_simulator import generate_interview_question
     from backend.services.user_profile import build_full_text
 
@@ -1423,8 +1424,8 @@ async def generate_mock_interview_question(
     skills_gap = "; ".join(dict.fromkeys(p.strip() for p in gap_parts if p.strip())) or "(none identified)"
 
     try:
-        question = await run_in_threadpool(
-            generate_interview_question, jd_text, build_full_text(user.user_id), skills_gap,
+        question = await generate_interview_question(
+            jd_text, build_full_text(user.user_id), skills_gap,
         )
     except Exception as exc:
         logger.exception("[interview] question generation failed for job_id=%s: %s", job_id, exc)
@@ -1445,15 +1446,13 @@ async def evaluate_mock_interview_answer(
     user:   CurrentUser = Depends(get_current_user),
 ) -> InterviewFeedbackResponse:
     """Evaluate the candidate's answer to a mock-interview question for this job."""
-    from fastapi.concurrency import run_in_threadpool
-
     from backend.services.interview_simulator import evaluate_interview_answer
 
     _job, jd_text = _interview_job_context(job_id, user.user_id)
 
     try:
-        feedback = await run_in_threadpool(
-            evaluate_interview_answer, body.question, body.answer, jd_text,
+        feedback = await evaluate_interview_answer(
+            body.question, body.answer, jd_text,
         )
     except Exception as exc:
         logger.exception("[interview] answer evaluation failed for job_id=%s: %s", job_id, exc)

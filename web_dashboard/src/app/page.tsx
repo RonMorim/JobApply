@@ -22,51 +22,44 @@ import type { Job }             from '@/lib/data'
 import type { ApiFeedJob }      from '@/lib/apiTypes'
 import { TOKENS }               from '@/lib/tokens'
 
-// ── Legacy-data migration gate ────────────────────────────────────────────────
+// ── Identity-sync gate ────────────────────────────────────────────────────────
 //
 // PURPOSE
-//   All historical data (jobs, applications, interview sessions) was written
-//   under user_id='default' before multi-tenant auth existed.  On first login
-//   the backend migration endpoint re-assigns those rows to the real user_id.
+//   On first login, sync the Supabase identity with the backend (account
+//   linking by verified email, profile_completed backfill) before the
+//   dashboard's data hooks mount.
 //
 // DESIGN — render gate, not background hook
-//   The previous implementation fired the migration in a useEffect *while*
-//   HomePageContent was already rendering.  Data hooks mounted in parallel,
-//   immediately fetched with the new (empty) user scope, and returned nothing.
-//   The migration was racing against its own consumers.
-//
-//   The fix: MigrationGate renders a blocking screen until the migration
-//   endpoint responds.  HomePageContent (and every hook inside it) only mounts
-//   AFTER the gate transitions to 'done', so the very first data fetch already
-//   sees the migrated rows under the correct user_id.
+//   SyncGate renders a brief blocking screen until sync-user responds (or a
+//   locally-cached flag says it already ran). HomePageContent (and every hook
+//   inside it) only mounts AFTER the gate transitions to 'done', so the very
+//   first data fetch already sees the correctly-linked user_id.
 //
 // STATES
 //   idle      — user/session not yet available (should be instant; AuthGuard
 //               guarantees children only render with a confirmed session)
-//   checking  — localStorage flag found → skip network call, go directly to done
 //   in_flight — POST in progress → show blocking spinner + message
-//   done      — migration confirmed complete → render children
+//   done      — sync attempted (success or failure — sync-user is best-effort
+//               and non-fatal) → render children
+//
+// NOTE — legacy data migration removed from this flow
+//   POST /api/auth/migrate-legacy-data used to fire here for every user. It
+//   is now an admin-only, one-time utility (see backend/api/routes/auth.py)
+//   rather than a normal login action, so it is no longer called from the
+//   dashboard entry gate. A failed or admin-gated migration must never block
+//   a normal user from reaching the dashboard.
 //
 // IDEMPOTENCY
-//   localStorage key `jobapply_migrated_{userId}` is set on every successful
-//   response (including "already_done" and "nothing_to_migrate").  Subsequent
-//   visits skip the network call entirely and go straight to done.
-//
-// RELOAD
-//   Only fires window.location.reload() when result.status === 'ok' AND at
-//   least one row was actually moved.  New users and previously-migrated users
-//   never trigger a reload.
+//   localStorage key `jobapply_synced_{userId}` is set once sync-user has
+//   run for this user in this browser, so subsequent visits skip the
+//   network call entirely and go straight to done.
 
-type MigrationPhase = 'idle' | 'in_flight' | 'error' | 'done'
+type MigrationPhase = 'idle' | 'in_flight' | 'done'
 
 function MigrationGate({ children }: { children: React.ReactNode }) {
   const { user, session, updateUserMeta } = useAuth()
-  const [phase,    setPhase]    = useState<MigrationPhase>('idle')
-  const [errMsg,   setErrMsg]   = useState<string>('')
+  const [phase, setPhase] = useState<MigrationPhase>('idle')
   const firedRef = useRef(false)   // guards against React StrictMode double-invoke
-
-  // Extracted so the Retry button can re-trigger the same logic
-  const runMigration = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     // AuthGuard guarantees user is non-null, but session.access_token may settle
@@ -75,7 +68,7 @@ function MigrationGate({ children }: { children: React.ReactNode }) {
     if (firedRef.current) return
 
     const token      = session.access_token   // capture; won't change mid-request
-    const storageKey = `jobapply_migrated_${user.id}`
+    const storageKey = `jobapply_synced_${user.id}`
 
     // ── Fast path: flag already set in this browser ───────────────────────────
     if (localStorage.getItem(storageKey)) {
@@ -100,111 +93,46 @@ function MigrationGate({ children }: { children: React.ReactNode }) {
       return
     }
 
-    // ── Slow path: sync identity, then fire the migration ─────────────────────
-    const fire = () => {
-      firedRef.current = true
-      setPhase('in_flight')
-      setErrMsg('')
+    // ── Slow path: sync identity, then let the dashboard mount ────────────────
+    firedRef.current = true
+    setPhase('in_flight')
 
-      // Provider-agnostic identity sync FIRST (account linking by verified
-      // email): if this login minted a new Supabase user for an email that
-      // already owns data (e.g. Google OAuth after email signup), the backend
-      // re-links all rows to this user_id before anything else reads them.
-      fetch('/api/auth/sync-user', {
-        method:  'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
+    // Provider-agnostic identity sync (account linking by verified email): if
+    // this login minted a new Supabase user for an email that already owns
+    // data (e.g. Google OAuth after email signup), the backend re-links all
+    // rows to this user_id before anything else reads them. Best-effort and
+    // non-fatal — a sync-user failure must never block normal login.
+    fetch('/api/auth/sync-user', {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then((sync: { status?: string; linked_from?: string; profile_completed?: boolean } | null) => {
+        if (sync?.status === 'linked') {
+          console.info('[sync-user] account linked from', sync.linked_from)
+        }
+        // Backfill for accounts created before the profile_completed flag:
+        // the backend reports whether the master profile already has real
+        // data — mirror that into Supabase user metadata so Ariel unlocks.
+        const metaFlag = (user.user_metadata as Record<string, unknown> | null)?.profile_completed
+        if (sync?.profile_completed && metaFlag !== true) {
+          void updateUserMeta({ profile_completed: true }).catch(() => { /* retried next login */ })
+        }
       })
-        .then(r => (r.ok ? r.json() : null))
-        .then((sync: { status?: string; linked_from?: string; profile_completed?: boolean } | null) => {
-          if (sync?.status === 'linked') {
-            console.info('[sync-user] account linked from', sync.linked_from)
-          }
-          // Backfill for accounts created before the profile_completed flag:
-          // the backend reports whether the master profile already has real
-          // data — mirror that into Supabase user metadata so Ariel unlocks.
-          const metaFlag = (user.user_metadata as Record<string, unknown> | null)?.profile_completed
-          if (sync?.profile_completed && metaFlag !== true) {
-            void updateUserMeta({ profile_completed: true }).catch(() => { /* retried next login */ })
-          }
-        })
-        .catch(() => { /* non-fatal — migration below still runs */ })
-        .then(() =>
-          fetch('/api/auth/migrate-legacy-data', {
-        method:  'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
+      .catch(() => { /* non-fatal */ })
+      .then(() => {
+        localStorage.setItem(storageKey, '1')
+        setPhase('done')
       })
-        .then(r => {
-          if (!r.ok) {
-            // Surface the exact HTTP status so it appears in console.error below
-            return r.text().then(body => {
-              throw new Error(`HTTP ${r.status} — ${body || r.statusText}`)
-            })
-          }
-          return r.json() as Promise<{
-            status:       string
-            jobs:         number
-            applications: number
-            interviews:   number
-            message?:     string
-          }>
-        })
-        .then(result => {
-          // Persist the flag so future visits skip the network call entirely
-          localStorage.setItem(storageKey, '1')
-
-          const rowsMoved =
-            (result.jobs         ?? 0) +
-            (result.applications ?? 0) +
-            (result.interviews   ?? 0)
-          const didMigrate = result.status === 'ok' && rowsMoved > 0
-
-          if (didMigrate) {
-            console.info(
-              `[MigrationGate] Migrated ${result.jobs} job(s), ` +
-              `${result.applications} application(s), ` +
-              `${result.interviews} interview session(s) → user ${user.id}. ` +
-              'Reloading dashboard…'
-            )
-            // Hard reload: discards every in-memory hook and cache so the first
-            // fetch after reload already sees the migrated rows in scope.
-            window.location.reload()
-            // No setPhase — the page is about to unmount.
-          } else {
-            // "already_done" | "nothing_to_migrate" — proceed to dashboard
-            setPhase('done')
-          }
-        })
-        .catch((err: Error) => {
-          // ── Error — DO NOT transition to done ──────────────────────────────
-          // The dashboard data hooks must not fire while the backend is refusing
-          // requests.  Hold the gate open, show the exact error, and give the
-          // user a Retry button.
-          //
-          // We deliberately do NOT set the localStorage flag here so the next
-          // full page load will attempt the migration again.
-          firedRef.current = false   // allow the Retry button to re-fire
-          console.error('[MigrationGate] Migration failed — dashboard blocked:', err.message)
-          setErrMsg(err.message)
-          setPhase('error')
-        }))
-    }
-
-    runMigration.current = fire
-    fire()
   }, [user, session])
 
-  // ── Blocking screen (idle / in_flight / error) ────────────────────────────
+  // ── Blocking screen (idle / in_flight) ────────────────────────────────────
   if (phase !== 'done') {
     return (
       <div
         className="min-h-screen flex flex-col items-center justify-center gap-5 px-6 bg-ja-ink"
       >
-        {phase !== 'error' && (
-          <div className="w-9 h-9 rounded-full border-2 border-slate-700 border-t-blue-500 animate-spin" />
-        )}
+        <div className="w-9 h-9 rounded-full border-2 border-slate-700 border-t-blue-500 animate-spin" />
 
         {phase === 'in_flight' && (
           <p className="text-sm text-center leading-relaxed text-ja-subtle" style={{ maxWidth: 300 }}>
@@ -212,34 +140,6 @@ function MigrationGate({ children }: { children: React.ReactNode }) {
             <br />
             <span>Please wait.</span>
           </p>
-        )}
-
-        {phase === 'error' && (
-          <div className="flex flex-col items-center gap-4 text-center" style={{ maxWidth: 340 }}>
-            {/* Warning icon */}
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" className="text-red-500"
-              stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="8"  x2="12" y2="12" />
-              <line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-            <p className="text-sm font-medium text-red-400">
-              Workspace setup failed
-            </p>
-            <p className="text-xs font-mono break-all text-ja-subtle">
-              {errMsg || 'Unknown error — check the browser console for details.'}
-            </p>
-            <button
-              onClick={() => {
-                firedRef.current = false
-                runMigration.current?.()
-              }}
-              className="mt-2 px-5 py-2 rounded-lg text-sm font-medium text-white bg-ja-primary hover:bg-ja-primaryHover transition-colors"
-            >
-              Retry
-            </button>
-          </div>
         )}
       </div>
     )

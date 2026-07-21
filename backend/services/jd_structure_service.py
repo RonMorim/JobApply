@@ -28,6 +28,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ValidationError, field_validator
 
+from backend.services.llm_client import call_llm, LLMCallError
+
 logger = logging.getLogger(__name__)
 
 _MODEL = "claude-haiku-4-5"
@@ -86,11 +88,6 @@ STRICT RULES — violation causes the output to be DISCARDED:
 """
 
 
-def _build_client():
-    import anthropic
-    return anthropic.Anthropic()
-
-
 def _strip_fences(text: str) -> str:
     """Strip markdown code-fence wrappers the LLM may add despite instructions."""
     text = text.strip()
@@ -121,8 +118,8 @@ def _parse_and_validate(raw: str) -> Optional[StructuredJd]:
         else:
             logger.error(
                 "[jd_structure] LLM output contains no JSON object — "
-                "schema validation FAILED. Raw output (first 300 chars): %s",
-                raw[:300],
+                "schema validation FAILED. Raw output length: %d",
+                len(raw),
             )
             return None
 
@@ -130,9 +127,8 @@ def _parse_and_validate(raw: str) -> Optional[StructuredJd]:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
         logger.error(
-            "[jd_structure] JSON parse FAILED (%s). "
-            "Raw output (first 300 chars): %s",
-            exc, raw[:300],
+            "[jd_structure] JSON parse FAILED (%s). Raw output length: %d",
+            exc, len(raw),
         )
         return None
 
@@ -297,7 +293,11 @@ def _preprocess_jd(text: str) -> str:
     return result.strip()
 
 
-def structure_jd(raw_text: str) -> Optional[str]:
+async def structure_jd(
+    raw_text: str,
+    user_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+) -> Optional[str]:
     """
     Call the LLM to turn raw JD text into a Pydantic-validated JSON string.
 
@@ -328,16 +328,18 @@ def structure_jd(raw_text: str) -> Optional[str]:
         )
         return None
 
-    client = _build_client()
     try:
-        message = client.messages.create(
+        result_llm = await call_llm(
             model      = _MODEL,
             max_tokens = 1024,
             system     = _SYSTEM_PROMPT,
             messages   = [{"role": "user", "content": content}],
+            purpose    = "jd_structure",
+            user_id    = user_id,
+            job_id     = job_id,
         )
-        raw = (message.content[0].text or "").strip()
-    except Exception as exc:
+        raw = result_llm.text.strip()
+    except LLMCallError as exc:
         logger.error("[jd_structure] LLM call failed: %s", exc)
         return None
 

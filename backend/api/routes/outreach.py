@@ -80,7 +80,7 @@ async def generate_message(body: OutreachRequest, user: CurrentUser = Depends(ge
     - **headhunter**: Direct recruiter pitch — domain, seniority, availability.
     """
     try:
-        message = generate_outreach_message(
+        message = await generate_outreach_message(
             message_type   = body.message_type,
             target_name    = body.target_name,
             target_title   = body.target_title,
@@ -106,7 +106,7 @@ async def generate_headhunter_message(body: HeadhunterRequest, user: CurrentUser
     Shortcut: generate a headhunter-optimised outreach message for a named agency recruiter.
     """
     try:
-        message = generate_outreach_message(
+        message = await generate_outreach_message(
             message_type   = "headhunter",
             target_name    = body.recruiter_name,
             target_title   = body.recruiter_title or "Recruiter",
@@ -140,7 +140,7 @@ async def generate_job_outreach(
 ) -> JobOutreachResponse:
     """Generate + persist an outreach message for one of the caller's jobs."""
     try:
-        message = generate_outreach(job_id, user.user_id)
+        message = await generate_outreach(job_id, user.user_id)
     except ValueError as exc:
         # Job not found for this user — 404, never leak cross-tenant existence.
         raise HTTPException(status_code=404, detail=str(exc))
@@ -206,7 +206,7 @@ async def generate_direct_pitch(
 
     try:
         from backend.services.user_profile import build_full_text
-        pitch = generate_pitch_from_raw(posting, build_full_text(user.user_id))
+        pitch = await generate_pitch_from_raw(posting, build_full_text(user.user_id))
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:

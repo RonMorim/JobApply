@@ -32,6 +32,19 @@ cd web_dashboard
 npm install && npm run dev
 ```
 
+### Docker (alternative to the above)
+
+Brings up both services together with one command, no local Python/Node toolchain needed:
+
+```bash
+cp backend/.env.example backend/.env               # fill in real values
+cp web_dashboard/.env.example web_dashboard/.env.local   # fill in real values
+docker compose up --build
+```
+
+Frontend: http://localhost:3000. Backend: http://localhost:8000 (docs at `/docs`). Full details, what each
+env var does, and known limitations: [`docs/docker-setup.md`](docs/docker-setup.md).
+
 ### Test Suite Execution
 
 Run this (in addition to, or instead of, the backend step above) to run `backend/tests/`. Uses a
@@ -64,6 +77,7 @@ see [`docs/environment-setup.md`](docs/environment-setup.md).
 |---|---|
 | [`CLAUDE.md`](CLAUDE.md) | Architecture, commands, mandatory AI scoring principles — start here |
 | [`docs/environment-setup.md`](docs/environment-setup.md) | Full dependency inventory, setup from clean state, Known Issues |
+| [`docs/docker-setup.md`](docs/docker-setup.md) | Running the whole product via `docker compose up` |
 | [`docs/architecture-boundaries.md`](docs/architecture-boundaries.md) | FastAPI↔Streamlit legacy boundary, multi-tenant scoping notes |
 | [`docs/multi-tenant-erd.md`](docs/multi-tenant-erd.md) | Database ERD, tenant-scoping classification, migration details |
 | [`DESIGN_SYSTEM_V2.md`](DESIGN_SYSTEM_V2.md) | "Meridian" design system (current) |

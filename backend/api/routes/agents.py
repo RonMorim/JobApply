@@ -392,10 +392,10 @@ async def pause_agent(
     agent_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
-    """Pause a running agent."""
+    """Pause a running agent, scoped to the authenticated user's own view."""
     if not store.get_by_id_for_user(user.user_id, agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
-    store.set_paused(agent_id)
+    store.set_paused_for_user(user.user_id, agent_id)
     return {"agent_id": agent_id, "state": "paused"}
 
 
@@ -404,10 +404,10 @@ async def resume_agent(
     agent_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
-    """Resume a paused agent."""
+    """Resume a paused agent, scoped to the authenticated user's own view."""
     if not store.get_by_id_for_user(user.user_id, agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
-    store.set_resumed(agent_id)
+    store.set_resumed_for_user(user.user_id, agent_id)
     return {"agent_id": agent_id, "state": "idle"}
 
 

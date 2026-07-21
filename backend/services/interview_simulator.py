@@ -2,10 +2,10 @@ import logging
 import os
 from typing import Optional
 
-import anthropic
 from dotenv import load_dotenv
 
 from backend.utilities.ai_scrubber import clean_ai_text
+from backend.services.llm_client import call_llm
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
 
 # Load environment variables if needed
@@ -66,7 +66,7 @@ CANDIDATE'S ANSWER:
 {answer}"""
 
 
-def generate_interview_question(jd_text: str, user_profile: str, skills_gap: str) -> str:
+async def generate_interview_question(jd_text: str, user_profile: str, skills_gap: str) -> str:
     """
     Generate a contextual interview question based on the job requirements
     and the user's specific gaps.
@@ -86,22 +86,22 @@ def generate_interview_question(jd_text: str, user_profile: str, skills_gap: str
         return "API Key missing. Unable to generate question."
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS,
+        result = await call_llm(
             system=harden_system_prompt(_QUESTION_SYSTEM),
             messages=[{"role": "user", "content": user_prompt}],
+            model=_MODEL,
+            max_tokens=_MAX_TOKENS,
             temperature=0.7,  # Slight variation is good for questions
+            purpose="interview_generate_question",
         )
-        
-        return clean_ai_text(response.content[0].text).strip()
+
+        return clean_ai_text(result.text).strip()
     except Exception as e:
         logger.error("Error generating interview question: %s", e)
         return "Failed to generate interview question."
 
 
-def evaluate_interview_answer(question: str, answer: str, jd_text: str) -> str:
+async def evaluate_interview_answer(question: str, answer: str, jd_text: str) -> str:
     """
     Evaluate the user's provided answer, offering constructive feedback
     and suggestions for improvement.
@@ -121,16 +121,16 @@ def evaluate_interview_answer(question: str, answer: str, jd_text: str) -> str:
         return "API Key missing. Unable to evaluate answer."
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS,
+        result = await call_llm(
             system=harden_system_prompt(_EVALUATION_SYSTEM),
             messages=[{"role": "user", "content": user_prompt}],
+            model=_MODEL,
+            max_tokens=_MAX_TOKENS,
             temperature=0.0,  # Deterministic for evaluation
+            purpose="interview_evaluate_answer",
         )
-        
-        return clean_ai_text(response.content[0].text).strip()
+
+        return clean_ai_text(result.text).strip()
     except Exception as e:
         logger.error("Error evaluating interview answer: %s", e)
         return "Failed to evaluate interview answer."

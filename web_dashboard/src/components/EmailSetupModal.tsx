@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { TOKENS } from '@/lib/tokens'
-import { fetchGmailVerificationCode } from '@/lib/api'
+import { fetchGmailVerificationCode, GmailCodeForbiddenError } from '@/lib/api'
 import {
   MailIcon,
   CopyIcon,
@@ -275,8 +275,16 @@ export function EmailSetupModal({ open, onClose }: EmailSetupModalProps) {
           if (pollRef.current) clearInterval(pollRef.current)
           pollRef.current = null
         }
-      } catch {
-        // Silently ignore poll failures — network hiccup shouldn't break the UI
+      } catch (err) {
+        if (err instanceof GmailCodeForbiddenError) {
+          // Caller is not an admin — this endpoint will never succeed for
+          // them, so stop polling instead of retrying forever. No error is
+          // shown; the code panel just never auto-fills.
+          if (pollRef.current) clearInterval(pollRef.current)
+          pollRef.current = null
+          return
+        }
+        // Transient/network error — silently ignore and let the interval retry.
       }
     }
 

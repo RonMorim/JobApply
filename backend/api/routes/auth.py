@@ -28,7 +28,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DBSession
 
-from backend.api.deps import CurrentUser, get_current_user, standard_rate_limit
+from backend.api.deps import CurrentUser, get_current_user, require_admin, standard_rate_limit
 from backend.services.db import (
     ENGINE,
     ApplicationRow,
@@ -232,7 +232,7 @@ class MigrationResult(BaseModel):
 
 @router.post("/migrate-legacy-data", response_model=MigrationResult)
 async def migrate_legacy_data(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_admin),
 ) -> MigrationResult:
     """
     Reassign all 'default' user_id rows in every table to the authenticated

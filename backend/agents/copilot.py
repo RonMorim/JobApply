@@ -30,10 +30,10 @@ import os
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 from dotenv import load_dotenv
 
 from backend.agents.tailor import _enforce_limits, _sanitize_ai_tells
+from backend.services.llm_client import call_llm, LLMCallError
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 
@@ -333,10 +333,8 @@ def _sanitize_history(raw: list[dict]) -> list[dict]:
 
 class CopilotAgent:
     def __init__(self) -> None:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
+        if not os.getenv("ANTHROPIC_API_KEY"):
             raise ValueError("ANTHROPIC_API_KEY not set")
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
 
     async def edit(
         self,
@@ -393,14 +391,15 @@ class CopilotAgent:
         )
 
         try:
-            response = await self._client.messages.create(
+            result = await call_llm(
+                system      = _SYSTEM_PROMPT,
+                messages    = messages,
                 model       = _MODEL,
                 max_tokens  = _MAX_TOKENS,
                 temperature = 0.15,
-                system      = _SYSTEM_PROMPT,
-                messages    = messages,
+                purpose     = "copilot_edit",
             )
-        except Exception as exc:
+        except LLMCallError as exc:
             logger.exception("[CopilotAgent] API call failed: %s", exc)
             return {
                 "status":          "rejected",
@@ -409,7 +408,7 @@ class CopilotAgent:
                 "cv_data":         cv_data,
             }
 
-        raw = response.content[0].text.strip()
+        raw = result.text.strip()
         original_raw = raw
 
         if raw.startswith("```json"):
@@ -430,14 +429,12 @@ class CopilotAgent:
             wrapper = json.loads(raw)
         except json.JSONDecodeError as exc:
             logger.warning(
-                "[CopilotAgent] Non-JSON response (falling back to rejected): %s\n"
-                "--- raw (first 300) ---\n%s\n---",
-                exc, original_raw[:300],
+                "[CopilotAgent] Non-JSON response (falling back to rejected): %s (raw_len=%d)",
+                exc, len(original_raw),
             )
             return {
                 "status":          "rejected",
-                "message":         original_raw[:400] if original_raw.strip() else
-                                   "This edit cannot be performed.",
+                "message":         "I could not parse the model response safely.",
                 "changes_summary": None,
                 "cv_data":         cv_data,
             }

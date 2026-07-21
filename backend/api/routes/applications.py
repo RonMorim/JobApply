@@ -111,8 +111,16 @@ async def mark_applied(
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     with Session(ENGINE) as db:
-        # ── Verify job exists ─────────────────────────────────────────────────
-        job_row = db.get(JobRow, body.job_id)
+        # ── Verify job exists AND belongs to the caller ───────────────────────
+        # Filtering by user_id here (not just job_id) prevents a caller from
+        # mutating another user's JobRow.applied/status by guessing a job_id —
+        # a mismatch is indistinguishable from "not found" (never leak
+        # cross-tenant existence).
+        job_row = (
+            db.query(JobRow)
+            .filter(JobRow.job_id == body.job_id, JobRow.user_id == user.user_id)
+            .first()
+        )
         if not job_row:
             raise HTTPException(
                 status_code=404,

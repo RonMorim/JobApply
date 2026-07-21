@@ -47,7 +47,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.api.deps import webhook_rate_limit
-from backend.config import EMAIL_WEBHOOK_SECRET
+from backend.config import EMAIL_WEBHOOK_SECRET, STRICT_CONFIG, MissingRequiredConfigError
 from backend.services.db import ENGINE, ApplicationRow, KVRow
 from backend.services.email_parser import parse_recruiter_email
 from backend.services.llm_validation import sanitize_text
@@ -63,6 +63,19 @@ logger = logging.getLogger(__name__)
 _WEBHOOK_SECRET = EMAIL_WEBHOOK_SECRET
 
 if not _WEBHOOK_SECRET:
+    if STRICT_CONFIG:
+        # Production posture: an unauthenticated inbound webhook is not an
+        # acceptable degraded state — fail fast at import time instead of
+        # silently accepting unauthenticated requests (mirrors backend/config.py's
+        # own STRICT_CONFIG required-env pattern, scoped to this one feature
+        # rather than the app-wide required list since EMAIL_WEBHOOK_SECRET is
+        # optional/feature-specific everywhere else).
+        raise MissingRequiredConfigError(
+            "STRICT_CONFIG=true and EMAIL_WEBHOOK_SECRET is not set. The inbound "
+            "email webhook would accept unauthenticated requests, which is not "
+            "permitted in this mode. Set EMAIL_WEBHOOK_SECRET in backend/.env, "
+            "or unset STRICT_CONFIG for local development."
+        )
     logger.warning(
         "[email-webhook] EMAIL_WEBHOOK_SECRET is not set — the inbound email "
         "webhook will accept UNAUTHENTICATED requests. Set it in backend/.env "

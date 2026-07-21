@@ -31,6 +31,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from backend.services.llm_client import call_llm
+
 logger = logging.getLogger(__name__)
 
 
@@ -230,16 +232,14 @@ ABSOLUTE RULES — violations cause your output to be discarded:
 Output the bullet text only."""
 
 
-def phrase_bullet_llm(fact: VerifiedFact, client) -> Optional[str]:
+async def phrase_bullet_llm(fact: VerifiedFact) -> Optional[str]:
     """
     Ask the LLM to polish one bullet. Returns None on any failure — caller
     falls back to render_bullet_deterministic(). The returned text is NOT
     yet validated; assemble_cv() runs validate_bullet() on it.
     """
     try:
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=200,
+        result = await call_llm(
             system=_PHRASING_SYSTEM,
             messages=[{
                 "role": "user",
@@ -249,8 +249,11 @@ def phrase_bullet_llm(fact: VerifiedFact, client) -> Optional[str]:
                     f"Impact: {fact.impact or '(none)'}"
                 ),
             }],
+            model="claude-sonnet-4-6",
+            max_tokens=200,
+            purpose="cv_assembly_phrase_bullet",
         )
-        text = resp.content[0].text.strip()
+        text = result.text.strip()
         return text or None
     except Exception as exc:
         logger.warning("[cv-assembly] LLM phrasing failed (%s) — deterministic fallback", exc)
@@ -349,12 +352,12 @@ def load_verified_facts(user_id: str, engine) -> list[VerifiedFact]:
 # Top-level assembly
 # ═════════════════════════════════════════════════════════════════════════════
 
-def assemble_cv(
+async def assemble_cv(
     facts:            list[VerifiedFact],
     gap_entities:     list[str],
     matched_entities: list[str],
     candidate_title:  str,
-    llm_client=None,
+    use_llm_phrasing: bool = False,
     max_bullets:      int = 12,
     company_vibe:     Optional[str] = None,
 ) -> AssembledCv:
@@ -381,8 +384,8 @@ def assemble_cv(
     rejected = 0
     for fact in selected:
         text: Optional[str] = None
-        if llm_client is not None:
-            draft = phrase_bullet_llm(fact, llm_client)
+        if use_llm_phrasing:
+            draft = await phrase_bullet_llm(fact)
             if draft and validate_bullet(draft, [fact]):
                 text = draft
             elif draft:

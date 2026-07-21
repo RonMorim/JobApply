@@ -22,12 +22,12 @@ from __future__ import annotations
 import base64
 import io
 import logging
-import os
 from pathlib import Path
 from typing import Literal
 
-import anthropic
 from dotenv import load_dotenv
+
+from backend.services.llm_client import call_llm
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 
@@ -92,7 +92,7 @@ def _image_to_base64(content: bytes, mime_type: str) -> str:
     return base64.standard_b64encode(content).decode("utf-8")
 
 
-def verify_document(
+async def verify_document(
     *,
     file_content:  bytes,
     filename:      str,
@@ -114,7 +114,6 @@ def verify_document(
     -------
     dict with keys: status, confidence, match_notes, extracted_facts
     """
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
     ext    = Path(filename).suffix.lower()
 
     user_content: list = []
@@ -175,13 +174,14 @@ def verify_document(
         }
 
     try:
-        response = client.messages.create(
-            model      = _MODEL,
-            max_tokens = _MAX_TOKENS,
+        result_llm = await call_llm(
             system     = _VERIFY_SYSTEM,
             messages   = [{"role": "user", "content": user_content}],
+            model      = _MODEL,
+            max_tokens = _MAX_TOKENS,
+            purpose    = "document_verify",
         )
-        raw    = response.content[0].text.strip()
+        raw    = result_llm.text.strip()
         import json, re
         raw    = re.sub(r"```(?:json)?", "", raw).strip()
         result = json.loads(raw)

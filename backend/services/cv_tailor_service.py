@@ -32,10 +32,10 @@ from backend.utilities.ai_scrubber import scrub_dict
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 from dotenv import load_dotenv
 
 from backend.services import job_store
+from backend.services.llm_client import call_llm, LLMCallError
 from backend.services.user_profile import USER_PROFILE, build_full_text
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
 from backend.services.master_profile_service import get_skill_proficiencies
@@ -243,7 +243,7 @@ def _save_tailor_brief(job_id: str, user_id: str, brief: dict) -> None:
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-def _build_verified_assembly(job: JobMatch, jd_text: str, user_id: str, company_vibe: str | None = None) -> dict:
+async def _build_verified_assembly(job: JobMatch, jd_text: str, user_id: str, company_vibe: str | None = None) -> dict:
     """
     Run the Zero-Hallucination CV Assembly Engine for this job.
 
@@ -277,18 +277,15 @@ def _build_verified_assembly(job: JobMatch, jd_text: str, user_id: str, company_
         if m.matched_entity is None and m.competency.tier.value == "must_have"
     ]
 
-    # LLM phrasing layer: reuse the module-level Anthropic client config.
-    llm_client = None
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if api_key:
-        llm_client = anthropic.Anthropic(api_key=api_key)
+    # LLM phrasing layer: only attempt it when the key is configured.
+    use_llm_phrasing = bool(os.getenv("ANTHROPIC_API_KEY"))
 
-    assembled = assemble_cv(
+    assembled = await assemble_cv(
         facts            = facts,
         gap_entities     = gap_ents,
         matched_entities = matched,
         candidate_title  = USER_PROFILE.get("personal", {}).get("title", "") or job.title,
-        llm_client       = llm_client,
+        use_llm_phrasing = use_llm_phrasing,
         company_vibe     = company_vibe,   # strategy biases fact SELECTION only
     )
 
@@ -408,18 +405,20 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False, *, use
         job.title, job.company, job_id, len(jd_text),
     )
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
     try:
-        response = await client.messages.create(
-            model      = _MODEL,
-            max_tokens = _MAX_TOKENS,
+        result_llm = await call_llm(
             system     = harden_system_prompt(_SYSTEM),
             messages   = [{"role": "user", "content": user_msg}],
+            model      = _MODEL,
+            max_tokens = _MAX_TOKENS,
+            purpose    = "cv_tailor_generate_brief",
+            user_id    = user_id,
+            job_id     = job_id,
         )
-    except anthropic.APIError as exc:
-        raise RuntimeError(f"Claude API error: {exc}") from exc
+    except LLMCallError as exc:
+        raise RuntimeError(str(exc)) from exc
 
-    raw_text = response.content[0].text if response.content else ""
+    raw_text = result_llm.text
 
     # ── 5. Parse and normalise ────────────────────────────────────────────────
     try:
@@ -437,7 +436,7 @@ async def generate_tailor_brief(job_id: str, force_refresh: bool = False, *, use
     # below are the only content guaranteed fact-backed. Non-fatal on failure —
     # the brief is still returned without the assembly block.
     try:
-        brief["verified_assembly"] = _build_verified_assembly(job, jd_text, user_id, company_vibe=company_vibe)
+        brief["verified_assembly"] = await _build_verified_assembly(job, jd_text, user_id, company_vibe=company_vibe)
     except Exception as exc:
         logger.warning("[cv_tailor] verified assembly failed (non-fatal): %s", exc)
         brief["verified_assembly"] = None

@@ -24,9 +24,9 @@ import os
 from pathlib import Path
 from typing import Optional, TypedDict
 
-import anthropic
 from dotenv import load_dotenv
 
+from backend.services.llm_client import call_llm, LLMCallError
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
@@ -115,8 +115,6 @@ async def parse_recruiter_email(subject: str, body: str) -> ParsedEmail:
         logger.error("[email_parser] ANTHROPIC_API_KEY not set — skipping parse")
         return ParsedEmail(company_name=None, mapped_status="Unknown", db_status=None)
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-
     # Defense in depth: the webhook route sanitizes before calling us, but any
     # future caller must get the same treatment — untrusted email text goes
     # through sanitize_text() before it is formatted into the prompt.
@@ -126,17 +124,18 @@ async def parse_recruiter_email(subject: str, body: str) -> ParsedEmail:
     )
 
     try:
-        response = await client.messages.create(
-            model      = _MODEL,
-            max_tokens = _MAX_TOKENS,
+        result_llm = await call_llm(
             system     = harden_system_prompt(_SYSTEM_PROMPT),
             messages   = [{"role": "user", "content": user_msg}],
+            model      = _MODEL,
+            max_tokens = _MAX_TOKENS,
+            purpose    = "email_parse_recruiter",
         )
-    except Exception as exc:
+    except LLMCallError as exc:
         logger.exception("[email_parser] API call failed: %s", exc)
         return ParsedEmail(company_name=None, mapped_status="Unknown", db_status=None)
 
-    raw = response.content[0].text.strip()
+    raw = result_llm.text.strip()
 
     # Strip optional markdown fences
     if raw.startswith("```"):

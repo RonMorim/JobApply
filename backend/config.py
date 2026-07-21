@@ -44,15 +44,27 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
 #                                      verification; webhook still works
 #                                      unauthenticated (with a loud warning)
 #                                      when unset
+#   GEMINI_API_KEY                  — enables llm_client.py's automatic Gemini
+#                                      fallback for plain text/tool-free calls
+#                                      when every Anthropic attempt fails
+#                                      (missing/invalid key, outage, etc).
+#                                      Without it: those calls just fail with
+#                                      the same LLMCallError as before this
+#                                      fallback existed — nothing regresses.
 #
-# NOTE: ANTHROPIC_API_KEY is still read directly via os.getenv() in ~25
-# agent/service call sites as of this writing (matcher, tailor, copilot,
-# scoring, etc.). That will be consolidated behind a single LLM client
-# wrapper in a later phase. The canonical value is exposed here now so new
-# code has one place to import it from instead of adding call site #26.
+# NOTE: All live LLM call sites now go through backend/services/llm_client.py
+# (call_llm() / stream_llm()), which builds its own client from this value.
+# A handful of agent/service modules still read os.getenv("ANTHROPIC_API_KEY")
+# directly, but only as a pre-flight "is the key configured" guard before
+# calling call_llm() — not to construct their own provider client. The one
+# deliberate exception is backend/agents/resume.py's PDF-vision path, which
+# uses the SDK's beta.messages.create(betas=[...]) surface that call_llm()
+# does not wrap. The canonical value is exposed here so new code has one
+# place to import it from.
 
 ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
 TAVILY_API_KEY:    Optional[str] = os.getenv("TAVILY_API_KEY")
+GEMINI_API_KEY:    Optional[str] = os.getenv("GEMINI_API_KEY")
 
 SUPABASE_URL:        Optional[str] = os.getenv("SUPABASE_URL")
 SUPABASE_JWT_SECRET: Optional[str] = os.getenv("SUPABASE_JWT_SECRET")

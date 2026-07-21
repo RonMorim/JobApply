@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 
 from backend.services.outreach_service import generate_pitch_from_raw
@@ -20,23 +20,22 @@ def mock_job_posting():
 def mock_user_profile():
     return "Senior AI Engineer with 10 years of experience in Python and LLMs."
 
-@patch("backend.services.outreach_service.anthropic.Anthropic")
-def test_generate_pitch_from_raw(mock_anthropic, mock_job_posting, mock_user_profile):
+@pytest.mark.asyncio
+async def test_generate_pitch_from_raw(mock_job_posting, mock_user_profile):
     # Setup mock LLM response with an AI tell
-    mock_client = MagicMock()
-    mock_message = MagicMock()
+    mock_result = MagicMock()
     # "As an AI" should be stripped, "delve" should be replaced
-    mock_message.content = [MagicMock(text="As an AI, I suggest you delve into this candidate. They are great!")]
-    mock_client.messages.create.return_value = mock_message
-    mock_anthropic.return_value = mock_client
+    mock_result.text = "As an AI, I suggest you delve into this candidate. They are great!"
+    mock_call_llm = AsyncMock(return_value=mock_result)
 
     # Execute
-    result = generate_pitch_from_raw(mock_job_posting, mock_user_profile)
+    with patch("backend.services.outreach_service.call_llm", new=mock_call_llm):
+        result = await generate_pitch_from_raw(mock_job_posting, mock_user_profile)
 
     # Verify LLM was called
-    mock_client.messages.create.assert_called_once()
-    
-    # Verify the scrubber was applied ("As an AI, I suggest you " is stripped in some scrubber logic, 
+    mock_call_llm.assert_called_once()
+
+    # Verify the scrubber was applied ("As an AI, I suggest you " is stripped in some scrubber logic,
     # but at least "delve" should be changed to "explore", and "As an AI" should be handled).
     # Since we know `clean_ai_text` cleans these, let's just assert the result doesn't have them.
     assert "As an AI" not in result

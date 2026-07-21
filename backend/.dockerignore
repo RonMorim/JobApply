@@ -1,0 +1,18 @@
+# Applies to the `backend/` half of the build context (repo root is the
+# actual context — see backend/Dockerfile — so also check the root
+# .dockerignore, which excludes web_dashboard/, .git/, etc. entirely).
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Live dev data — must come from the bind mount at runtime, never baked
+# into the image.
+jobs.db
+jobs.db-shm
+jobs.db-wal
+
+# Real secrets — never end up in an image layer.
+.env

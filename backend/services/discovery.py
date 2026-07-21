@@ -72,7 +72,7 @@ async def _enrich_job(match: JobMatch, user_id: str) -> None:
     # ── JD structuring ─────────────────────────────────────────────────────────
     try:
         from backend.services.jd_structure_service import structure_jd, extract_company_from_structured
-        structured = await asyncio.to_thread(structure_jd, jd_text)
+        structured = await structure_jd(jd_text, user_id=user_id, job_id=match.job_id)
         if structured:
             job_store.update_jd_structured(match.job_id, structured)
             structured_ok = True

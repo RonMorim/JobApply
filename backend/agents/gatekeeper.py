@@ -26,10 +26,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
 
-import anthropic
 from dotenv import load_dotenv
 
 from backend.agents.tailor import _enforce_limits
+from backend.services.llm_client import call_llm
 from backend.services.pdf_builder import build_pdf
 from models.job import JobMatch
 
@@ -124,10 +124,8 @@ fields you did not change. Do not omit or summarise unchanged sections:
 
 class RevisionGatekeeper:
     def __init__(self) -> None:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
+        if not os.getenv("ANTHROPIC_API_KEY"):
             raise ValueError("ANTHROPIC_API_KEY not set")
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
 
     async def revise(
         self,
@@ -165,15 +163,16 @@ class RevisionGatekeeper:
             job.title, job.company, len(revision_text),
         )
 
-        response = await self._client.messages.create(
+        result = await call_llm(
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
             temperature=0.0,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_msg}],
+            purpose="gatekeeper_revise",
         )
 
-        raw = response.content[0].text.strip()
+        raw = result.text.strip()
         # Strip markdown fences if the model wraps anyway
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)

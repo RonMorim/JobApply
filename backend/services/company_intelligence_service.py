@@ -39,8 +39,9 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import anthropic
 from pydantic import BaseModel, Field
+
+from backend.services.llm_client import call_llm
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +186,6 @@ async def _research_company(company: str) -> Optional[CompanyProfile]:
         logger.warning("[company-intel] ANTHROPIC_API_KEY not set — skipping research")
         return None
 
-    client   = anthropic.AsyncAnthropic(api_key=api_key)
     user_msg = f"Company to research: {company}"
 
     # ── Attempt 1: web-search-grounded ────────────────────────────────────────
@@ -193,13 +193,15 @@ async def _research_company(company: str) -> Optional[CompanyProfile]:
         messages: list[dict] = [{"role": "user", "content": user_msg}]
         response = None
         for _ in range(_MAX_CONTINUATIONS + 1):
-            response = await client.messages.create(
-                model      = _RESEARCH_MODEL,
-                max_tokens = _MAX_TOKENS,
+            result_llm = await call_llm(
                 system     = _RESEARCH_SYSTEM,
                 messages   = messages,
+                model      = _RESEARCH_MODEL,
+                max_tokens = _MAX_TOKENS,
                 tools      = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 4}],
+                purpose    = "company_intel_research_web_search",
             )
+            response = result_llm.raw
             if response.stop_reason != "pause_turn":
                 break
             # Server-side tool loop paused — re-send to resume where it left off.
@@ -220,9 +222,7 @@ async def _research_company(company: str) -> Optional[CompanyProfile]:
 
     # ── Attempt 2: model knowledge only, honest low confidence ────────────────
     try:
-        response = await client.messages.create(
-            model      = _RESEARCH_MODEL,
-            max_tokens = _MAX_TOKENS,
+        result_llm = await call_llm(
             system     = _RESEARCH_SYSTEM,
             messages   = [{
                 "role": "user",
@@ -232,8 +232,11 @@ async def _research_company(company: str) -> Optional[CompanyProfile]:
                     f"over guessing recent events.)"
                 ),
             }],
+            model      = _RESEARCH_MODEL,
+            max_tokens = _MAX_TOKENS,
+            purpose    = "company_intel_research_fallback",
         )
-        text = "".join(b.text for b in response.content if b.type == "text")
+        text = "".join(b.text for b in result_llm.raw.content if b.type == "text")
         data = _extract_json(text)
         data["confidence"] = "low"   # enforce regardless of what the model said
         profile = _profile_from_dict(company, data, source="model_knowledge")
