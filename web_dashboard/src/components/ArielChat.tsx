@@ -1469,7 +1469,11 @@ export function ArielChat({ onClose }: { onClose?: () => void } = {}) {
                 onClick={() => { triggerProfileRefresh(); onClose() }}
                 title="Close"
                 aria-label="Close Ariel"
-                className="h-11 w-11 sm:h-7 sm:w-7 flex items-center justify-center rounded-lg text-slate-400 active:bg-slate-200 sm:hover:text-slate-700 sm:hover:bg-slate-100 transition-colors"
+                // Persistent bg-slate-100 circle on mobile only (not
+                // hover/active-only) so the close control is unambiguously
+                // pinned and visible on touch devices, where :hover never
+                // fires; desktop keeps its minimal icon-only compact header.
+                className="h-11 w-11 sm:h-7 sm:w-7 flex items-center justify-center rounded-full sm:rounded-lg bg-slate-100 sm:bg-transparent text-slate-500 sm:text-slate-400 active:bg-slate-200 sm:hover:text-slate-700 sm:hover:bg-slate-100 transition-colors"
               >
                 <svg width={13} height={13} viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">

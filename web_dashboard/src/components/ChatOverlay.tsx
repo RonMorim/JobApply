@@ -593,8 +593,12 @@ function PublicChatPanel({ onClose }: { onClose: () => void }) {
           <button
             onClick={onClose}
             title="Close"
-            className="w-11 h-11 sm:w-7 sm:h-7 flex items-center justify-center rounded-lg transition-colors active:bg-indigo-500/25 sm:hover:bg-indigo-500/15"
-            style={{ color: '#6366f1' }}
+            aria-label="Close Eliya"
+            // Persistent bg-white/10 chip (not hover/active-only) so the
+            // close control reads as a clear, tappable affordance on touch
+            // devices, where :hover never fires and the icon alone was low-
+            // contrast against the dark header.
+            className="w-11 h-11 sm:w-7 sm:h-7 flex items-center justify-center rounded-full bg-white/10 text-white transition-colors active:bg-indigo-500/30 sm:hover:bg-white/20"
           >
             <CloseIcon />
           </button>
@@ -785,10 +789,12 @@ function TopLeftResizeHandle({
   size,
   setSize,
   variant = 'onLight',
+  onResizeStart,
 }: {
-  size:     { width: number; height: number }
-  setSize:  React.Dispatch<React.SetStateAction<{ width: number; height: number }>>
-  variant?: 'onLight' | 'onDark'
+  size:          { width: number; height: number }
+  setSize:       React.Dispatch<React.SetStateAction<{ width: number; height: number }>>
+  variant?:      'onLight' | 'onDark'
+  onResizeStart: () => void
 }) {
   const [hover, setHover]     = useState(false)
   const [dragging, setDragging] = useState(false)
@@ -817,10 +823,11 @@ function TopLeftResizeHandle({
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
     setDragging(true)
+    onResizeStart()
     dragRef.current = { startX: e.clientX, startY: e.clientY, startW: size.width, startH: size.height }
     window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('pointerup', onPointerUp)
-  }, [size, onPointerMove, onPointerUp])
+  }, [size, onPointerMove, onPointerUp, onResizeStart])
 
   useEffect(() => {
     return () => {
@@ -877,6 +884,24 @@ function OverlayShell({
 }) {
   const isDesktop  = _useIsDesktop()
   const [size, setSize] = useState(_DEFAULT_SIZE)
+  // Desktop starts at a viewport-relative `sm:h-[85vh]` (Tailwind class,
+  // below) rather than a hardcoded pixel default — `userResized` tracks
+  // whether the user has actually dragged the corner handle at least once;
+  // until then the class governs height, so the panel scales sensibly across
+  // different desktop monitor sizes instead of always opening at a fixed px.
+  const [userResized, setUserResized] = useState(false)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  // Sync `size.height` to the panel's actual rendered height (driven by the
+  // `sm:h-[85vh]` class up to this point) before handing control to the
+  // inline-style/state-driven path — otherwise the drag math would start
+  // from the stale `_DEFAULT_SIZE.height` (520px) and the panel would jump
+  // to that height the instant the user starts dragging.
+  const handleResizeStart = useCallback(() => {
+    const rect = panelRef.current?.getBoundingClientRect()
+    if (rect) setSize(prev => ({ ...prev, height: rect.height }))
+    setUserResized(true)
+  }, [])
 
   return (
     <>
@@ -888,19 +913,21 @@ function OverlayShell({
       )}
       {/* Ariel overlay — Meridian V2 §6.1 names this specifically as light-glass */}
       <div
+        ref={panelRef}
         role="dialog"
         aria-label={ariaLabel}
         aria-modal="true"
-        className="fixed bottom-0 right-0 z-50 flex flex-col w-full h-[100vh] h-[100dvh] sm:h-auto sm:bottom-6 sm:rounded-2xl overflow-hidden transition-all duration-[250ms] ease-out bg-white/85 backdrop-blur-xl border border-white/60"
+        className="fixed bottom-0 right-0 z-50 flex flex-col w-full h-[100vh] h-[100dvh] rounded-none sm:h-[85vh] sm:bottom-6 sm:rounded-2xl overflow-hidden transition-all duration-[250ms] ease-out bg-white/85 backdrop-blur-xl border border-white/60"
         style={{
           // Mobile: `h-[100dvh]` above (with `100vh` as the pre-dvh-support
           // fallback, via cascade — not settable in a single inline value)
           // tracks the real visible viewport as mobile browser chrome and
           // the on-screen keyboard show/hide, so the sheet is always a true
-          // full-screen sheet and never leaves a gap. `sm:h-auto` hands
-          // height back to this inline style on desktop, where it's the
-          // user-resizable floating panel driven by `size` state.
-          height:        isOpen ? (isDesktop ? `${size.height}px` : undefined) : '0px',
+          // full-screen sheet and never leaves a gap. Desktop defaults to
+          // the `sm:h-[85vh]` class (viewport-relative) until the user drags
+          // the resize handle, at which point this inline style takes over
+          // and drives height from `size` state instead.
+          height:        isOpen ? (isDesktop && userResized ? `${size.height}px` : undefined) : '0px',
           width:         isDesktop ? `${size.width}px` : undefined,
           minWidth:      isDesktop ? `${_MIN_WIDTH}px` : undefined,
           minHeight:     isDesktop ? `${_MIN_HEIGHT}px` : undefined,
@@ -917,7 +944,14 @@ function OverlayShell({
           right:         isDesktop ? offsetRight : '0',
         }}
       >
-        {isDesktop && <TopLeftResizeHandle size={size} setSize={setSize} variant={handleVariant} />}
+        {isDesktop && (
+          <TopLeftResizeHandle
+            size={size}
+            setSize={setSize}
+            variant={handleVariant}
+            onResizeStart={handleResizeStart}
+          />
+        )}
         {children}
       </div>
     </>
