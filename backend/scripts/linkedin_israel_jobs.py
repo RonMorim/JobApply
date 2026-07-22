@@ -26,18 +26,19 @@ IMPORTANT:
   your own risk.
 
 Usage:
-    python linkedin_israel_jobs.py
-    python linkedin_israel_jobs.py --keywords "Python Developer" --hours 3
+    python -m backend.scripts.linkedin_israel_jobs
+    python -m backend.scripts.linkedin_israel_jobs --keywords "Python Developer" --hours 3
 """
+from __future__ import annotations
 
 import argparse
 import csv
 import re
-import time
-from dataclasses import dataclass, asdict
-from typing import List, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass
+from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -186,10 +187,10 @@ def fetch_page(session: requests.Session, keywords: str, location: str,
     return resp.text
 
 
-def parse_jobs(html: str) -> List[JobListing]:
+def parse_jobs(html: str) -> list[JobListing]:
     """Parse a guest-API HTML fragment into JobListing objects."""
     soup = BeautifulSoup(html, "html.parser")
-    jobs: List[JobListing] = []
+    jobs: list[JobListing] = []
 
     cards = soup.select("li")
     for card in cards:
@@ -225,14 +226,14 @@ def parse_jobs(html: str) -> List[JobListing]:
 def scrape_jobs_in_batches(keywords: str, location: str, hours: int,
                             max_pages: int, batch_size: int,
                             delay_between_requests: float,
-                            delay_between_batches: float) -> List[JobListing]:
+                            delay_between_batches: float) -> list[JobListing]:
     """
     Pull job pages in batches.
 
     max_pages: total number of 25-result pages to fetch overall.
     batch_size: how many pages to fetch per batch before the longer pause.
     """
-    all_jobs: List[JobListing] = []
+    all_jobs: list[JobListing] = []
     seen_urls = set()
 
     session = requests.Session()
@@ -275,7 +276,7 @@ def scrape_jobs_in_batches(keywords: str, location: str, hours: int,
     return all_jobs
 
 
-def save_to_csv(jobs: List[JobListing], filename: str) -> None:
+def save_to_csv(jobs: list[JobListing], filename: str) -> None:
     if not jobs:
         print("No jobs to save.")
         return
