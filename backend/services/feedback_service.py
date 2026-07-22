@@ -165,56 +165,24 @@ def _upsert_feedback_row(
     snapshot: dict,
     engine,
 ) -> None:
-    from sqlalchemy.orm import Session
+    from backend.repositories import job_feedback_repository
 
-    from backend.models.application import JobFeedbackRow
-
-    now = _now_iso()
-    with Session(engine) as s:
-        row = (
-            s.query(JobFeedbackRow)
-            .filter(JobFeedbackRow.user_id == user_id, JobFeedbackRow.job_id == job_id)
-            .one_or_none()
-        )
-        if row is None:
-            row = JobFeedbackRow(
-                user_id=user_id, job_id=job_id, created_at=now,
-            )
-            s.add(row)
-        # Latest opinion wins; snapshot refreshes with the current job state.
-        row.feedback_type = feedback_type
-        row.reason        = (reason or "").strip() or None
-        row.snapshot_json = json.dumps(snapshot, ensure_ascii=False)
-        row.updated_at    = now
-        s.commit()
+    # Latest opinion wins; snapshot refreshes with the current job state.
+    job_feedback_repository.upsert(
+        user_id       = user_id,
+        job_id        = job_id,
+        feedback_type = feedback_type,
+        reason        = (reason or "").strip() or None,
+        snapshot_json = json.dumps(snapshot, ensure_ascii=False),
+        now           = _now_iso(),
+        engine        = engine,
+    )
 
 
 def fetch_feedback_rows(user_id: str, engine) -> list[dict]:
-    from sqlalchemy.orm import Session
+    from backend.repositories import job_feedback_repository
 
-    from backend.models.application import JobFeedbackRow
-
-    with Session(engine) as s:
-        rows = (
-            s.query(JobFeedbackRow)
-            .filter(JobFeedbackRow.user_id == user_id)
-            .order_by(JobFeedbackRow.updated_at.desc())
-            .all()
-        )
-        out: list[dict] = []
-        for r in rows:
-            try:
-                snapshot = json.loads(r.snapshot_json or "{}")
-            except json.JSONDecodeError:
-                snapshot = {}
-            out.append({
-                "job_id":        r.job_id,
-                "feedback_type": r.feedback_type,
-                "reason":        r.reason,
-                "snapshot":      snapshot,
-                "updated_at":    r.updated_at,
-            })
-        return out
+    return job_feedback_repository.fetch_for_user(user_id, engine=engine)
 
 
 def _write_learned_preference(user_id: str, preference: str, engine) -> str:
