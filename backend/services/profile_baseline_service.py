@@ -476,23 +476,16 @@ def persist_baseline_snapshot(user_id: str, baseline: dict, engine=None) -> bool
     try:
         from sqlalchemy.orm import Session
 
-        from backend.models.profile import MasterProfileRow
+        from backend.repositories import master_profile_repository
 
         # cv_data is rebuilt on demand by the pipeline; persisting it would
         # just duplicate the profile row's own contents.
         snapshot = {k: v for k, v in baseline.items() if k != "cv_data"}
 
         with Session(engine) as s:
-            row = s.get(MasterProfileRow, user_id)
-            if row is None:
-                row = MasterProfileRow(
-                    user_id           = user_id,
-                    onboarding_status = "incomplete",
-                    master_profile    = {},
-                    created_at        = _now().isoformat(),
-                    updated_at        = _now().isoformat(),
-                )
-                s.add(row)
+            row, _created = master_profile_repository.get_or_create(
+                s, user_id, now=_now().isoformat(),
+            )
             merged = dict(row.master_profile or {})
             merged["baseline_snapshot"] = snapshot
             row.master_profile = merged

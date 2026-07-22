@@ -234,19 +234,10 @@ def _write_learned_preference(user_id: str, preference: str, engine) -> str:
     """
     from sqlalchemy.orm import Session
 
-    from backend.models.profile import MasterProfileRow
+    from backend.repositories import master_profile_repository
 
     with Session(engine) as s:
-        row = s.get(MasterProfileRow, user_id)
-        if row is None:
-            row = MasterProfileRow(
-                user_id           = user_id,
-                onboarding_status = "incomplete",
-                master_profile    = {},
-                created_at        = _now_iso(),
-                updated_at        = _now_iso(),
-            )
-            s.add(row)
+        row, _created = master_profile_repository.get_or_create(s, user_id, now=_now_iso())
 
         merged      = dict(row.master_profile or {})
         metrics_doc = dict(merged.get("metrics_doc") or {})

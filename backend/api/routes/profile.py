@@ -28,7 +28,8 @@ from sqlalchemy.orm import Session
 
 from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, standard_rate_limit
 from backend.core.database import ENGINE
-from backend.models.profile import EvidenceRecordRow, MasterProfileRow, ProfileEntityRow
+from backend.models.profile import EvidenceRecordRow, ProfileEntityRow
+from backend.repositories import master_profile_repository
 from backend.services.master_profile_service import (
     get_enriched_entities,
     get_enriched_entity,
@@ -82,19 +83,11 @@ async def init_profile(user: CurrentUser = Depends(get_current_user)):
     """
     db = Session(ENGINE)
     try:
-        row = db.get(MasterProfileRow, user.user_id)
-        if row:
+        now = datetime.now(timezone.utc).isoformat()
+        row, created = master_profile_repository.get_or_create(db, user.user_id, now=now)
+        if not created:
             return {"status": "ok", "created": False}
 
-        now = datetime.now(timezone.utc).isoformat()
-        row = MasterProfileRow(
-            user_id           = user.user_id,
-            onboarding_status = "incomplete",
-            master_profile    = {},
-            created_at        = now,
-            updated_at        = now,
-        )
-        db.add(row)
         db.commit()
         logger.info("[profile/init] Created master_profiles row for %s", user.user_id)
         return {"status": "ok", "created": True}
@@ -297,20 +290,11 @@ async def save_role_preferences(
     # Mirror into master_profiles for DB-side consumers.
     _now = datetime.now(timezone.utc).isoformat()
     with Session(ENGINE) as _sess:
-        row = _sess.get(MasterProfileRow, user.user_id)
-        if row:
-            mp = dict(row.master_profile or {})
-            mp["role_preferences"] = {"target_titles": target_titles, "roles": roles}
-            row.master_profile = mp
-            row.updated_at     = _now
-        else:
-            _sess.add(MasterProfileRow(
-                user_id           = user.user_id,
-                onboarding_status = "incomplete",
-                master_profile    = {"role_preferences": {"target_titles": target_titles, "roles": roles}},
-                created_at        = _now,
-                updated_at        = _now,
-            ))
+        row, _created = master_profile_repository.get_or_create(_sess, user.user_id, now=_now)
+        mp = dict(row.master_profile or {})
+        mp["role_preferences"] = {"target_titles": target_titles, "roles": roles}
+        row.master_profile = mp
+        row.updated_at     = _now
         _sess.commit()
 
     logger.info("[profile/preferences] user=%s roles=%d", user.user_id, len(roles))
@@ -612,21 +596,12 @@ async def upload_cv_files(
 
     _now = datetime.now(timezone.utc).isoformat()
     with Session(ENGINE) as _sess:
-        row = _sess.get(MasterProfileRow, user.user_id)
-        if row:
-            mp = dict(row.master_profile or {})
-            mp["cv_data"] = cv_claims
-            mp["cv_imported_at"] = _now
-            row.master_profile = mp
-            row.updated_at = _now
-        else:
-            _sess.add(MasterProfileRow(
-                user_id=user.user_id,
-                onboarding_status="incomplete",
-                master_profile={"cv_data": cv_claims, "cv_imported_at": _now},
-                created_at=_now,
-                updated_at=_now,
-            ))
+        row, _created = master_profile_repository.get_or_create(_sess, user.user_id, now=_now)
+        mp = dict(row.master_profile or {})
+        mp["cv_data"] = cv_claims
+        mp["cv_imported_at"] = _now
+        row.master_profile = mp
+        row.updated_at = _now
         _sess.commit()
 
     # Phase 4: Ingest entities into the Confidence Matrix
@@ -1134,9 +1109,7 @@ async def upload_verification_document(
     """
     from backend.agents.profile_interviewer import get_session
     from backend.services.document_verifier import verify_document
-    from backend.core.database import ENGINE
-    from backend.models.profile import ProfileInterviewRow
-    from sqlalchemy.orm import Session as DBSession
+    from backend.repositories import profile_interview_repository
 
     # Validate session (also enforces ownership)
     try:
@@ -1177,33 +1150,35 @@ async def upload_verification_document(
     # Update confidence_map in DB if verified/partial
     new_confidence = result.get("confidence")
     if new_confidence is not None:
-        with DBSession(ENGINE) as db:
-            row = db.get(ProfileInterviewRow, session_id)
-            if row:
-                cmap = dict(row.confidence_map or {})
-                # Find the matching claim by label
-                claim_lower = claim.lower()
-                for k, v in cmap.items():
-                    if claim_lower in (v.get("label") or "").lower():
-                        cmap[k] = {
-                            **v,
-                            "score":    new_confidence,
-                            "status":   result["status"],
-                            "evidence": file.filename,
-                        }
-                        break
-                doc_refs = list(row.document_refs or [])
-                doc_refs.append({
-                    "filename":        file.filename,
-                    "claim":           claim,
-                    "status":          result["status"],
-                    "confidence":      new_confidence,
-                    "extracted_facts": result.get("extracted_facts", {}),
-                    "match_notes":     result.get("match_notes", ""),
-                })
-                row.confidence_map = cmap
-                row.document_refs  = doc_refs
-                db.commit()
+        # Re-fetch immediately before merging (not the pre-verification
+        # session_state) so a concurrent write to this session during the
+        # verify_document() LLM call is never clobbered.
+        fresh = profile_interview_repository.get(session_id)
+        if fresh:
+            cmap = dict(fresh["confidence_map"] or {})
+            # Find the matching claim by label
+            claim_lower = claim.lower()
+            for k, v in cmap.items():
+                if claim_lower in (v.get("label") or "").lower():
+                    cmap[k] = {
+                        **v,
+                        "score":    new_confidence,
+                        "status":   result["status"],
+                        "evidence": file.filename,
+                    }
+                    break
+            doc_refs = list(fresh["document_refs"] or [])
+            doc_refs.append({
+                "filename":        file.filename,
+                "claim":           claim,
+                "status":          result["status"],
+                "confidence":      new_confidence,
+                "extracted_facts": result.get("extracted_facts", {}),
+                "match_notes":     result.get("match_notes", ""),
+            })
+            profile_interview_repository.update_confidence_and_docs(
+                session_id, confidence_map=cmap, document_refs=doc_refs,
+            )
 
     return {
         "verification": result,

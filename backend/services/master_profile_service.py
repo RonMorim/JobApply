@@ -99,17 +99,8 @@ def _empty_profile() -> dict:
 
 def _get_or_create_profile_row(user_id: str, session):
     """Return the MasterProfileRow for user_id, creating an empty one if absent."""
-    from backend.models.profile import MasterProfileRow
-    row = session.get(MasterProfileRow, user_id)
-    if row is None:
-        row = MasterProfileRow(
-            user_id           = user_id,
-            onboarding_status = "incomplete",
-            master_profile    = {},
-            created_at        = _now_iso(),
-            updated_at        = _now_iso(),
-        )
-        session.add(row)
+    from backend.repositories import master_profile_repository
+    row, _created = master_profile_repository.get_or_create(session, user_id, now=_now_iso())
     return row
 
 
