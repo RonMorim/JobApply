@@ -87,3 +87,20 @@ def has_application(job_id: str, user_id: str = "default") -> bool:
             )
             .count() > 0
         )
+
+
+def delete(application_id: str, user_id: str = "default") -> bool:
+    """
+    Delete a single application row, scoped to user_id.
+
+    Returns True if a row belonging to user_id was found and deleted, False
+    if no such row exists — including when application_id exists but belongs
+    to a different user, so this never leaks cross-tenant existence.
+    """
+    with Session(ENGINE) as session:
+        row = session.get(ApplicationRow, application_id)
+        if not row or row.user_id != user_id:
+            return False
+        session.delete(row)
+        session.commit()
+        return True

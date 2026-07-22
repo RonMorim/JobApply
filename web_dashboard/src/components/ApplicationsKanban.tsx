@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchCrmBoard, moveCrmCard } from '@/lib/api'
+import { fetchCrmBoard, moveCrmCard, deleteApplication } from '@/lib/api'
 import type { CrmBoard, CrmCard, CrmColumn } from '@/lib/apiTypes'
 import { TOKENS } from '@/lib/tokens'
 
@@ -64,9 +64,11 @@ interface CardModalProps {
   onClose:      () => void
   onMove:       (toStage: string) => void
   moving:       boolean
+  onDelete:     () => Promise<void>
+  deleting:     boolean
 }
 
-function CardDetailModal({ card, currentStage, onClose, onMove, moving }: CardModalProps) {
+function CardDetailModal({ card, currentStage, onClose, onMove, moving, onDelete, deleting }: CardModalProps) {
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -164,7 +166,18 @@ function CardDetailModal({ card, currentStage, onClose, onMove, moving }: CardMo
           </div>
 
           {/* Footer */}
-          <div className="px-5 pb-5 pt-1 flex justify-end">
+          <div className="px-5 pb-5 pt-1 flex items-center justify-between">
+            <button
+              onClick={() => {
+                if (window.confirm(`Delete the application for "${card.title}"? This cannot be undone.`)) {
+                  void onDelete()
+                }
+              }}
+              disabled={deleting}
+              className="h-8 px-3 rounded-lg text-[12.5px] font-medium border transition disabled:opacity-50 text-rose-600 border-rose-200 hover:bg-rose-50"
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
             <button
               onClick={onClose}
               className="h-8 px-4 rounded-lg text-[12.5px] font-medium text-slate-600 border border-slate-200 hover:bg-slate-50 transition"
@@ -407,6 +420,7 @@ export function ApplicationsKanban({ onRefresh }: { onRefresh?: () => void }) {
   const [modalCard,  setModalCard]  = useState<CrmCard | null>(null)
   const [modalStage, setModalStage] = useState<string>('')
   const [modalMoving, setModalMoving] = useState(false)
+  const [modalDeleting, setModalDeleting] = useState(false)
 
   const draggedCard = useRef<CrmCard | null>(null)
 
@@ -525,6 +539,30 @@ export function ApplicationsKanban({ onRefresh }: { onRefresh?: () => void }) {
     }
   }, [modalCard, modalStage, doMove])
 
+  const handleModalDelete = useCallback(async () => {
+    if (!modalCard || !board) return
+    const card = modalCard
+    setModalDeleting(true)
+    // Optimistic removal from the board
+    setBoard(prev => prev && {
+      columns: prev.columns.map(col => ({
+        ...col,
+        cards: col.cards.filter(c => c.application_id !== card.application_id),
+      })),
+    })
+    try {
+      await deleteApplication(card.application_id)
+      setToast({ message: `Deleted "${card.title}"` })
+      setModalCard(null)
+      onRefresh?.()
+    } catch {
+      setToast({ message: 'Delete failed — reloading…' })
+      await load()
+    } finally {
+      setModalDeleting(false)
+    }
+  }, [modalCard, board, load, onRefresh])
+
   // ── States ────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -590,6 +628,8 @@ export function ApplicationsKanban({ onRefresh }: { onRefresh?: () => void }) {
           onClose={() => setModalCard(null)}
           onMove={handleModalMove}
           moving={modalMoving}
+          onDelete={handleModalDelete}
+          deleting={modalDeleting}
         />
       )}
 
