@@ -503,7 +503,7 @@ def _build_profile_context(
 
     For user_id='default' the authoritative source is USER_PROFILE (the
     backend constant loaded from the legacy flat-file).  For any real user
-    the per-user store (data/users/{user_id}/profile.json) is used instead,
+    the per-user store (backend/data/users/{user_id}/profile.json) is used instead,
     supplemented by the global USER_PROFILE structure for CV data.
 
     Optional overrides let the API layer inject frontend-supplied hints
