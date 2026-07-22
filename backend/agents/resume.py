@@ -21,7 +21,7 @@ from typing import Optional
 import anthropic
 
 from backend.services.llm_client import call_llm
-from backend.services.user_profile import USER_PROFILE
+from backend.services.user_profile import get_profile
 from models.job import JobMatch
 
 logger = logging.getLogger(__name__)
@@ -532,11 +532,17 @@ Do not substitute or approximate — use the exact hex values and CSS properties
 
 # ── Profile serialisation ──────────────────────────────────────────────────────
 
-def _build_profile_text() -> str:
-    """Convert USER_PROFILE into a structured text block for prompts."""
-    p    = USER_PROFILE
-    name = p["personal"]["name"]
+def _build_profile_text(user_id: str) -> str:
+    """Convert the user's real profile (get_profile(user_id)) into a structured text block for prompts."""
+    p    = get_profile(user_id)
+    name = p["personal"]["name"] or "(name not yet provided — do not invent one)"
     lines: list[str] = [f"CANDIDATE: {name}\n"]
+
+    if goals := (p.get("career_goals") or {}).get("target_roles"):
+        lines.append(f"TARGET ROLE(S) (candidate's own stated goal): {', '.join(goals)}")
+
+    if self_summary := (p.get("summary") or "").strip():
+        lines.append(f"CANDIDATE'S OWN SELF-SUMMARY (mine for voice/facts, do not copy verbatim):\n  {self_summary}\n")
 
     lines.append("EDUCATION:")
     for edu in p.get("education", []):
@@ -602,6 +608,7 @@ class ResumeAgent:
     async def generate(
         self,
         job: JobMatch,
+        user_id: str,
         supplemental_answers: Optional[dict[str, str]] = None,
         reference_bytes: Optional[bytes] = None,
         reference_mime: Optional[str] = None,
@@ -628,7 +635,7 @@ class ResumeAgent:
         logger.info("[resume] Layout: %s", layout["name"])
 
         # 2. Gap analysis + HTML generation in parallel
-        profile_text = _build_profile_text()
+        profile_text = _build_profile_text(user_id)
         gaps_coro    = self._analyse_gaps(job, supplemental_answers or {}, profile_text)
         html_coro    = self._generate_html(job, supplemental_answers or {}, profile_text, layout)
 
@@ -873,19 +880,29 @@ JOB TARGET:
   Trajectory: {job.trajectory_alignment}
 
 TAILORING INSTRUCTIONS:
-- Write the Professional Summary (3 sentences max) speaking directly to "{job.title}" at "{job.company}".
-- Reorder bullet points within each role so the most relevant achievements appear first.
-- Mirror vocabulary from the job title and matched signals naturally in bullet text.
+- Professional Summary — write AT LEAST 4 detailed lines (not 4 short fragments; 4 full, substantive lines of running text or up to 4 tight sentences). It must read like a senior/executive-caliber summary, not a junior objective statement. Cover, in this order:
+    1. Years of experience + functional domain, framed against "{job.title}" at "{job.company}".
+    2. The 1-2 most quantified, relevant achievements from the profile (real numbers/scope only — never invented).
+    3. Core capabilities that directly mirror the job's matched signals ({reasons_text}), stated as evidenced strengths, not a skills list restated.
+    4. A trajectory/scope signal — leadership scope, cross-functional reach, or specialized depth — that shows why this candidate's level fits the role. Do NOT penalize a career pivot or treat greater seniority/experience than the role requires as a negative; frame it as range and readiness, never as a mismatch.
+  Never use unsupported filler ("results-driven professional", "proven track record", "team player") without a concrete fact backing it up in the same sentence.
+- Bullet points — 2 to 4 per role, outcome-first using the XYZ pattern: accomplished [X], measured by [Y — a real number/scope from the profile], by doing [Z]. Only quantify with numbers/scope actually present in the profile or supplemental answers; if no number exists, express scale qualitatively (e.g. "cut deployment time from days to hours") rather than fabricating a metric.
+- Reorder bullet points within each role so the most relevant achievements to this job appear first.
+- Mirror vocabulary from the job title and matched signals naturally in bullet text — do not keyword-stuff.
+- Build the Skills/Core Competencies section by prioritizing profile skills that overlap with this job's matched signals and areas to emphasise ({investigation}); never list a skill not evidenced somewhere in the profile.
 - Incorporate any supplemental answers as concrete claims in the relevant role or skills section.
 
 ATS COMPLIANCE RULES (non-negotiable):
 - Emit a complete HTML5 document (<!DOCTYPE html><html><head>…</head><body>…</body></html>).
 - All CSS in a <style> block in <head>. You MAY use one Google Fonts @import.
-- ZERO external CSS files or JS files. ZERO tables for layout. ZERO images.
+- ZERO external CSS files or JS files. ZERO tables for any layout purpose. ZERO images, icons, or emoji as bullet markers — use a plain CSS list-style or a simple text dash/bullet character only.
+- CRITICAL — DOM reading order is independent of visual layout: regardless of the visual structure above (including any sidebar/multi-column look), the underlying HTML source order MUST be single-file linear reading order — name → contact → summary → experience (most recent first) → education → skills — exactly as a human would scan it top-to-bottom. Use CSS (flexbox/grid/floats), never HTML tables or absolute positioning that would let a visual sidebar's DOM position diverge from this reading order. ATS parsers read raw DOM/text order, not visual position, and multi-column HTML is the single largest cause of ATS parsing failure when source order doesn't match visual order.
+- Use standard, ATS-recognized section headings only: "Summary" (or "Professional Summary"), "Experience", "Education", "Skills" — never creative alternatives like "What I've Done".
 - Use semantic tags: <h1> for candidate name only, <h2> for section headings, <h3> for job titles.
 - Contact line must use literal placeholders: [Email] · [Phone] · LinkedIn · {job.location or 'Location'}.
+- Dates must use "MMM YYYY" format (e.g. "Jan 2022 – Mar 2024"), never seasons or apostrophe-shortened years.
 - Every bullet must start with a strong past-tense action verb.
-- Do NOT invent facts not present in the profile or supplemental answers.
+- Do NOT invent facts, numbers, or skills not present in the profile or supplemental answers.
 - The document must render correctly in an iframe at standard A4/letter proportions.
 
 OUTPUT: The complete HTML document only. No markdown. No explanation. No code fences."""

@@ -132,6 +132,7 @@ async def generate_resume(
         agent                          = ResumeAgent()
         html, missing_raw, layout_name = await agent.generate(
             job                  = job,
+            user_id              = user.user_id,
             supplemental_answers = supplemental or None,
             reference_bytes      = ref_bytes,
             reference_mime       = ref_mime,
