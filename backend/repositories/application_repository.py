@@ -164,3 +164,137 @@ def upsert_submitted(
         score          = score,
     ))
     return new_application_id, True
+
+
+def find_updatable_by_company(
+    session: Session,
+    company_name: str,
+    updatable_statuses: frozenset[str],
+) -> Optional[ApplicationRow]:
+    """
+    Return the most-recently-submitted application whose company name
+    fuzzy-matches company_name AND whose status is in updatable_statuses.
+
+    Matching strategy (both directions of substring, case-insensitive):
+      • DB row "Wix"          matches extracted "Wix Engineering"
+      • DB row "Google Inc."  matches extracted "Google"
+    This covers the most common formatting mismatches without a full
+    fuzzy-similarity library.
+
+    Takes an already-open Session so the caller (e.g. the inbound-email
+    webhook) can mutate the returned row and commit it in the same
+    transaction as the read, atomically.
+    """
+    candidates: list[ApplicationRow] = (
+        session.query(ApplicationRow)
+        .filter(ApplicationRow.status.in_(updatable_statuses))
+        .order_by(ApplicationRow.submitted_at.desc())
+        .all()
+    )
+
+    company_lower = company_name.strip().lower()
+    for row in candidates:
+        row_company = (row.company or "").strip().lower()
+        if company_lower in row_company or row_company in company_lower:
+            return row
+
+    return None
+
+
+def get_all_rows(user_id: str = "default", session: Optional[Session] = None) -> list[ApplicationRow]:
+    """
+    Return all ApplicationRow ORM objects for user_id, unordered — for
+    callers that need the raw stored status string (e.g. analytics
+    aggregation over stage values like "phone screen"/"technical" that
+    ApplicationStatus's restrictive enum doesn't cover) rather than the
+    Application schema returned by get_all().
+
+    Accepts an optional already-open Session so a caller reading another
+    table in the same request (e.g. analytics.py also queries JobRow) can
+    share one session instead of opening a new one.
+    """
+    if session is not None:
+        return _query_all_rows(session, user_id)
+    with Session(ENGINE) as owned_session:
+        return _query_all_rows(owned_session, user_id)
+
+
+def _query_all_rows(session: Session, user_id: str) -> list[ApplicationRow]:
+    return session.query(ApplicationRow).filter(ApplicationRow.user_id == user_id).all()
+
+
+def get_by_statuses(
+    user_id: str,
+    statuses: frozenset[str],
+    session: Optional[Session] = None,
+) -> list[ApplicationRow]:
+    """
+    Return ApplicationRow ORM objects for user_id whose status is in
+    statuses, most-recently-submitted first.
+    """
+    if session is not None:
+        return _query_by_statuses(session, user_id, statuses)
+    with Session(ENGINE) as owned_session:
+        return _query_by_statuses(owned_session, user_id, statuses)
+
+
+def _query_by_statuses(session: Session, user_id: str, statuses: frozenset[str]) -> list[ApplicationRow]:
+    return (
+        session.query(ApplicationRow)
+        .filter(
+            ApplicationRow.user_id == user_id,
+            ApplicationRow.status.in_(statuses),
+        )
+        .order_by(ApplicationRow.submitted_at.desc())
+        .all()
+    )
+
+
+def move_stage(
+    application_id: str,
+    user_id: str,
+    to_stage: str,
+    now: str,
+) -> tuple[str, Optional[str]]:
+    """
+    Move application_id to to_stage, ownership-checked against user_id.
+
+    Returns (result, previous_stage):
+      result = "not_found" — no such application_id at all
+      result = "forbidden" — exists but belongs to a different user
+      result = "moved"     — updated; previous_stage is the prior status
+    """
+    with Session(ENGINE) as session:
+        row = session.get(ApplicationRow, application_id)
+        if not row:
+            return "not_found", None
+        if row.user_id != user_id:
+            return "forbidden", None
+        previous_stage  = (row.status or "submitted").lower()
+        row.status      = to_stage
+        row.last_update = now
+        session.commit()
+        return "moved", previous_stage
+
+
+def count_for_user(user_id: str, session: Optional[Session] = None) -> int:
+    """Number of ApplicationRow rows owned by user_id."""
+    if session is not None:
+        return session.query(ApplicationRow).filter(ApplicationRow.user_id == user_id).count()
+    with Session(ENGINE) as owned_session:
+        return owned_session.query(ApplicationRow).filter(ApplicationRow.user_id == user_id).count()
+
+
+def reassign_user(old_user_id: str, new_user_id: str, session: Session) -> int:
+    """
+    Re-point every ApplicationRow owned by old_user_id to new_user_id.
+
+    Takes an already-open Session so the caller (account-linking/migration
+    flows in auth.py) can combine this with reassignments on other tables
+    in one atomic commit.
+    """
+    return (
+        session.query(ApplicationRow)
+        .filter(ApplicationRow.user_id == old_user_id)
+        .update({"user_id": new_user_id}, synchronize_session="fetch")
+    )

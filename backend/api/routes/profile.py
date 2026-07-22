@@ -723,63 +723,67 @@ async def get_trust_score(
     now_iso = datetime.now(timezone.utc).isoformat()
 
     try:
-        # ── 1. Load all profile entities for this user ────────────────────────
-        entity_rows = profile_entity_repository.get_all_for_user(user_id)
+        # Single session for the whole request so the entity list and every
+        # entity's evidence are read from one consistent snapshot, and so the
+        # loop below doesn't open a new DB connection per entity.
+        with Session(ENGINE) as db:
+            # ── 1. Load all profile entities for this user ────────────────────
+            entity_rows = profile_entity_repository.get_all_for_user(user_id, session=db)
 
-        # ── 2. For each entity, load its non-expired evidence records ─────────
-        result_entities = []
-        category_scores: dict[str, list[float]] = {
-            "skill": [], "trait": [], "domain": [], "experience": [],
-        }
+            # ── 2. For each entity, load its non-expired evidence records ─────
+            result_entities = []
+            category_scores: dict[str, list[float]] = {
+                "skill": [], "trait": [], "domain": [], "experience": [],
+            }
 
-        for ent in entity_rows:
-            evidence_rows = evidence_repository.get_active_for_entity(ent.entity_id, now_iso)
+            for ent in entity_rows:
+                evidence_rows = evidence_repository.get_active_for_entity(ent.entity_id, now_iso, session=db)
 
-            trust_breakdown = [
-                {
-                    "evidence_id":   ev.evidence_id,
-                    "source_type":   ev.source_type,
-                    "source_label":  _SOURCE_LABELS.get(ev.source_type, ev.source_type),
-                    "verified_at":   ev.verified_at,
-                    "raw_content":   ev.raw_content,
-                    "base_weight":   ev.base_weight,
-                    "is_ai_assisted": ev.is_ai_assisted,
-                }
-                for ev in evidence_rows
-            ]
+                trust_breakdown = [
+                    {
+                        "evidence_id":   ev.evidence_id,
+                        "source_type":   ev.source_type,
+                        "source_label":  _SOURCE_LABELS.get(ev.source_type, ev.source_type),
+                        "verified_at":   ev.verified_at,
+                        "raw_content":   ev.raw_content,
+                        "base_weight":   ev.base_weight,
+                        "is_ai_assisted": ev.is_ai_assisted,
+                    }
+                    for ev in evidence_rows
+                ]
 
-            # Re-compute decoupled score from live evidence to get the
-            # dynamic multiplier and evidence count for UI transparency.
-            ev_typed: list[EvidenceRow] = [
-                {
-                    "source_type":    ev.source_type,
-                    "base_weight":    float(ev.base_weight),
-                    "verified_at":    _parse_ev_dt(ev.verified_at),
-                    "is_ai_assisted": ev.is_ai_assisted,
-                }
-                for ev in evidence_rows
-            ]
-            dscore = compute_decoupled_score(ev_typed)
+                # Re-compute decoupled score from live evidence to get the
+                # dynamic multiplier and evidence count for UI transparency.
+                ev_typed: list[EvidenceRow] = [
+                    {
+                        "source_type":    ev.source_type,
+                        "base_weight":    float(ev.base_weight),
+                        "verified_at":    _parse_ev_dt(ev.verified_at),
+                        "is_ai_assisted": ev.is_ai_assisted,
+                    }
+                    for ev in evidence_rows
+                ]
+                dscore = compute_decoupled_score(ev_typed)
 
-            result_entities.append({
-                "entity_id":               ent.entity_id,
-                "name":                    ent.name,
-                "entity_type":             ent.entity_type,
-                "confidence_score":        ent.confidence_score,
-                "verification_status":     ent.verification_status,
-                "manual_review_required":  ent.manual_review_required,
-                "skill_tier":              ent.skill_tier,
-                "architecture_confidence": ent.architecture_confidence,
-                "syntax_confidence":       ent.syntax_confidence,
-                "verification_level":      ent.verification_level,
-                "evidence_multiplier":     dscore.evidence_multiplier,
-                "evidence_count":          dscore.evidence_count,
-                "trust_breakdown":         trust_breakdown,
-            })
+                result_entities.append({
+                    "entity_id":               ent.entity_id,
+                    "name":                    ent.name,
+                    "entity_type":             ent.entity_type,
+                    "confidence_score":        ent.confidence_score,
+                    "verification_status":     ent.verification_status,
+                    "manual_review_required":  ent.manual_review_required,
+                    "skill_tier":              ent.skill_tier,
+                    "architecture_confidence": ent.architecture_confidence,
+                    "syntax_confidence":       ent.syntax_confidence,
+                    "verification_level":      ent.verification_level,
+                    "evidence_multiplier":     dscore.evidence_multiplier,
+                    "evidence_count":          dscore.evidence_count,
+                    "trust_breakdown":         trust_breakdown,
+                })
 
-            # Accumulate for category averages
-            if ent.entity_type in category_scores:
-                category_scores[ent.entity_type].append(ent.confidence_score)
+                # Accumulate for category averages
+                if ent.entity_type in category_scores:
+                    category_scores[ent.entity_type].append(ent.confidence_score)
 
         # ── 2b. Sort and slice entities ───────────────────────────────────────
         if sort_by == "needs_verification":
@@ -891,7 +895,7 @@ async def force_recalculate(
             results = []
             for ent in entity_rows:
                 print(f"=== DEBUG FORCE_RECALC: Processing entity {ent.entity_id} ===")
-                evidence_rows = evidence_repository.get_active_for_entity(ent.entity_id, now_iso)
+                evidence_rows = evidence_repository.get_active_for_entity(ent.entity_id, now_iso, session=db)
 
                 ev_typed: list[EvidenceRow] = [
                     {

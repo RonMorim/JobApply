@@ -876,3 +876,26 @@ def build_from_result(result: dict) -> JobMatch:
         posted_at=posted_at,
         why_ron=result.get("why_ron") or None,
     )
+
+
+def count_for_user(user_id: str, session: Optional[Session] = None) -> int:
+    """Number of JobRow rows owned by user_id."""
+    if session is not None:
+        return session.query(JobRow).filter(JobRow.user_id == user_id).count()
+    with Session(ENGINE) as owned_session:
+        return owned_session.query(JobRow).filter(JobRow.user_id == user_id).count()
+
+
+def reassign_user(old_user_id: str, new_user_id: str, session: Session) -> int:
+    """
+    Re-point every JobRow owned by old_user_id to new_user_id.
+
+    Takes an already-open Session so the caller (account-linking/migration
+    flows in auth.py) can combine this with reassignments on other tables
+    in one atomic commit.
+    """
+    return (
+        session.query(JobRow)
+        .filter(JobRow.user_id == old_user_id)
+        .update({"user_id": new_user_id}, synchronize_session="fetch")
+    )

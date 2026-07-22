@@ -194,15 +194,13 @@ async def respond_to_probe(
     # ── Accumulate the answer in session transcript_json ─────────────────────
     # Filtered by user_id (not just session_id) so a caller can never read or
     # write another user's session transcript — mismatch is indistinguishable
-    # from "not found".
-    transcript = ariel_session_repository.get_transcript(req.session_id, user.user_id)
+    # from "not found". append_turn() merges the new answer in atomically (a
+    # single UPDATE...RETURNING statement), so two concurrent requests for
+    # the same session can never race and silently drop one turn's answer.
+    transcript = ariel_session_repository.append_turn(req.session_id, user.user_id, req.turn, req.answer)
 
     if transcript is None:
         raise HTTPException(status_code=404, detail="Session not found.")
-
-    transcript[f"turn_{req.turn}"] = req.answer
-
-    ariel_session_repository.save_transcript(req.session_id, user.user_id, transcript)
 
     entity_dict = {
         "entity_id":        entity.entity_id,

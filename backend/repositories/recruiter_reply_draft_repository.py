@@ -32,3 +32,18 @@ def insert(
             created_at    = created_at,
         ))
         session.commit()
+
+
+def reassign_user(old_user_id: str, new_user_id: str, session: Session) -> int:
+    """
+    Re-point every RecruiterReplyDraftRow owned by old_user_id to new_user_id.
+
+    Takes an already-open Session so the caller (account-linking/migration
+    flows in auth.py) can combine this with reassignments on other tables
+    in one atomic commit.
+    """
+    return (
+        session.query(RecruiterReplyDraftRow)
+        .filter(RecruiterReplyDraftRow.user_id == old_user_id)
+        .update({"user_id": new_user_id}, synchronize_session="fetch")
+    )

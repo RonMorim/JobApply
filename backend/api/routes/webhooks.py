@@ -49,7 +49,7 @@ from sqlalchemy.orm import Session
 from backend.api.deps import webhook_rate_limit
 from backend.config import EMAIL_WEBHOOK_SECRET, STRICT_CONFIG, MissingRequiredConfigError
 from backend.core.database import ENGINE
-from backend.models.application import ApplicationRow
+from backend.repositories import application_repository
 from backend.repositories import kv_repository
 from backend.services.email_parser import parse_recruiter_email
 from backend.services.llm_validation import sanitize_text
@@ -179,36 +179,6 @@ class EmailWebhookResponse(BaseModel):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _find_application(
-    session: Session,
-    company_name: str,
-) -> ApplicationRow | None:
-    """
-    Return the most-recently-submitted application whose company name
-    fuzzy-matches `company_name` AND whose status is still updatable.
-
-    Matching strategy (both directions of substring):
-      • DB row "Wix"          matches extracted "Wix Engineering"
-      • DB row "Google Inc."  matches extracted "Google"
-    This covers the most common formatting mismatches without a full
-    fuzzy-similarity library.
-    """
-    candidates: list[ApplicationRow] = (
-        session.query(ApplicationRow)
-        .filter(ApplicationRow.status.in_(_UPDATABLE_STATUSES))
-        .order_by(ApplicationRow.submitted_at.desc())
-        .all()
-    )
-
-    company_lower = company_name.strip().lower()
-    for row in candidates:
-        row_company = (row.company or "").strip().lower()
-        if company_lower in row_company or row_company in company_lower:
-            return row
-
-    return None
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -321,7 +291,9 @@ async def inbound_email_webhook(
 
     # ── Step 3: Find matching application and update ─────────────────────────
     with Session(ENGINE) as session:
-        row = _find_application(session, company_name)
+        row = application_repository.find_updatable_by_company(
+            session, company_name, _UPDATABLE_STATUSES,
+        )
 
         if row is None:
             logger.info(

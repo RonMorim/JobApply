@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from backend.core.database import ENGINE
@@ -23,8 +24,9 @@ class CompanyIntel:
     researched_at: str
 
 
-def get(company_key: str) -> Optional[CompanyIntel]:
-    with Session(ENGINE) as session:
+def get(company_key: str, engine: Optional[Engine] = None) -> Optional[CompanyIntel]:
+    eng = engine or ENGINE
+    with Session(eng) as session:
         row = session.get(CompanyIntelRow, company_key)
         if row is None:
             return None
@@ -36,8 +38,15 @@ def get(company_key: str) -> Optional[CompanyIntel]:
         )
 
 
-def upsert(company_key: str, display_name: str, profile_json: str, researched_at: str) -> None:
-    with Session(ENGINE) as session:
+def upsert(
+    company_key: str,
+    display_name: str,
+    profile_json: str,
+    researched_at: str,
+    engine: Optional[Engine] = None,
+) -> None:
+    eng = engine or ENGINE
+    with Session(eng) as session:
         row = session.get(CompanyIntelRow, company_key)
         if row is None:
             row = CompanyIntelRow(company_key=company_key)

@@ -76,32 +76,38 @@ def update_status(
         )
 
 
-def get_transcript(
+def append_turn(
     session_id: str,
     user_id: str,
+    turn: int,
+    answer: str,
     engine: Optional[Engine] = None,
 ) -> Optional[dict]:
-    """Return the session's transcript dict, or None if no such session (scoped to user_id)."""
+    """
+    Atomically merge one turn's answer into the session's transcript_json and
+    return the resulting transcript, or None if no such session exists for
+    this user (scoped to user_id, so a mismatch is indistinguishable from
+    "not found").
+
+    Uses a single UPDATE ... RETURNING statement with SQLite's json_set() to
+    perform the read, merge, and write as one atomic operation — there is no
+    separate SELECT-then-UPDATE window for a concurrent call on the same
+    session_id to race into, so two overlapping calls (e.g. a client retry)
+    can never silently drop one turn's answer the way a fetch-mutate-save
+    round trip would.
+    """
     eng = engine or ENGINE
+    path = f"$.turn_{int(turn)}"
     with eng.begin() as conn:
         row = conn.execute(
-            text("SELECT transcript_json FROM ariel_sessions WHERE session_id = :sid AND user_id = :uid"),
-            {"sid": session_id, "uid": user_id},
+            text("""
+                UPDATE ariel_sessions
+                SET    transcript_json = json_set(COALESCE(transcript_json, '{}'), :path, :answer)
+                WHERE  session_id = :sid AND user_id = :uid
+                RETURNING transcript_json
+            """),
+            {"path": path, "answer": answer, "sid": session_id, "uid": user_id},
         ).fetchone()
         if row is None:
             return None
         return json.loads(row[0] or "{}")
-
-
-def save_transcript(
-    session_id: str,
-    user_id: str,
-    transcript: dict,
-    engine: Optional[Engine] = None,
-) -> None:
-    eng = engine or ENGINE
-    with eng.begin() as conn:
-        conn.execute(
-            text("UPDATE ariel_sessions SET transcript_json = :tj WHERE session_id = :sid AND user_id = :uid"),
-            {"tj": json.dumps(transcript), "sid": session_id, "uid": user_id},
-        )

@@ -111,9 +111,7 @@ def _get_or_create_row(user_id: str, session: Session) -> MasterProfileRow:
     The caller is responsible for committing the session.
     """
     from backend.repositories import master_profile_repository
-    row, _created = master_profile_repository.get_or_create(
-        session, user_id, now=_now_iso(), default_profile=_empty_master_profile(),
-    )
+    row, _created = master_profile_repository.get_or_create(session, user_id, now=_now_iso())
     return row
 
 

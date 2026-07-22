@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from backend.core.database import ENGINE
@@ -29,10 +30,10 @@ def get_or_create(
     user_id: str,
     *,
     now: str,
-    default_profile: Optional[dict] = None,
 ) -> tuple[MasterProfileRow, bool]:
     """
-    Return the MasterProfileRow for user_id, creating it if absent.
+    Return the MasterProfileRow for user_id, creating it (with an empty
+    master_profile dict) if absent.
 
     The caller is responsible for committing the session. Returns
     (row, created) — created=True only when a brand new row was added.
@@ -44,7 +45,7 @@ def get_or_create(
     row = MasterProfileRow(
         user_id           = user_id,
         onboarding_status = "incomplete",
-        master_profile    = default_profile or {},
+        master_profile    = {},
         created_at        = now,
         updated_at        = now,
     )
@@ -52,13 +53,14 @@ def get_or_create(
     return row, True
 
 
-def get(user_id: str) -> Optional[MasterProfileRow]:
+def get(user_id: str, engine: Optional[Engine] = None) -> Optional[MasterProfileRow]:
     """Standalone read-only fetch, own session. Row is detached on return."""
-    with Session(ENGINE) as session:
+    eng = engine or ENGINE
+    with Session(eng) as session:
         return session.get(MasterProfileRow, user_id)
 
 
-def get_profile_json(user_id: str) -> dict:
+def get_profile_json(user_id: str, engine: Optional[Engine] = None) -> dict:
     """Return the master_profile JSON dict for user_id, or {} if absent."""
-    row = get(user_id)
+    row = get(user_id, engine=engine)
     return dict(row.master_profile or {}) if row else {}

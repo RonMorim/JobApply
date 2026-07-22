@@ -5,6 +5,9 @@ backend/services/match_score_service.py's _persist_score_audit.
 """
 from __future__ import annotations
 
+from typing import Optional
+
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from backend.core.database import ENGINE
@@ -20,8 +23,10 @@ def insert(
     ats_score: float,
     breakdown_json: str,
     created_at: str,
+    engine: Optional[Engine] = None,
 ) -> None:
-    with Session(ENGINE) as session:
+    eng = engine or ENGINE
+    with Session(eng) as session:
         session.add(ShadowScoreRow(
             user_id        = user_id,
             job_title      = job_title,

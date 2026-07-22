@@ -71,16 +71,20 @@ def do_pause() -> None:
         "linkedin_scraper_blocked_at",
         "linkedin_cookie_status",
     ]
-    for key in keys_to_delete:
-        entry = kv_repository.get(key)
-        if entry:
-            print(f"  Deleted   {key:<45s} (was: {entry.value!r})")
-            kv_repository.delete(key)
-        else:
-            print(f"  (absent)  {key}")
+    # One shared session/transaction for the whole delete-sequence + pause-gate
+    # upsert, so an interruption mid-sequence rolls back to the pre-pause state
+    # instead of leaving the KV store partially reset.
+    with kv_repository.kv_session() as s:
+        for key in keys_to_delete:
+            entry = kv_repository.get(key, session=s)
+            if entry:
+                print(f"  Deleted   {key:<45s} (was: {entry.value!r})")
+                kv_repository.delete(key, session=s)
+            else:
+                print(f"  (absent)  {key}")
 
-    # Set pause gate — kept for future use; cleared by --resume.
-    kv_repository.upsert("linkedin_scraper_paused", "1")
+        # Set pause gate — kept for future use; cleared by --resume.
+        kv_repository.upsert("linkedin_scraper_paused", "1", session=s)
     print(f"  Set       linkedin_scraper_paused             = '1'  (loop halted)")
 
     print("\n── Step 2: Delete browser profile ────────────────────────────────────")
@@ -117,13 +121,17 @@ def do_resume() -> None:
         "linkedin_scraper_blocked_at",
         "linkedin_cookie_status",
     ]
-    for key in keys_to_clear:
-        entry = kv_repository.get(key)
-        if entry:
-            print(f"  Deleted   {key:<45s} (was: {entry.value!r})")
-            kv_repository.delete(key)
-        else:
-            print(f"  (absent)  {key}")
+    # One shared session/transaction for the whole delete-sequence, so an
+    # interruption mid-sequence rolls back to the pre-resume state instead of
+    # leaving the KV store partially cleared.
+    with kv_repository.kv_session() as s:
+        for key in keys_to_clear:
+            entry = kv_repository.get(key, session=s)
+            if entry:
+                print(f"  Deleted   {key:<45s} (was: {entry.value!r})")
+                kv_repository.delete(key, session=s)
+            else:
+                print(f"  (absent)  {key}")
 
     _print_kv_state()
     print("\n  The enrichment loop will attempt LinkedIn scraping on its next cycle.")

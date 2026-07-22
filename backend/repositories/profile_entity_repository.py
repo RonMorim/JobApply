@@ -76,13 +76,41 @@ def get_for_user(entity_id: str, user_id: str) -> Optional[ProfileEntity]:
         return _to_entry(row) if row else None
 
 
-def get_all_for_user(user_id: str) -> list[ProfileEntity]:
-    """All entities for user_id, ordered by confidence_score descending."""
-    with Session(ENGINE) as session:
-        rows = (
-            session.query(ProfileEntityRow)
-            .filter(ProfileEntityRow.user_id == user_id)
-            .order_by(ProfileEntityRow.confidence_score.desc())
-            .all()
-        )
-        return [_to_entry(r) for r in rows]
+def get_all_for_user(user_id: str, session: Optional[Session] = None) -> list[ProfileEntity]:
+    """
+    All entities for user_id, ordered by confidence_score descending.
+
+    Accepts an optional already-open Session so a caller that also needs to
+    read/write other tables in the same request (e.g. profile.py's
+    trust-score endpoint, which then queries evidence per entity) can share
+    one session/connection for a consistent read snapshot.
+    """
+    if session is not None:
+        return _query(session, user_id)
+    with Session(ENGINE) as owned_session:
+        return _query(owned_session, user_id)
+
+
+def _query(session: Session, user_id: str) -> list[ProfileEntity]:
+    rows = (
+        session.query(ProfileEntityRow)
+        .filter(ProfileEntityRow.user_id == user_id)
+        .order_by(ProfileEntityRow.confidence_score.desc())
+        .all()
+    )
+    return [_to_entry(r) for r in rows]
+
+
+def reassign_user(old_user_id: str, new_user_id: str, session: Session) -> int:
+    """
+    Re-point every ProfileEntityRow owned by old_user_id to new_user_id.
+
+    Takes an already-open Session so the caller (account-linking/migration
+    flows in auth.py) can combine this with reassignments on other tables
+    in one atomic commit.
+    """
+    return (
+        session.query(ProfileEntityRow)
+        .filter(ProfileEntityRow.user_id == old_user_id)
+        .update({"user_id": new_user_id}, synchronize_session="fetch")
+    )
