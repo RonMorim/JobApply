@@ -28,7 +28,7 @@ from typing import Dict, Optional, Type
 
 from backend.schemas.job import JobMatch
 from backend.scrapers.base_scraper import BaseScraper, make_tenant_job_id
-import backend.services.job_store as job_store
+import backend.repositories.job_repository as job_store
 
 logger = logging.getLogger(__name__)
 

@@ -37,7 +37,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-import backend.services.job_store as job_store
+import backend.repositories.job_repository as job_store
 from backend.core.database import ENGINE
 from backend.models.job import JobRow
 from backend.services.llm_client import call_llm

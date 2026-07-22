@@ -345,7 +345,7 @@ def record_feedback(
         engine = ENGINE
 
     if job is None:
-        from backend.services import job_store
+        from backend.repositories import job_repository as job_store
         job = job_store.get_by_id(job_id, user_id)
     if job is None:
         raise ValueError(f"Job {job_id!r} not found for this user")

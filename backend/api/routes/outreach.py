@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit
-from backend.services import job_store
+from backend.repositories import job_repository as job_store
 from backend.services.outreach_service import (
     generate_outreach,
     generate_outreach_message,

@@ -83,7 +83,7 @@ def _patch_engine(monkeypatch):
     """Point every service module under test at the in-memory test engine."""
     import backend.core.database as db_module
     import backend.services.master_profile_service as mp_module
-    import backend.services.job_store as job_store_module
+    import backend.repositories.job_repository as job_store_module
     import backend.services.confidence_matrix_service as cm_module
 
     monkeypatch.setattr(db_module, "ENGINE", _TEST_ENGINE)
@@ -170,7 +170,7 @@ class TestJobIsolation:
             session.commit()
 
     def test_get_all_only_returns_the_calling_users_jobs(self):
-        from backend.services import job_store
+        from backend.repositories import job_repository as job_store
 
         user_a, user_b = f"user-a-{_uid()}", f"user-b-{_uid()}"
         self._insert_job("job-a-1", user_a, match_score=91.5)
@@ -187,7 +187,7 @@ class TestJobIsolation:
         assert all(j.match_score != 91.5 for j in jobs_b)
 
     def test_get_feed_status_filter_stays_scoped_per_user(self):
-        from backend.services import job_store
+        from backend.repositories import job_repository as job_store
 
         user_a, user_b = f"user-a-{_uid()}", f"user-b-{_uid()}"
         self._insert_job("job-a-saved", user_a, match_score=70.0, status="saved")
@@ -341,7 +341,7 @@ class TestJobSourcePriorityIsolation:
     """JOB-92: cross-tenant matches must clone a private row, never hijack an existing one."""
 
     def test_cross_tenant_apply_url_match_does_not_reassign_owner(self):
-        from backend.services import job_store
+        from backend.repositories import job_repository as job_store
         from backend.models.job import JobRow
 
         user_a, user_b = f"user-a-{_uid()}", f"user-b-{_uid()}"
@@ -381,7 +381,7 @@ class TestJobSourcePriorityIsolation:
 
     def test_cross_tenant_dedup_key_match_does_not_reassign_owner(self):
         """Same real job cross-posted under different URLs — must still isolate by user."""
-        from backend.services import job_store
+        from backend.repositories import job_repository as job_store
         from backend.models.job import JobRow
 
         user_a, user_b = f"user-a-{_uid()}", f"user-b-{_uid()}"
@@ -415,7 +415,7 @@ class TestJobSourcePriorityIsolation:
         existing row's user_id — it must always stay with its original owner,
         no matter how many higher-priority saves other users make afterward.
         """
-        from backend.services import job_store
+        from backend.repositories import job_repository as job_store
         from backend.models.job import JobRow
 
         user_a, user_b = f"user-a-{_uid()}", f"user-b-{_uid()}"

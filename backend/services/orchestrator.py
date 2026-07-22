@@ -11,7 +11,7 @@ from langgraph.graph import END, StateGraph
 from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
 import backend.services.agent_store as store
-import backend.services.job_store as job_store
+import backend.repositories.job_repository as job_store
 from backend.services.user_profile import get_profile
 
 logger = logging.getLogger(__name__)

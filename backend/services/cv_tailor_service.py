@@ -34,7 +34,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-from backend.services import job_store
+from backend.repositories import job_repository as job_store
 from backend.services.llm_client import call_llm, LLMCallError
 from backend.services.user_profile import USER_PROFILE, build_full_text
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
