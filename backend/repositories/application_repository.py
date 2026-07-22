@@ -1,5 +1,9 @@
 """
-Persistent application store backed by SQLite via SQLAlchemy.
+Repository for the applications table.
+
+Consolidates CRUD previously split between this module (as
+backend/services/app_store.py) and the inline upsert logic in
+backend/api/routes/applications.py's mark_applied handler.
 """
 from __future__ import annotations
 
@@ -105,3 +109,58 @@ def delete(application_id: str, user_id: str = "default") -> bool:
         session.delete(row)
         session.commit()
         return True
+
+
+def upsert_submitted(
+    session: Session,
+    *,
+    new_application_id: str,
+    job_id: str,
+    user_id: str,
+    title: str,
+    company: str,
+    score: float,
+    now: str,
+) -> tuple[str, bool]:
+    """
+    Upsert the ApplicationRow for (job_id, user_id) to status='submitted'.
+
+    Takes an already-open, uncommitted Session so the caller can combine this
+    write with other mutations (e.g. flipping JobRow.applied) in one atomic
+    commit — mirrors the exact upsert-or-create logic that previously lived
+    inline in the mark_applied route handler.
+
+    Returns (application_id, created) — created=True only when a brand new
+    row was added under new_application_id.
+    """
+    existing = (
+        session.query(ApplicationRow)
+        .filter(
+            ApplicationRow.job_id  == job_id,
+            ApplicationRow.user_id == user_id,
+        )
+        .first()
+    )
+
+    if existing:
+        # Already in the pipeline — ensure status is at least 'submitted'
+        # but do not downgrade a card that has already advanced.
+        already_advanced = existing.status not in ("", None)
+        if not already_advanced or existing.status == "submitted":
+            existing.status      = "submitted"
+            existing.last_update = now
+        return existing.application_id, False
+
+    session.add(ApplicationRow(
+        application_id = new_application_id,
+        user_id        = user_id,
+        job_id         = job_id,
+        title          = title,
+        company        = company,
+        ats            = "Direct",
+        status         = "submitted",
+        submitted_at   = now,
+        last_update    = now,
+        score          = score,
+    ))
+    return new_application_id, True

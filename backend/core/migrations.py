@@ -124,7 +124,7 @@ def _migrate() -> None:
     # CREATE INDEX IF NOT EXISTS is idempotent — safe to run on every startup
     # against an existing populated DB, no data migration required.
     #
-    # Targets the actual predicates in job_store.py / app_store.py / the crm
+    # Targets the actual predicates in job_repository.py / application_repository.py / the crm
     # and applications routes (not speculative columns):
     #   get_feed()                      user_id == ? AND status (==|!=) ?
     #   get_eligible_for_apply()        user_id == ? AND applied == ? [+ score]

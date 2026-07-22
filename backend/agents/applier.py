@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from backend.schemas.application import Application, ApplicationStatus
 from backend.schemas.job import JobMatch
-from backend.services import app_store
+from backend.repositories import application_repository as app_store
 from backend.repositories import job_repository as job_store
 
 logger = logging.getLogger(__name__)
