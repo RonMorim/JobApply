@@ -50,7 +50,7 @@ from backend.api.deps import webhook_rate_limit
 from backend.config import EMAIL_WEBHOOK_SECRET, STRICT_CONFIG, MissingRequiredConfigError
 from backend.core.database import ENGINE
 from backend.models.application import ApplicationRow
-from backend.models.kv import KVRow
+from backend.repositories import kv_repository
 from backend.services.email_parser import parse_recruiter_email
 from backend.services.llm_validation import sanitize_text
 
@@ -139,15 +139,7 @@ def _is_gmail_verification(sender: str, subject: str) -> bool:
 
 def _store_gmail_code(code: str) -> None:
     """Upsert the verification code into the kv_store table."""
-    now = datetime.now(timezone.utc).isoformat()
-    with Session(ENGINE) as db:
-        row = db.get(KVRow, _KV_CODE_KEY)
-        if row:
-            row.value      = code
-            row.updated_at = now
-        else:
-            db.add(KVRow(key=_KV_CODE_KEY, value=code, updated_at=now))
-        db.commit()
+    kv_repository.upsert(_KV_CODE_KEY, code)
     logger.info("[email-webhook] Stored Gmail verification code=%r", code)
 
 

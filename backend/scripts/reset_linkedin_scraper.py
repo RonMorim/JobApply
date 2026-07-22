@@ -35,15 +35,12 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from backend.core.database import ENGINE
-from backend.models.kv import KVRow
-from sqlalchemy.orm import Session
+from backend.repositories import kv_repository
 
 _ALL_SCRAPER_KEYS = [
     "linkedin_scraper_status",
@@ -59,41 +56,32 @@ ENV_FILE        = ROOT / "backend" / ".env"
 
 def _print_kv_state() -> None:
     print("\n── Current KV state ───────────────────────────────────────────────────")
-    with Session(ENGINE) as db:
-        for key in _ALL_SCRAPER_KEYS:
-            row = db.get(KVRow, key)
-            value = row.value if row else "(not set)"
-            print(f"  {key:<45s} = {value!r}")
+    for key in _ALL_SCRAPER_KEYS:
+        entry = kv_repository.get(key)
+        value = entry.value if entry else "(not set)"
+        print(f"  {key:<45s} = {value!r}")
 
 
 def do_pause() -> None:
     """Clear BLOCKED + error counters; set pause gate; delete browser profile."""
     print("\n── Step 1: Clear BLOCKED state + set pause gate ───────────────────────")
-    now = datetime.now(timezone.utc).isoformat()
     keys_to_delete = [
         "linkedin_scraper_status",
         "linkedin_redirect_error_count",
         "linkedin_scraper_blocked_at",
         "linkedin_cookie_status",
     ]
-    with Session(ENGINE) as db:
-        for key in keys_to_delete:
-            row = db.get(KVRow, key)
-            if row:
-                print(f"  Deleted   {key:<45s} (was: {row.value!r})")
-                db.delete(row)
-            else:
-                print(f"  (absent)  {key}")
-
-        # Set pause gate — kept for future use; cleared by --resume.
-        paused_row = db.get(KVRow, "linkedin_scraper_paused")
-        if paused_row:
-            paused_row.value      = "1"
-            paused_row.updated_at = now
+    for key in keys_to_delete:
+        entry = kv_repository.get(key)
+        if entry:
+            print(f"  Deleted   {key:<45s} (was: {entry.value!r})")
+            kv_repository.delete(key)
         else:
-            db.add(KVRow(key="linkedin_scraper_paused", value="1", updated_at=now))
-        print(f"  Set       linkedin_scraper_paused             = '1'  (loop halted)")
-        db.commit()
+            print(f"  (absent)  {key}")
+
+    # Set pause gate — kept for future use; cleared by --resume.
+    kv_repository.upsert("linkedin_scraper_paused", "1")
+    print(f"  Set       linkedin_scraper_paused             = '1'  (loop halted)")
 
     print("\n── Step 2: Delete browser profile ────────────────────────────────────")
     if BROWSER_PROFILE.exists():
@@ -129,15 +117,13 @@ def do_resume() -> None:
         "linkedin_scraper_blocked_at",
         "linkedin_cookie_status",
     ]
-    with Session(ENGINE) as db:
-        for key in keys_to_clear:
-            row = db.get(KVRow, key)
-            if row:
-                print(f"  Deleted   {key:<45s} (was: {row.value!r})")
-                db.delete(row)
-            else:
-                print(f"  (absent)  {key}")
-        db.commit()
+    for key in keys_to_clear:
+        entry = kv_repository.get(key)
+        if entry:
+            print(f"  Deleted   {key:<45s} (was: {entry.value!r})")
+            kv_repository.delete(key)
+        else:
+            print(f"  (absent)  {key}")
 
     _print_kv_state()
     print("\n  The enrichment loop will attempt LinkedIn scraping on its next cycle.")
