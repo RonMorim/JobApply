@@ -36,7 +36,7 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 RUN python -m playwright install --with-deps chromium
 
 # Minimum set of repo-root packages backend actually imports (models/) plus
-# backend/ itself. Not the whole repo — no web_dashboard/, no legacy
+# backend/ itself. Not the whole repo — no frontend/, no legacy
 # app.py/orchestrator.py/root requirements.txt (those belong to the frozen
 # Streamlit reference app, see CLAUDE.md).
 COPY models/ models/

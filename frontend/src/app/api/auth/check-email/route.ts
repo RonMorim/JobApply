@@ -6,7 +6,7 @@ const LOG = '[JobApply-Debug][check-email]'
 // Server-only — CHECK_EMAIL_ALLOWED_EMAILS is read here (a Route Handler,
 // which runs on the server) and must NEVER be renamed to NEXT_PUBLIC_*.
 // Comma-separated list of emails that always report as "exists" without a
-// Supabase lookup. See web_dashboard/.env.example.
+// Supabase lookup. See frontend/.env.example.
 const WHITELIST = new Set(
   (process.env.CHECK_EMAIL_ALLOWED_EMAILS ?? '')
     .split(',')
