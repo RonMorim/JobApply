@@ -564,9 +564,13 @@ class TestTrustScoreEndpoint:
         """Replace the shared ENGINE with the test-scoped in-memory engine."""
         import backend.core.database as _db_module
         import backend.api.routes.profile as _profile_module
+        import backend.repositories.profile_entity_repository as _entity_repo_module
+        import backend.repositories.evidence_repository as _evidence_repo_module
 
         monkeypatch.setattr(_db_module, "ENGINE", _TEST_ENGINE)
         monkeypatch.setattr(_profile_module, "ENGINE", _TEST_ENGINE)
+        monkeypatch.setattr(_entity_repo_module, "ENGINE", _TEST_ENGINE)
+        monkeypatch.setattr(_evidence_repo_module, "ENGINE", _TEST_ENGINE)
 
     def _make_client(self, caller_user_id: str) -> TestClient:
         """Return a TestClient whose auth dependency returns caller_user_id."""

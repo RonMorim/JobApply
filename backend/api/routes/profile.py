@@ -23,13 +23,15 @@ from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, standard_rate_limit
 from backend.core.database import ENGINE
-from backend.models.profile import EvidenceRecordRow, ProfileEntityRow
+from backend.models.profile import ProfileEntityRow
+from backend.repositories import evidence_repository
 from backend.repositories import master_profile_repository
+from backend.repositories import profile_entity_repository
 from backend.services.master_profile_service import (
     get_enriched_entities,
     get_enriched_entity,
@@ -721,80 +723,63 @@ async def get_trust_score(
     now_iso = datetime.now(timezone.utc).isoformat()
 
     try:
-        with Session(ENGINE) as db:
-            # ── 1. Load all profile entities for this user ────────────────────
-            entity_rows: list[ProfileEntityRow] = (
-                db.query(ProfileEntityRow)
-                .filter(ProfileEntityRow.user_id == user_id)
-                .order_by(ProfileEntityRow.confidence_score.desc())
-                .all()
-            )
+        # ── 1. Load all profile entities for this user ────────────────────────
+        entity_rows = profile_entity_repository.get_all_for_user(user_id)
 
-            # ── 2. For each entity, load its non-expired evidence records ─────
-            result_entities = []
-            category_scores: dict[str, list[float]] = {
-                "skill": [], "trait": [], "domain": [], "experience": [],
-            }
+        # ── 2. For each entity, load its non-expired evidence records ─────────
+        result_entities = []
+        category_scores: dict[str, list[float]] = {
+            "skill": [], "trait": [], "domain": [], "experience": [],
+        }
 
-            for ent in entity_rows:
-                evidence_rows: list[EvidenceRecordRow] = (
-                    db.query(EvidenceRecordRow)
-                    .filter(
-                        EvidenceRecordRow.entity_id == ent.entity_id,
-                        or_(
-                            EvidenceRecordRow.hard_expires_at.is_(None),
-                            EvidenceRecordRow.hard_expires_at > now_iso,
-                        ),
-                    )
-                    .order_by(EvidenceRecordRow.verified_at.desc())
-                    .all()
-                )
+        for ent in entity_rows:
+            evidence_rows = evidence_repository.get_active_for_entity(ent.entity_id, now_iso)
 
-                trust_breakdown = [
-                    {
-                        "evidence_id":   ev.evidence_id,
-                        "source_type":   ev.source_type,
-                        "source_label":  _SOURCE_LABELS.get(ev.source_type, ev.source_type),
-                        "verified_at":   ev.verified_at,
-                        "raw_content":   ev.raw_content,
-                        "base_weight":   ev.base_weight,
-                        "is_ai_assisted": bool(ev.is_ai_assisted),
-                    }
-                    for ev in evidence_rows
-                ]
+            trust_breakdown = [
+                {
+                    "evidence_id":   ev.evidence_id,
+                    "source_type":   ev.source_type,
+                    "source_label":  _SOURCE_LABELS.get(ev.source_type, ev.source_type),
+                    "verified_at":   ev.verified_at,
+                    "raw_content":   ev.raw_content,
+                    "base_weight":   ev.base_weight,
+                    "is_ai_assisted": ev.is_ai_assisted,
+                }
+                for ev in evidence_rows
+            ]
 
-                # Re-compute decoupled score from live evidence to get the
-                # dynamic multiplier and evidence count for UI transparency.
-                ev_typed: list[EvidenceRow] = [
-                    {
-                        "source_type":    ev.source_type,
-                        "base_weight":    float(ev.base_weight),
-                        "verified_at":    _parse_ev_dt(ev.verified_at),
-                        "is_ai_assisted": bool(ev.is_ai_assisted),
-                    }
-                    for ev in evidence_rows
-                ]
-                dscore = compute_decoupled_score(ev_typed)
+            # Re-compute decoupled score from live evidence to get the
+            # dynamic multiplier and evidence count for UI transparency.
+            ev_typed: list[EvidenceRow] = [
+                {
+                    "source_type":    ev.source_type,
+                    "base_weight":    float(ev.base_weight),
+                    "verified_at":    _parse_ev_dt(ev.verified_at),
+                    "is_ai_assisted": ev.is_ai_assisted,
+                }
+                for ev in evidence_rows
+            ]
+            dscore = compute_decoupled_score(ev_typed)
 
-                result_entities.append({
-                    "entity_id":               ent.entity_id,
-                    "name":                    ent.name,
-                    "entity_type":             ent.entity_type,
-                    "confidence_score":        ent.confidence_score,
-                    "verification_status":     ent.verification_status,
-                    "manual_review_required":  bool(ent.manual_review_required),
-                    "skill_tier":              ent.skill_tier,
-                    "architecture_confidence": ent.architecture_confidence,
-                    "syntax_confidence":       ent.syntax_confidence,
-                    "verification_level":      ent.verification_level,
-                    "evidence_multiplier":     dscore.evidence_multiplier,
-                    "evidence_count":          dscore.evidence_count,
-                    "trust_breakdown":         trust_breakdown,
-                })
+            result_entities.append({
+                "entity_id":               ent.entity_id,
+                "name":                    ent.name,
+                "entity_type":             ent.entity_type,
+                "confidence_score":        ent.confidence_score,
+                "verification_status":     ent.verification_status,
+                "manual_review_required":  ent.manual_review_required,
+                "skill_tier":              ent.skill_tier,
+                "architecture_confidence": ent.architecture_confidence,
+                "syntax_confidence":       ent.syntax_confidence,
+                "verification_level":      ent.verification_level,
+                "evidence_multiplier":     dscore.evidence_multiplier,
+                "evidence_count":          dscore.evidence_count,
+                "trust_breakdown":         trust_breakdown,
+            })
 
-                # Accumulate for category averages
-                if ent.entity_type in category_scores:
-                    category_scores[ent.entity_type].append(ent.confidence_score)
+            # Accumulate for category averages
+            if ent.entity_type in category_scores:
+                category_scores[ent.entity_type].append(ent.confidence_score)
 
         # ── 2b. Sort and slice entities ───────────────────────────────────────
         if sort_by == "needs_verification":
@@ -906,24 +891,14 @@ async def force_recalculate(
             results = []
             for ent in entity_rows:
                 print(f"=== DEBUG FORCE_RECALC: Processing entity {ent.entity_id} ===")
-                evidence_rows: list[EvidenceRecordRow] = (
-                    db.query(EvidenceRecordRow)
-                    .filter(
-                        EvidenceRecordRow.entity_id == ent.entity_id,
-                        or_(
-                            EvidenceRecordRow.hard_expires_at.is_(None),
-                            EvidenceRecordRow.hard_expires_at > now_iso,
-                        ),
-                    )
-                    .all()
-                )
+                evidence_rows = evidence_repository.get_active_for_entity(ent.entity_id, now_iso)
 
                 ev_typed: list[EvidenceRow] = [
                     {
                         "source_type":    ev.source_type,
                         "base_weight":    float(ev.base_weight),
                         "verified_at":    _parse_ev_dt(ev.verified_at),
-                        "is_ai_assisted": bool(ev.is_ai_assisted),
+                        "is_ai_assisted": ev.is_ai_assisted,
                     }
                     for ev in evidence_rows
                 ]
@@ -1276,22 +1251,18 @@ async def start_manual_verification(
 
     import uuid as _uuid
 
-    with Session(ENGINE) as db:
-        entity = db.query(ProfileEntityRow).filter(
-            ProfileEntityRow.entity_id == body.entity_id,
-            ProfileEntityRow.user_id   == user_id,
-        ).first()
-        if not entity:
-            raise HTTPException(status_code=404, detail="Entity not found.")
+    entity = profile_entity_repository.get_for_user(body.entity_id, user_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found.")
 
-        # Guard: don't allow a manual_assessment session to re-promote an
-        # already VERIFIED_MANUAL entity to a higher tier — they can only
-        # re-verify to refresh freshness.
-        if entity.verification_level == "VERIFIED_MANUAL":
-            logger.info(
-                "[manual-verify/start] entity=%s already VERIFIED_MANUAL — refreshing",
-                body.entity_id,
-            )
+    # Guard: don't allow a manual_assessment session to re-promote an
+    # already VERIFIED_MANUAL entity to a higher tier — they can only
+    # re-verify to refresh freshness.
+    if entity.verification_level == "VERIFIED_MANUAL":
+        logger.info(
+            "[manual-verify/start] entity=%s already VERIFIED_MANUAL — refreshing",
+            body.entity_id,
+        )
 
     session_id = str(_uuid.uuid4())
     return {
