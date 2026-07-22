@@ -24,9 +24,21 @@ class RunCycleResponse(BaseModel):
     applications: list[Application]
 
 
-@router.get("/", response_model=list[Application])
+@router.get("", response_model=list[Application])
 async def list_applications(user: CurrentUser = Depends(get_current_user)):
-    """Return all submitted applications for the authenticated user, most recent first."""
+    """
+    Return all submitted applications for the authenticated user, most recent first.
+
+    Registered at "" (not "/") so the effective path is exactly "/api/applications"
+    with no trailing slash. Next.js's own routing normalizes trailing-slash URLs to
+    their no-slash form (a 308) before rewrites apply; if this route required the
+    slash, FastAPI's redirect_slashes would then 307 the already-normalized request
+    back to the slash form — but that redirect's Location header reflects the
+    internal Docker-network hostname (backend:8000) that the proxy dialed, which
+    the browser can never resolve directly, surfacing as a bare "Failed to fetch".
+    Matching Next's no-slash form exactly on both ends means neither side ever
+    needs to redirect.
+    """
     return app_store.get_all(user_id=user.user_id)
 
 

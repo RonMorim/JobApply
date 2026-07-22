@@ -78,32 +78,20 @@ function StageBadge({ stage }: { stage: string }) {
 
 // ── List view ─────────────────────────────────────────────────────────────────
 
-// Two-step confirm: first click arms it, second click (within 4s) deletes.
-function RowDeleteButton({ onConfirm, deleting }: { onConfirm: () => void; deleting: boolean }) {
-  const [confirming, setConfirming] = useState(false)
-
-  useEffect(() => {
-    if (!confirming) return
-    const t = setTimeout(() => setConfirming(false), 4000)
-    return () => clearTimeout(t)
-  }, [confirming])
-
+function RowDeleteButton({ title, onConfirm, deleting }: { title: string; onConfirm: () => void; deleting: boolean }) {
   return (
     <button
       onClick={e => {
         e.stopPropagation()
-        if (confirming) { setConfirming(false); onConfirm() }
-        else setConfirming(true)
+        if (window.confirm(`Delete the application for "${title}"? This cannot be undone.`)) {
+          onConfirm()
+        }
       }}
       disabled={deleting}
-      title={confirming ? 'Confirm delete' : 'Delete application'}
-      className={`shrink-0 h-7 px-2.5 rounded-lg text-[11px] font-medium border transition disabled:opacity-50 ${
-        confirming
-          ? 'bg-rose-600 text-white border-transparent hover:bg-rose-700'
-          : 'text-rose-500 border-transparent hover:bg-rose-50 hover:border-rose-100'
-      }`}
+      title="Delete application"
+      className="shrink-0 h-7 px-2.5 rounded-lg text-[11px] font-medium border border-transparent text-rose-500 hover:bg-rose-50 hover:border-rose-100 transition disabled:opacity-50"
     >
-      {deleting ? '…' : confirming ? 'Confirm?' : 'Delete'}
+      {deleting ? '…' : 'Delete'}
     </button>
   )
 }
@@ -182,6 +170,7 @@ function ApplicationListView({ items, loading, error, onDelete, deletingId }: {
           </span>
 
           <RowDeleteButton
+            title={item.title}
             onConfirm={() => onDelete(item.application_id)}
             deleting={deletingId === item.application_id}
           />

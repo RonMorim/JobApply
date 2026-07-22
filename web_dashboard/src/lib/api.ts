@@ -674,7 +674,11 @@ export interface AppListItem {
 }
 
 export async function fetchApplicationsList(): Promise<AppListItem[]> {
-  return get<AppListItem[]>('/api/applications/')
+  // No trailing slash — see the comment on the backend's list_applications
+  // route for why this exact match (on both ends) matters: a slash mismatch
+  // here triggers a Next.js + FastAPI redirect round-trip that leaks the
+  // internal Docker hostname into a Location header the browser can't resolve.
+  return get<AppListItem[]>('/api/applications')
 }
 
 export async function moveCrmCard(applicationId: string, toStage: string): Promise<void> {

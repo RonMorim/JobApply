@@ -69,21 +69,12 @@ interface CardModalProps {
 }
 
 function CardDetailModal({ card, currentStage, onClose, onMove, moving, onDelete, deleting }: CardModalProps) {
-  // Two-step confirm: first click arms it, second click (within 4s) deletes.
-  const [confirmingDelete, setConfirmingDelete] = useState(false)
-
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
-
-  useEffect(() => {
-    if (!confirmingDelete) return
-    const t = setTimeout(() => setConfirmingDelete(false), 4000)
-    return () => clearTimeout(t)
-  }, [confirmingDelete])
 
   const s = stageStyle(currentStage)
 
@@ -178,17 +169,14 @@ function CardDetailModal({ card, currentStage, onClose, onMove, moving, onDelete
           <div className="px-5 pb-5 pt-1 flex items-center justify-between">
             <button
               onClick={() => {
-                if (confirmingDelete) { setConfirmingDelete(false); void onDelete() }
-                else setConfirmingDelete(true)
+                if (window.confirm(`Delete the application for "${card.title}"? This cannot be undone.`)) {
+                  void onDelete()
+                }
               }}
               disabled={deleting}
-              className={`h-8 px-3 rounded-lg text-[12.5px] font-medium border transition disabled:opacity-50 ${
-                confirmingDelete
-                  ? 'bg-rose-600 text-white border-transparent hover:bg-rose-700'
-                  : 'text-rose-600 border-rose-200 hover:bg-rose-50'
-              }`}
+              className="h-8 px-3 rounded-lg text-[12.5px] font-medium border transition disabled:opacity-50 text-rose-600 border-rose-200 hover:bg-rose-50"
             >
-              {deleting ? 'Deleting…' : confirmingDelete ? 'Confirm delete?' : 'Delete'}
+              {deleting ? 'Deleting…' : 'Delete'}
             </button>
             <button
               onClick={onClose}
