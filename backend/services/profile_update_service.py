@@ -52,6 +52,7 @@ from typing import Optional
 
 from sqlalchemy import text
 
+from backend.repositories import ariel_session_repository
 from backend.services.confidence_math import (
     BASE_WEIGHTS,
     EvidenceRow,
@@ -1175,42 +1176,21 @@ class ProfileUpdateService:
         """
         session_id = _uid()
         now        = _now_iso()
-        with self._engine.begin() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO ariel_sessions
-                        (session_id, user_id, session_type,
-                         target_job_id, target_entities, ariel_goal,
-                         status, started_at)
-                    VALUES
-                        (:sid, :uid, :stype,
-                         :jid, :ents, :goal,
-                         'active', :now)
-                """),
-                {
-                    "sid":   session_id,
-                    "uid":   user_id,
-                    "stype": session_type,
-                    "jid":   target_job_id,
-                    "ents":  json.dumps(target_entities or []),
-                    "goal":  ariel_goal,
-                    "now":   now,
-                },
-            )
+        ariel_session_repository.create_session(
+            session_id=session_id,
+            user_id=user_id,
+            session_type=session_type,
+            started_at=now,
+            target_job_id=target_job_id,
+            target_entities=target_entities,
+            ariel_goal=ariel_goal,
+            engine=self._engine,
+        )
         return session_id
 
     def close_session(self, session_id: str, status: str = "completed") -> None:
         """Mark an Ariel session as completed or abandoned."""
-        now = _now_iso()
-        with self._engine.begin() as conn:
-            conn.execute(
-                text("""
-                    UPDATE ariel_sessions
-                    SET    status = :status, ended_at = :now
-                    WHERE  session_id = :sid
-                """),
-                {"status": status, "now": now, "sid": session_id},
-            )
+        ariel_session_repository.update_status(session_id, status, _now_iso(), engine=self._engine)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public: weighted overall trust score

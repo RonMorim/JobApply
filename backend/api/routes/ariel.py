@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from backend.api.deps import CurrentUser, get_current_user
 from backend.core.database import ENGINE
 from backend.models.profile import ProfileEntityRow
+from backend.repositories import ariel_session_repository
 from backend.services.profile_update_service import ProfileUpdateService
 from backend.services.ariel_probe_service import ArielProbeService
 
@@ -197,23 +198,14 @@ async def respond_to_probe(
     # Filtered by user_id (not just session_id) so a caller can never read or
     # write another user's session transcript — mismatch is indistinguishable
     # from "not found".
-    import json as _json
-    with ENGINE.begin() as conn:
-        row = conn.execute(
-            text("SELECT transcript_json FROM ariel_sessions WHERE session_id = :sid AND user_id = :uid"),
-            {"sid": req.session_id, "uid": user.user_id},
-        ).fetchone()
+    transcript = ariel_session_repository.get_transcript(req.session_id, user.user_id)
 
-        if row is None:
-            raise HTTPException(status_code=404, detail="Session not found.")
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
 
-        transcript: dict = _json.loads(row[0] or "{}")
-        transcript[f"turn_{req.turn}"] = req.answer
+    transcript[f"turn_{req.turn}"] = req.answer
 
-        conn.execute(
-            text("UPDATE ariel_sessions SET transcript_json = :tj WHERE session_id = :sid AND user_id = :uid"),
-            {"tj": _json.dumps(transcript), "sid": req.session_id, "uid": user.user_id},
-        )
+    ariel_session_repository.save_transcript(req.session_id, user.user_id, transcript)
 
     entity_dict = {
         "entity_id":        entity.entity_id,
