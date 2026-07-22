@@ -709,7 +709,8 @@ def _onboarding_row_profile(user_id: str) -> dict:
     """Load the onboarding profile dict from master_profiles for user_id ({} if absent)."""
     try:
         from sqlalchemy.orm import Session
-        from backend.services.db import ENGINE, MasterProfileRow
+        from backend.core.database import ENGINE
+        from backend.models.profile import MasterProfileRow
         with Session(ENGINE) as s:
             row = s.get(MasterProfileRow, user_id)
             return dict(row.master_profile or {}) if row else {}

@@ -41,7 +41,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from backend.services.db import ENGINE, KVRow
+from backend.core.database import ENGINE
+from backend.models.kv import KVRow
 from sqlalchemy.orm import Session
 
 _ALL_SCRAPER_KEYS = [

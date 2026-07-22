@@ -37,7 +37,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, standard_rate_limit
-from backend.services.db import ENGINE, MasterProfileRow
+from backend.core.database import ENGINE
+from backend.models.profile import MasterProfileRow
 from backend.agents.ariel_tools import ARIEL_TOOLS, execute_tool
 from backend.services.user_profile import USER_PROFILE, get_profile, format_profile_compact
 from backend.services.llm_validation import harden_system_prompt, sanitize_text

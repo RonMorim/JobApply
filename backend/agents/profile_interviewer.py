@@ -42,7 +42,8 @@ from typing import Optional
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
-from backend.services.db import ENGINE, ProfileInterviewRow
+from backend.core.database import ENGINE
+from backend.models.profile import ProfileInterviewRow
 from backend.services.llm_client import call_llm
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)

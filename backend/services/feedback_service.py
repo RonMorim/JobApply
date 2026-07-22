@@ -167,7 +167,7 @@ def _upsert_feedback_row(
 ) -> None:
     from sqlalchemy.orm import Session
 
-    from backend.services.db import JobFeedbackRow
+    from backend.models.application import JobFeedbackRow
 
     now = _now_iso()
     with Session(engine) as s:
@@ -192,7 +192,7 @@ def _upsert_feedback_row(
 def fetch_feedback_rows(user_id: str, engine) -> list[dict]:
     from sqlalchemy.orm import Session
 
-    from backend.services.db import JobFeedbackRow
+    from backend.models.application import JobFeedbackRow
 
     with Session(engine) as s:
         rows = (
@@ -234,7 +234,7 @@ def _write_learned_preference(user_id: str, preference: str, engine) -> str:
     """
     from sqlalchemy.orm import Session
 
-    from backend.services.db import MasterProfileRow
+    from backend.models.profile import MasterProfileRow
 
     with Session(engine) as s:
         row = s.get(MasterProfileRow, user_id)
@@ -287,7 +287,7 @@ def apply_preference_learning(user_id: str, engine=None) -> dict:
     feedback history. Idempotent: same history ⇒ same outcome.
     """
     if engine is None:
-        from backend.services.db import ENGINE
+        from backend.core.database import ENGINE
         engine = ENGINE
 
     rows = fetch_feedback_rows(user_id, engine)
@@ -341,7 +341,7 @@ def record_feedback(
             f"Invalid feedback_type {feedback_type!r} — must be one of {VALID_FEEDBACK_TYPES}"
         )
     if engine is None:
-        from backend.services.db import ENGINE
+        from backend.core.database import ENGINE
         engine = ENGINE
 
     if job is None:

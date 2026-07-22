@@ -27,12 +27,8 @@ from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, standard_rate_limit
-from backend.services.db import (
-    ENGINE,
-    EvidenceRecordRow,
-    MasterProfileRow,
-    ProfileEntityRow,
-)
+from backend.core.database import ENGINE
+from backend.models.profile import EvidenceRecordRow, MasterProfileRow, ProfileEntityRow
 from backend.services.master_profile_service import (
     get_enriched_entities,
     get_enriched_entity,
@@ -1138,7 +1134,8 @@ async def upload_verification_document(
     """
     from backend.agents.profile_interviewer import get_session
     from backend.services.document_verifier import verify_document
-    from backend.services.db import ENGINE, ProfileInterviewRow
+    from backend.core.database import ENGINE
+    from backend.models.profile import ProfileInterviewRow
     from sqlalchemy.orm import Session as DBSession
 
     # Validate session (also enforces ownership)

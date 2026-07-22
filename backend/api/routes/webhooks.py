@@ -48,7 +48,9 @@ from sqlalchemy.orm import Session
 
 from backend.api.deps import webhook_rate_limit
 from backend.config import EMAIL_WEBHOOK_SECRET, STRICT_CONFIG, MissingRequiredConfigError
-from backend.services.db import ENGINE, ApplicationRow, KVRow
+from backend.core.database import ENGINE
+from backend.models.application import ApplicationRow
+from backend.models.kv import KVRow
 from backend.services.email_parser import parse_recruiter_email
 from backend.services.llm_validation import sanitize_text
 

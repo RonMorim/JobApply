@@ -340,7 +340,7 @@ def _extract_json(raw: str) -> dict:
 
 def load_cached_profile(company_name: str, engine=None) -> Optional[CompanyCultureProfile]:
     if engine is None:
-        from backend.services.db import ENGINE
+        from backend.core.database import ENGINE
         engine = ENGINE
     key = _company_key(company_name)
     if not key:
@@ -348,7 +348,7 @@ def load_cached_profile(company_name: str, engine=None) -> Optional[CompanyCultu
     try:
         from sqlalchemy.orm import Session
 
-        from backend.services.db import CompanyCultureRow
+        from backend.models.matching import CompanyCultureRow
         with Session(engine) as s:
             row = s.get(CompanyCultureRow, key)
             if row is None:
@@ -361,12 +361,12 @@ def load_cached_profile(company_name: str, engine=None) -> Optional[CompanyCultu
 
 def save_cached_profile(profile: CompanyCultureProfile, engine=None) -> bool:
     if engine is None:
-        from backend.services.db import ENGINE
+        from backend.core.database import ENGINE
         engine = ENGINE
     try:
         from sqlalchemy.orm import Session
 
-        from backend.services.db import CompanyCultureRow
+        from backend.models.matching import CompanyCultureRow
         with Session(engine) as s:
             row = s.get(CompanyCultureRow, profile.company_key)
             if row is None:

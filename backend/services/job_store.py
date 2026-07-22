@@ -16,7 +16,8 @@ from typing import List, Optional
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from backend.services.db import ENGINE, JobRow
+from backend.core.database import ENGINE
+from backend.models.job import JobRow
 from backend.schemas.job import DetailedAnalysis, JobMatch, ReasonTag
 
 logger = logging.getLogger(__name__)

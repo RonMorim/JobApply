@@ -31,7 +31,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.api.deps import CurrentUser, get_current_user
-from backend.services.db import ENGINE, ProfileEntityRow
+from backend.core.database import ENGINE
+from backend.models.profile import ProfileEntityRow
 from backend.services.profile_update_service import ProfileUpdateService
 from backend.services.ariel_probe_service import ArielProbeService
 

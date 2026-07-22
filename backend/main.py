@@ -266,7 +266,8 @@ def purge_irrelevant_jobs(min_score: float = 30.0, dry_run: bool = False, user_i
         deleted     — rows actually removed (0 if dry_run=True)
         dry_run_preview — rows that would be removed (only set when dry_run=True)
     """
-    from backend.services.db import ENGINE, JobRow
+    from backend.core.database import ENGINE
+    from backend.models.job import JobRow
     from backend.scrapers.relevancy import is_title_relevant
     from sqlalchemy.orm import Session
 
@@ -304,7 +305,7 @@ def purge_irrelevant_jobs(min_score: float = 30.0, dry_run: bool = False, user_i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from backend.services.db import init_db
+    from backend.core.migrations import init_db
     init_db()
     logger.info("Database initialised.")
 

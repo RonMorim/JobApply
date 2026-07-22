@@ -229,7 +229,8 @@ def get_cached_tailor_brief(job_id: str, user_id: str) -> Optional[dict]:
 
 def _save_tailor_brief(job_id: str, user_id: str, brief: dict) -> None:
     """Persist the brief under the tailor_brief key — only on a row owned by user_id."""
-    from backend.services.db import ENGINE, JobRow
+    from backend.core.database import ENGINE
+    from backend.models.job import JobRow
     from sqlalchemy.orm import Session
 
     with Session(ENGINE) as session:
@@ -261,7 +262,7 @@ async def _build_verified_assembly(job: JobMatch, jd_text: str, user_id: str, co
     )
     from backend.services.confidence_matrix_service import get_entity_breakdown
     from backend.services.cv_assembly_engine import assemble_cv, load_verified_facts
-    from backend.services.db import ENGINE
+    from backend.core.database import ENGINE
 
     facts    = load_verified_facts(user_id, ENGINE)
     entities = list(get_entity_breakdown(user_id, ENGINE))
@@ -505,7 +506,8 @@ def resolve_editable_cv(job_id: Optional[str] = None, *, user_id: str) -> tuple[
     the brief's generated_at timestamp ("the CV" in conversation means the one
     THIS user just produced and is reviewing).
     """
-    from backend.services.db import ENGINE, JobRow
+    from backend.core.database import ENGINE
+    from backend.models.job import JobRow
     from sqlalchemy.orm import Session
 
     with Session(ENGINE) as session:
@@ -605,7 +607,8 @@ def edit_tailored_cv_bullet(
     from backend.services.cv_assembly_engine import (
         _extract_literals, load_verified_facts, validate_bullet,
     )
-    from backend.services.db import ENGINE, JobRow
+    from backend.core.database import ENGINE
+    from backend.models.job import JobRow
     from sqlalchemy.orm import Session
 
     new_text = " ".join((new_text or "").split())

@@ -39,7 +39,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from backend.services.db import ENGINE, MasterProfileRow
+from backend.core.database import ENGINE
+from backend.models.profile import MasterProfileRow
 from backend.services.profile_update_service import ProfileUpdateService
 
 logger = logging.getLogger(__name__)

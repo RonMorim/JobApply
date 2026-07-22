@@ -104,7 +104,7 @@ def _insert_trigger_row(
     from sqlalchemy.exc import IntegrityError
     from sqlalchemy.orm import Session
 
-    from backend.services.db import MatchTriggerRow
+    from backend.models.matching import MatchTriggerRow
 
     row = MatchTriggerRow(
         user_id      = user_id,
@@ -160,7 +160,7 @@ async def evaluate_match_trigger(
         return False
 
     if engine is None:
-        from backend.services.db import ENGINE
+        from backend.core.database import ENGINE
         engine = ENGINE
 
     # Compact payload for the notification channels — enough to render an
@@ -252,12 +252,12 @@ def fetch_pending_triggers(user_id: str, engine=None, limit: int = 50) -> list[d
     record).
     """
     if engine is None:
-        from backend.services.db import ENGINE
+        from backend.core.database import ENGINE
         engine = ENGINE
 
     from sqlalchemy.orm import Session
 
-    from backend.services.db import MatchTriggerRow
+    from backend.models.matching import MatchTriggerRow
 
     with Session(engine) as s:
         rows = (
@@ -291,12 +291,12 @@ def mark_triggers_consumed(trigger_ids: list[int], engine=None) -> int:
     if not trigger_ids:
         return 0
     if engine is None:
-        from backend.services.db import ENGINE
+        from backend.core.database import ENGINE
         engine = ENGINE
 
     from sqlalchemy.orm import Session
 
-    from backend.services.db import MatchTriggerRow
+    from backend.models.matching import MatchTriggerRow
 
     with Session(engine) as s:
         updated = (

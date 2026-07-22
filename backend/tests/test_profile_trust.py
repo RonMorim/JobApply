@@ -63,7 +63,8 @@ _TEST_ENGINE = create_engine(
 
 def _setup_schema() -> None:
     """Create all tables required by the confidence matrix in the test engine."""
-    from backend.services.db import Base
+    from backend.core.database import Base
+    from backend.models import application, ariel, job, kv, matching, profile  # noqa: F401
 
     # Create the standard ORM-mapped tables (jobs, applications, etc.)
     Base.metadata.create_all(_TEST_ENGINE)
@@ -554,14 +555,14 @@ class TestTrustScoreEndpoint:
     FastAPI TestClient tests exercising the full HTTP stack.
 
     These tests patch:
-      • backend.services.db.ENGINE          →  _TEST_ENGINE (in-memory SQLite)
+      • backend.core.database.ENGINE          →  _TEST_ENGINE (in-memory SQLite)
       • backend.api.deps.get_current_user   →  returns a synthetic CurrentUser
     """
 
     @pytest.fixture(autouse=True)
     def _patch_engine(self, monkeypatch):
         """Replace the shared ENGINE with the test-scoped in-memory engine."""
-        import backend.services.db as _db_module
+        import backend.core.database as _db_module
         import backend.api.routes.profile as _profile_module
 
         monkeypatch.setattr(_db_module, "ENGINE", _TEST_ENGINE)

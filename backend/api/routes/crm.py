@@ -18,7 +18,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.api.deps import CurrentUser, get_current_user
-from backend.services.db import ENGINE, ApplicationRow
+from backend.core.database import ENGINE
+from backend.models.application import ApplicationRow
 
 router  = APIRouter()
 logger  = logging.getLogger(__name__)

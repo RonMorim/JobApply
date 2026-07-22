@@ -390,7 +390,7 @@ def build_user_baseline(
     if entity_scores is None:
         try:
             from backend.services.confidence_matrix_service import get_entity_breakdown
-            from backend.services.db import ENGINE
+            from backend.core.database import ENGINE
             entity_scores = get_entity_breakdown(user_id, ENGINE)
         except Exception as exc:
             logger.warning("[profile_baseline] entity breakdown unavailable: %s", exc)
@@ -471,12 +471,12 @@ def persist_baseline_snapshot(user_id: str, baseline: dict, engine=None) -> bool
     interaction that triggered it.
     """
     if engine is None:
-        from backend.services.db import ENGINE
+        from backend.core.database import ENGINE
         engine = ENGINE
     try:
         from sqlalchemy.orm import Session
 
-        from backend.services.db import MasterProfileRow
+        from backend.models.profile import MasterProfileRow
 
         # cv_data is rebuilt on demand by the pipeline; persisting it would
         # just duplicate the profile row's own contents.

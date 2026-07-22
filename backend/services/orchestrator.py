@@ -66,7 +66,9 @@ async def draft_recruiter_reply(user_id: str, job_id: str, email_text: str) -> s
 
     from sqlalchemy.orm import Session
 
-    from backend.services.db import ENGINE, JobRow, RecruiterReplyDraftRow
+    from backend.core.database import ENGINE
+    from backend.models.application import RecruiterReplyDraftRow
+    from backend.models.job import JobRow
     from backend.services.llm_client import call_llm
     from backend.services.llm_validation import harden_system_prompt, sanitize_text
 

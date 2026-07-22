@@ -76,7 +76,8 @@ def _now() -> datetime:
 # ── Cache layer ────────────────────────────────────────────────────────────────
 
 def _load_cached(key: str) -> Optional[CompanyProfile]:
-    from backend.services.db import ENGINE, CompanyIntelRow
+    from backend.core.database import ENGINE
+    from backend.models.matching import CompanyIntelRow
     from sqlalchemy.orm import Session
 
     with Session(ENGINE) as s:
@@ -91,7 +92,8 @@ def _load_cached(key: str) -> Optional[CompanyProfile]:
 
 
 def _save_cached(profile: CompanyProfile) -> None:
-    from backend.services.db import ENGINE, CompanyIntelRow
+    from backend.core.database import ENGINE
+    from backend.models.matching import CompanyIntelRow
     from sqlalchemy.orm import Session
 
     with Session(ENGINE) as s:

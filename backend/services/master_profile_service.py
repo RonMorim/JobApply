@@ -99,7 +99,7 @@ def _empty_profile() -> dict:
 
 def _get_or_create_profile_row(user_id: str, session):
     """Return the MasterProfileRow for user_id, creating an empty one if absent."""
-    from backend.services.db import MasterProfileRow
+    from backend.models.profile import MasterProfileRow
     row = session.get(MasterProfileRow, user_id)
     if row is None:
         row = MasterProfileRow(
@@ -135,7 +135,7 @@ def load(user_id: str) -> dict:
     phone/location into the legacy USER_PROFILE singleton (default-only shim).
     """
     from sqlalchemy.orm import Session
-    from backend.services.db import ENGINE
+    from backend.core.database import ENGINE
 
     try:
         with Session(ENGINE) as session:
@@ -169,7 +169,7 @@ def save(profile: dict, user_id: str) -> None:
     Updates last_updated timestamp before writing.
     """
     from sqlalchemy.orm import Session
-    from backend.services.db import ENGINE
+    from backend.core.database import ENGINE
 
     profile["last_updated"] = _now_iso()
     with Session(ENGINE) as session:
@@ -629,7 +629,7 @@ Respond with ONLY a JSON object (no markdown fences, no prose):
 def _collect_user_corpus(user_id: str) -> str:
     """Concatenate the user's OWN messages from recent Ariel chat sessions."""
     from sqlalchemy import text as _text
-    from backend.services.db import ENGINE
+    from backend.core.database import ENGINE
 
     stmt = _text("""
         SELECT messages_json FROM chat_sessions
@@ -667,7 +667,8 @@ def _collect_user_corpus(user_id: str) -> str:
 def _load_cached_persona(user_id: str) -> dict | None:
     """Return the cached persona from master_profiles if fresh (< TTL)."""
     from sqlalchemy.orm import Session
-    from backend.services.db import ENGINE, MasterProfileRow
+    from backend.core.database import ENGINE
+    from backend.models.profile import MasterProfileRow
 
     with Session(ENGINE) as s:
         row = s.get(MasterProfileRow, user_id)
@@ -684,7 +685,8 @@ def _load_cached_persona(user_id: str) -> dict | None:
 def _save_persona(user_id: str, persona: dict) -> None:
     import copy as _copy
     from sqlalchemy.orm import Session
-    from backend.services.db import ENGINE, MasterProfileRow
+    from backend.core.database import ENGINE
+    from backend.models.profile import MasterProfileRow
 
     with Session(ENGINE) as s:
         row = s.get(MasterProfileRow, user_id)

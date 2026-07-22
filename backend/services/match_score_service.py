@@ -1643,7 +1643,7 @@ def _run_ats_engine(
 
         if entity_scores is None:
             from backend.services.confidence_matrix_service import get_entity_breakdown
-            from backend.services.db import ENGINE
+            from backend.core.database import ENGINE
             entities = get_entity_breakdown(user_id, ENGINE)   # list[EntityScore] dicts
         else:
             entities = entity_scores
@@ -1749,7 +1749,8 @@ def _persist_score_audit(
         import json as _json
         from datetime import datetime, timezone
 
-        from backend.services.db import ENGINE, ShadowScoreRow
+        from backend.core.database import ENGINE
+        from backend.models.matching import ShadowScoreRow
         from sqlalchemy.orm import Session as _Session
 
         with _Session(ENGINE) as s:

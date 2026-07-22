@@ -196,7 +196,7 @@ class ProfileUpdateService:
         Parameters
         ----------
         engine : sqlalchemy.engine.Engine
-            Pass ENGINE from backend.services.db — the shared SQLite engine.
+            Pass ENGINE from backend.core.database — the shared SQLite engine.
         """
         self._engine = engine
 

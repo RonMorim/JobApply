@@ -7,7 +7,8 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from backend.services.db import ENGINE, ApplicationRow
+from backend.core.database import ENGINE
+from backend.models.application import ApplicationRow
 from backend.schemas.application import Application, ApplicationStatus
 
 

@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 from backend.api.deps import CurrentUser, get_current_user
 from backend.schemas.application import Application, ApplicationStatus
 from backend.services import app_store, job_store
-from backend.services.db import ENGINE, ApplicationRow, JobRow
+from backend.core.database import ENGINE
+from backend.models.application import ApplicationRow
+from backend.models.job import JobRow
 
 logger = logging.getLogger(__name__)
 

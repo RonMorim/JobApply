@@ -175,7 +175,8 @@ async def generate_outreach_message(
             job_context = f"Role: {cached.get('job_title', '')} at {cached.get('company', '')}"
         # Try fetching raw job metadata
         try:
-            from backend.services.db import ENGINE, JobRow
+            from backend.core.database import ENGINE
+            from backend.models.job import JobRow
             from sqlalchemy.orm import Session
             with Session(ENGINE) as s:
                 row = s.get(JobRow, job_id)

@@ -29,16 +29,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session as DBSession
 
 from backend.api.deps import CurrentUser, get_current_user, require_admin, standard_rate_limit
-from backend.services.db import (
-    ENGINE,
-    ApplicationRow,
-    EvidenceRecordRow,
-    JobRow,
-    MasterProfileRow,
-    ProfileEntityRow,
-    ProfileInterviewRow,
-    RecruiterReplyDraftRow,
-)
+from backend.core.database import ENGINE
+from backend.models.application import ApplicationRow, RecruiterReplyDraftRow
+from backend.models.job import JobRow
+from backend.models.profile import EvidenceRecordRow, MasterProfileRow, ProfileEntityRow, ProfileInterviewRow
 from backend.services.active_user import set_active_user_id
 
 logger = logging.getLogger(__name__)
