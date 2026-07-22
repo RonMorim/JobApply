@@ -313,7 +313,7 @@ def _make_job_match(
     title: Optional[str] = None, company: str = "Acme", location: str = "Remote",
     match_score: float = 0.0, why_ron: Optional[str] = None,
 ):
-    from models.job import DetailedAnalysis, JobMatch
+    from backend.schemas.job import DetailedAnalysis, JobMatch
 
     # title defaults to something unique per call — save_with_source_priority
     # matches across the WHOLE persistent test engine by (title, company,

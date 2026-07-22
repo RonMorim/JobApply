@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, require_admin
-from models.job import DetailedAnalysis, JobMatch, RawJobPosting, ReasonTag
+from backend.schemas.job import DetailedAnalysis, JobMatch, RawJobPosting, ReasonTag
 import backend.services.job_store as job_store
 from backend.services import feed_service
 from backend.url_scraper import scrape_job_post

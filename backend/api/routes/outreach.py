@@ -37,7 +37,7 @@ from backend.services.outreach_service import (
     generate_outreach_message,
     generate_pitch_from_raw,
 )
-from models.job import RawJobPosting
+from backend.schemas.job import RawJobPosting
 
 logger = logging.getLogger(__name__)
 # Every outreach route is an LLM generation call → strict per-caller budget.

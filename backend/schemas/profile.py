@@ -66,7 +66,7 @@ class ProjectAchievement(BaseModel):
     transferable_learnings: list[str]
 
 
-class UserProfile(BaseModel):
+class CandidateProfile(BaseModel):
     full_name: str
     current_title: str
     location: str

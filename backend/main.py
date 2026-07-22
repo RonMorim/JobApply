@@ -17,12 +17,12 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
 
 # When uvicorn is launched from the backend/ directory, the project root
-# (one level up) is not automatically on sys.path.  Add it so that the
-# top-level `models/` package (e.g. models.agent) AND the canonical
-# `backend.*` package path are importable.  ALL intra-backend imports use
-# the `backend.` prefix — the bare `api.*` / `services.*` / `config` forms
-# are forbidden because they load the same file as a second, independent
-# module object (duplicated rate-limit buckets, JWKS caches, DB engines).
+# (one level up) is not automatically on sys.path.  Add it so the canonical
+# `backend.*` package path (e.g. backend.schemas.agent) is importable.
+# ALL intra-backend imports use the `backend.` prefix — the bare
+# `api.*` / `services.*` / `config` forms are forbidden because they load
+# the same file as a second, independent module object (duplicated
+# rate-limit buckets, JWKS caches, DB engines).
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))

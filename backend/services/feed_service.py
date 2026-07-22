@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
-from models.job import JobMatch
+from backend.schemas.job import JobMatch
 from backend.services import job_store
 from backend.services.match_score_service import compute_match_score_async
 from backend.config import DEV_MODE

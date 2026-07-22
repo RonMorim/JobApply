@@ -17,7 +17,7 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from backend.services.db import ENGINE, JobRow
-from models.job import DetailedAnalysis, JobMatch, ReasonTag
+from backend.schemas.job import DetailedAnalysis, JobMatch, ReasonTag
 
 logger = logging.getLogger(__name__)
 

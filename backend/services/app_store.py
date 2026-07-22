@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from backend.services.db import ENGINE, ApplicationRow
-from models.application import Application, ApplicationStatus
+from backend.schemas.application import Application, ApplicationStatus
 
 
 def _to_row(app: Application) -> ApplicationRow:

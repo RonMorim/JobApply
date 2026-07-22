@@ -13,8 +13,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from models.application import Application, ApplicationStatus
-from models.job import JobMatch
+from backend.schemas.application import Application, ApplicationStatus
+from backend.schemas.job import JobMatch
 from backend.services import app_store, job_store
 
 logger = logging.getLogger(__name__)

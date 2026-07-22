@@ -39,7 +39,7 @@ from backend.services.llm_client import call_llm, LLMCallError
 from backend.services.user_profile import USER_PROFILE, build_full_text
 from backend.services.llm_validation import harden_system_prompt, sanitize_text
 from backend.services.master_profile_service import get_skill_proficiencies
-from models.job import JobMatch
+from backend.schemas.job import JobMatch
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 

@@ -27,7 +27,6 @@ services:
       # no separate named volume needed (see CLAUDE.md: SQLite is the actual
       # active datastore, DATABASE_URL/Postgres is unwired/aspirational).
       - ./backend:/app/backend
-      - ./models:/app/models
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
