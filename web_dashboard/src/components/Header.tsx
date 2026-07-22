@@ -157,14 +157,28 @@ export function Header({ tab, setTab, onOpenControls, jobs = [] }: HeaderProps) 
 
       {/* Right-side utility cluster */}
       <div className="flex items-center gap-1 sm:gap-3 justify-end">
-        {pathname === '/' && tab === 'feed' && onOpenControls && (
-          <button
-            onClick={onOpenControls}
-            className="inline-flex items-center gap-1.5 h-11 sm:h-7 px-3 rounded-md text-[12.5px] font-medium text-slate-500 active:bg-slate-100 sm:hover:text-slate-800 sm:hover:bg-slate-50 border border-slate-200 transition-colors"
-          >
-            <SlidersIcon s={14} /> <span className="hidden sm:inline">Preferences</span>
-          </button>
-        )}
+        {/* Always rendered (just hidden off-feed) rather than conditionally
+            mounted — this cluster sits in the grid's `auto`-sized right
+            track, and the center nav lives in the adjacent `1fr` track. If
+            this button's presence toggled the track's rendered width, the
+            centered nav would visibly shift left/right on every tab switch
+            that crosses the feed boundary. `invisible` keeps the layout slot
+            reserved without showing or allowing interaction with it. */}
+        {(() => {
+          const showPreferences = pathname === '/' && tab === 'feed' && Boolean(onOpenControls)
+          return (
+            <button
+              onClick={() => onOpenControls?.()}
+              aria-hidden={!showPreferences}
+              tabIndex={showPreferences ? 0 : -1}
+              className={`inline-flex items-center gap-1.5 h-11 sm:h-7 px-3 rounded-md text-[12.5px] font-medium text-slate-500 active:bg-slate-100 sm:hover:text-slate-800 sm:hover:bg-slate-50 border border-slate-200 transition-colors ${
+                showPreferences ? '' : 'invisible pointer-events-none'
+              }`}
+            >
+              <SlidersIcon s={14} /> <span className="hidden sm:inline">Preferences</span>
+            </button>
+          )
+        })()}
 
         {/* Help — opens Eliya support chat (indigo theme). Color is driven purely
             by isEliyaOpen state; the hover tint is a plain Tailwind :hover class,

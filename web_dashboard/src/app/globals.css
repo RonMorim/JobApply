@@ -61,14 +61,21 @@
 
 /* ── Base ──────────────────────────────────────────────────────────────────── */
 
-html,
-body {
-  background: var(--ja-bg);
+html {
+  /* scrollbar-gutter only has an effect when overflow-y is something other
+     than the default `visible` — without this explicit overflow-y, the
+     property below is a silent no-op and the gutter is never reserved. */
+  overflow-y: auto;
   /* Reserve the scrollbar gutter permanently — otherwise switching between
      tabs whose content heights differ (e.g. Overview -> Matches) toggles the
      native scrollbar on/off, shifting the whole centered, sticky-header
      layout horizontally by the scrollbar's width on every transition. */
   scrollbar-gutter: stable;
+}
+
+html,
+body {
+  background: var(--ja-bg);
 }
 
 body {
