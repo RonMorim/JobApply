@@ -29,16 +29,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session as DBSession
 
 from backend.api.deps import CurrentUser, get_current_user, require_admin, standard_rate_limit
-from backend.services.db import (
-    ENGINE,
-    ApplicationRow,
-    EvidenceRecordRow,
-    JobRow,
-    MasterProfileRow,
-    ProfileEntityRow,
-    ProfileInterviewRow,
-    RecruiterReplyDraftRow,
-)
+from backend.core.database import ENGINE
+from backend.models.profile import MasterProfileRow
+from backend.repositories import application_repository
+from backend.repositories import evidence_repository
+from backend.repositories import job_repository
+from backend.repositories import profile_entity_repository
+from backend.repositories import profile_interview_repository
+from backend.repositories import recruiter_reply_draft_repository
 from backend.services.active_user import set_active_user_id
 
 logger = logging.getLogger(__name__)
@@ -107,21 +105,14 @@ def _profile_is_completed(row: "MasterProfileRow | None") -> bool:
 
 def _relink_rows(db: DBSession, old_uid: str, new_uid: str) -> dict:
     """Re-point every user-owned table from old_uid to new_uid."""
-    counts = {}
-    for label, model in (
-        ("jobs",         JobRow),
-        ("applications", ApplicationRow),
-        ("interviews",   ProfileInterviewRow),
-        ("entities",     ProfileEntityRow),
-        ("evidence",     EvidenceRecordRow),
-        ("reply_drafts", RecruiterReplyDraftRow),
-    ):
-        counts[label] = (
-            db.query(model)
-            .filter(model.user_id == old_uid)
-            .update({"user_id": new_uid}, synchronize_session="fetch")
-        )
-    return counts
+    return {
+        "jobs":         job_repository.reassign_user(old_uid, new_uid, db),
+        "applications": application_repository.reassign_user(old_uid, new_uid, db),
+        "interviews":   profile_interview_repository.reassign_user(old_uid, new_uid, db),
+        "entities":     profile_entity_repository.reassign_user(old_uid, new_uid, db),
+        "evidence":     evidence_repository.reassign_user(old_uid, new_uid, db),
+        "reply_drafts": recruiter_reply_draft_repository.reassign_user(old_uid, new_uid, db),
+    }
 
 
 @router.post("/sync-user", response_model=SyncUserResult)
@@ -246,9 +237,9 @@ async def migrate_legacy_data(
         # If this user already owns rows in ANY table their data is present and
         # the migration was already performed (or they registered fresh after
         # the multi-tenant rollout).  Don't touch anything.
-        already_has_jobs   = db.query(JobRow)              .filter(JobRow.user_id              == uid).count()
-        already_has_apps   = db.query(ApplicationRow)      .filter(ApplicationRow.user_id      == uid).count()
-        already_has_ivws   = db.query(ProfileInterviewRow) .filter(ProfileInterviewRow.user_id == uid).count()
+        already_has_jobs   = job_repository.count_for_user(uid, session=db)
+        already_has_apps   = application_repository.count_for_user(uid, session=db)
+        already_has_ivws   = profile_interview_repository.count_for_user(uid, session=db)
 
         if already_has_jobs or already_has_apps or already_has_ivws:
             logger.info(
@@ -265,9 +256,9 @@ async def migrate_legacy_data(
             )
 
         # ── Guard 2: nothing to migrate ───────────────────────────────────────
-        legacy_jobs  = db.query(JobRow)             .filter(JobRow.user_id              == "default").count()
-        legacy_apps  = db.query(ApplicationRow)     .filter(ApplicationRow.user_id      == "default").count()
-        legacy_ivws  = db.query(ProfileInterviewRow).filter(ProfileInterviewRow.user_id == "default").count()
+        legacy_jobs  = job_repository.count_for_user("default", session=db)
+        legacy_apps  = application_repository.count_for_user("default", session=db)
+        legacy_ivws  = profile_interview_repository.count_for_user("default", session=db)
 
         if not (legacy_jobs or legacy_apps or legacy_ivws):
             logger.info("[auth/migrate] user=%s — no legacy data to migrate", uid)
@@ -279,21 +270,9 @@ async def migrate_legacy_data(
             )
 
         # ── Migrate ───────────────────────────────────────────────────────────
-        migrated_jobs = (
-            db.query(JobRow)
-            .filter(JobRow.user_id == "default")
-            .update({"user_id": uid}, synchronize_session="fetch")
-        )
-        migrated_apps = (
-            db.query(ApplicationRow)
-            .filter(ApplicationRow.user_id == "default")
-            .update({"user_id": uid}, synchronize_session="fetch")
-        )
-        migrated_ivws = (
-            db.query(ProfileInterviewRow)
-            .filter(ProfileInterviewRow.user_id == "default")
-            .update({"user_id": uid}, synchronize_session="fetch")
-        )
+        migrated_jobs = job_repository.reassign_user("default", uid, db)
+        migrated_apps = application_repository.reassign_user("default", uid, db)
+        migrated_ivws = profile_interview_repository.reassign_user("default", uid, db)
         db.commit()
 
         logger.info(

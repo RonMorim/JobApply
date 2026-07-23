@@ -708,11 +708,8 @@ def get_narrative(key: str) -> dict:
 def _onboarding_row_profile(user_id: str) -> dict:
     """Load the onboarding profile dict from master_profiles for user_id ({} if absent)."""
     try:
-        from sqlalchemy.orm import Session
-        from backend.services.db import ENGINE, MasterProfileRow
-        with Session(ENGINE) as s:
-            row = s.get(MasterProfileRow, user_id)
-            return dict(row.master_profile or {}) if row else {}
+        from backend.repositories import master_profile_repository
+        return master_profile_repository.get_profile_json(user_id)
     except Exception:
         return {}
 

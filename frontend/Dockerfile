@@ -1,5 +1,5 @@
 # Frontend (Next.js) — dev image, mirrors the local `npm run dev` workflow.
-# Build context is web_dashboard/ itself (see docker-compose.yml).
+# Build context is frontend/ itself (see docker-compose.yml).
 FROM node:20-slim
 
 WORKDIR /app

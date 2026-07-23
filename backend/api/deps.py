@@ -56,7 +56,7 @@ def _load_is_admin(user_id: str) -> bool:
     """Cheap master_profiles lookup; absent row (or any DB error) → False."""
     try:
         from sqlalchemy import text as _text
-        from backend.services.db import ENGINE
+        from backend.core.database import ENGINE
         with ENGINE.connect() as conn:
             row = conn.execute(
                 _text("SELECT is_admin FROM master_profiles WHERE user_id = :uid"),

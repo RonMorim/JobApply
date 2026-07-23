@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 from backend.agents.tailor import _enforce_limits
 from backend.services.llm_client import call_llm
 from backend.services.pdf_builder import build_pdf
-from models.job import JobMatch
+from backend.schemas.job import JobMatch
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 

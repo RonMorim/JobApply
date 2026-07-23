@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from backend.services import job_store
+from backend.repositories import job_repository as job_store
 from backend.agents.resume import ResumeAgent
 from backend.agents.tailor import TailorAgent, _inject_static_sections
 from backend.agents.gatekeeper import RevisionGatekeeper
@@ -25,7 +25,7 @@ from backend.services.match_score_service import (
 )
 from backend.api.deps import CurrentUser, get_current_user, llm_rate_limit, standard_rate_limit
 from backend.services.master_profile_service import get_cached_answer, merge_answers
-from backend.services.job_store import get_tailored_cv, save_tailored_cv
+from backend.repositories.job_repository import get_tailored_cv, save_tailored_cv
 
 logger = logging.getLogger(__name__)
 
